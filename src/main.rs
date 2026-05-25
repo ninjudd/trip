@@ -19,6 +19,14 @@ async fn main() -> anyhow::Result<()> {
             };
             client::create_session(name, cmd).await?;
         }
+        Command::Enter { name, command } => {
+            let cmd = if command.is_empty() {
+                None
+            } else {
+                Some(command)
+            };
+            client::enter(name, cmd).await?;
+        }
         Command::Ls => {
             client::list_sessions().await?;
         }

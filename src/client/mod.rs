@@ -1,12 +1,97 @@
 pub mod attach;
 pub mod launch;
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 use tokio::io::{BufReader, BufWriter};
 
 use crate::daemon::protocol::{
     read_frame, write_control, Frame, Request, Response, SessionState,
 };
+
+pub fn derive_session_name() -> Result<String> {
+    let cwd = std::env::current_dir()?;
+    let home = std::env::var("HOME").unwrap_or_default();
+
+    // Try git root first
+    let output = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .output();
+
+    let base = match output {
+        Ok(out) if out.status.success() => {
+            PathBuf::from(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
+        _ => cwd,
+    };
+
+    let path = base.to_string_lossy();
+    if !home.is_empty() && path.starts_with(&home) {
+        let rel = &path[home.len()..];
+        let rel = rel.strip_prefix('/').unwrap_or(rel);
+        Ok(rel.to_string())
+    } else {
+        Ok(base
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "session".into()))
+    }
+}
+
+fn session_exists(sessions: &[crate::daemon::protocol::SessionInfo], name: &str) -> bool {
+    sessions.iter().any(|s| s.name == name)
+}
+
+pub async fn enter(name: Option<String>, command: Option<Vec<String>>) -> Result<()> {
+    let name = match name {
+        Some(n) => n,
+        None => derive_session_name()?,
+    };
+
+    // Check if we're already in this session
+    if let Ok(current) = std::env::var("DRIP_SESSION") {
+        if current == name {
+            println!("already in session '{}'", name);
+            return Ok(());
+        } else {
+            anyhow::bail!(
+                "already in session '{}' (use drip enter --force to switch — not yet implemented)",
+                current
+            );
+        }
+    }
+
+    // Check if session exists
+    let exists = match launch::try_connect().await {
+        Ok(stream) => {
+            let (reader, writer) = stream.into_split();
+            let mut reader = BufReader::new(reader);
+            let mut writer = BufWriter::new(writer);
+            write_control(&mut writer, &Request::ListSessions).await?;
+            match read_frame(&mut reader).await? {
+                Some(Frame::Control(payload)) => {
+                    let response: Response = serde_json::from_slice(&payload)?;
+                    match response {
+                        Response::SessionList { sessions } => session_exists(&sessions, &name),
+                        _ => false,
+                    }
+                }
+                _ => false,
+            }
+        }
+        Err(_) => false,
+    };
+
+    if !exists {
+        create_session(name.clone(), command).await?;
+    }
+
+    attach::attach(name).await?;
+    Ok(())
+}
 
 pub async fn create_session(name: String, command: Option<Vec<String>>) -> Result<()> {
     let stream = launch::connect().await?;

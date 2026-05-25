@@ -19,6 +19,16 @@ pub enum Command {
         command: Vec<String>,
     },
 
+    /// Enter a persistent session (create or attach)
+    Enter {
+        /// Session name (derived from workspace if omitted)
+        name: Option<String>,
+
+        /// Command to run if creating (defaults to $SHELL)
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+
     /// List sessions
     Ls,
 
