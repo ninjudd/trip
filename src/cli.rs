@@ -28,10 +28,13 @@ pub enum Command {
         name: String,
     },
 
-    /// Detach all clients from a session
+    /// Print the current session name
+    Current,
+
+    /// Detach all clients from a session (defaults to current session)
     Detach {
-        /// Session name
-        name: String,
+        /// Session name (omit to detach from current session)
+        name: Option<String>,
     },
 
     /// Kill a session

@@ -62,7 +62,9 @@ pub async fn list_sessions() -> Result<()> {
                         println!("no sessions");
                         return Ok(());
                     }
+                    let current = std::env::var("DRIP_SESSION").ok();
                     for s in sessions {
+                        let marker = if current.as_deref() == Some(&s.name) { "* " } else { "  " };
                         let state = match s.state {
                             SessionState::Running => {
                                 if s.attached {
@@ -80,8 +82,8 @@ pub async fn list_sessions() -> Result<()> {
                             }
                         };
                         println!(
-                            "{:<12} {:<10} {}",
-                            s.name, state, s.command
+                            "{}{:<12} {:<10} {}",
+                            marker, s.name, state, s.command
                         );
                     }
                 }
@@ -103,15 +105,15 @@ pub async fn detach_session(name: String) -> Result<()> {
     let mut reader = BufReader::new(reader);
     let mut writer = BufWriter::new(writer);
 
+    println!("detaching '{}'", name);
+
     write_control(&mut writer, &Request::DetachSession { name: name.clone() }).await?;
 
     match read_frame(&mut reader).await? {
         Some(Frame::Control(payload)) => {
             let response: Response = serde_json::from_slice(&payload)?;
             match response {
-                Response::Ok => {
-                    println!("session '{}' detached", name);
-                }
+                Response::Ok => {}
                 Response::Error { message } => {
                     anyhow::bail!("{}", message);
                 }

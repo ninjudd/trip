@@ -51,7 +51,7 @@ impl RawModeGuard {
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
         let borrowed = unsafe { BorrowedFd::borrow_raw(self.fd) };
-        let _ = termios::tcsetattr(&borrowed, SetArg::TCSAFLUSH, &self.original);
+        let _ = termios::tcsetattr(&borrowed, SetArg::TCSANOW, &self.original);
     }
 }
 
@@ -164,5 +164,11 @@ pub async fn attach(name: String) -> Result<()> {
         }
     }
 
-    Ok(())
+    // Drop guard explicitly before exiting to restore terminal
+    drop(_guard);
+    stdout.flush().ok();
+
+    // The stdin reader thread may be blocked on read(); exit the process
+    // to avoid hanging.
+    std::process::exit(0);
 }

@@ -48,6 +48,7 @@ impl Session {
 
                 unistd::setsid().ok();
                 std::env::set_current_dir(&cwd).ok();
+                std::env::set_var("DRIP_SESSION", &name);
 
                 // Ensure the slave has ONLCR set so \n → \r\n
                 if let Ok(mut attrs) = termios::tcgetattr(&slave) {
