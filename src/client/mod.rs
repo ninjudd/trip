@@ -84,11 +84,17 @@ pub async fn list_sessions() -> Result<()> {
 
                         let cmd = s.fg_command.as_deref().unwrap_or(&s.command);
                         let branch = s.git_branch.as_deref().unwrap_or("-");
+                        let home = std::env::var("HOME").unwrap_or_default();
                         let cwd = s.cwd.as_deref().unwrap_or("");
+                        let cwd = if !home.is_empty() && cwd.starts_with(&home) {
+                            format!("~{}", &cwd[home.len()..])
+                        } else {
+                            cwd.to_string()
+                        };
 
                         println!(
                             "{}{:<12} {:<10} {:<16} {:<16} {}",
-                            marker, s.name, state, cmd, branch, cwd
+                            marker, s.name, state, cmd, branch, &cwd
                         );
                     }
                 }
