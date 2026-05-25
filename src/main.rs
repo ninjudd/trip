@@ -25,6 +25,9 @@ async fn main() -> anyhow::Result<()> {
         Command::Attach { name } => {
             client::attach::attach(name).await?;
         }
+        Command::Detach { name } => {
+            client::detach_session(name).await?;
+        }
         Command::Kill { name } => {
             client::kill_session(name).await?;
         }

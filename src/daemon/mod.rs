@@ -112,7 +112,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
     };
 
     match request {
-        Request::CreateSession { name, command } => {
+        Request::CreateSession { name, command, cwd } => {
             let mut sessions = sessions.lock().await;
             if sessions.contains_key(&name) {
                 write_control(
@@ -125,7 +125,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                 return Ok(());
             }
 
-            let session = Session::spawn(name.clone(), command, 80, 24)?;
+            let session = Session::spawn(name.clone(), command, cwd, 80, 24)?;
             let pid = session.pid.as_raw() as u32;
             sessions.insert(name.clone(), session);
 
@@ -146,6 +146,22 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                 })
                 .collect();
             write_control(&mut writer, &Response::SessionList { sessions: list }).await?;
+        }
+
+        Request::DetachSession { name } => {
+            let sessions = sessions.lock().await;
+            if let Some(session) = sessions.get(&name) {
+                session.detach_notify.notify_waiters();
+                write_control(&mut writer, &Response::Ok).await?;
+            } else {
+                write_control(
+                    &mut writer,
+                    &Response::Error {
+                        message: format!("session '{}' not found", name),
+                    },
+                )
+                .await?;
+            }
         }
 
         Request::KillSession { name } => {
@@ -176,7 +192,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
         }
 
         Request::Attach { name, cols, rows } => {
-            let (screen_data, mut output_rx, input_tx) = {
+            let (screen_data, mut output_rx, input_tx, detach_notify) = {
                 let mut sessions = sessions.lock().await;
                 let session = match sessions.get_mut(&name) {
                     Some(s) => s,
@@ -200,14 +216,15 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                 let screen = session.screen_contents();
                 let rx = session.output_tx.subscribe();
                 let tx = session.input_tx.clone();
-                (screen, rx, tx)
+                let detach = session.detach_notify.clone();
+                (screen, rx, tx, detach)
             };
 
             write_control(&mut writer, &Response::Attached).await?;
             write_frame(&mut writer, FRAME_DATA, &screen_data).await?;
 
             let result =
-                stream_session(&name, reader, writer, &mut output_rx, &input_tx).await;
+                stream_session(reader, writer, &mut output_rx, &input_tx, &detach_notify).await;
 
             let mut sessions = sessions.lock().await;
             if let Some(session) = sessions.get_mut(&name) {
@@ -233,14 +250,17 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
 }
 
 async fn stream_session(
-    _name: &str,
     mut reader: BufReader<tokio::net::unix::OwnedReadHalf>,
     mut writer: BufWriter<tokio::net::unix::OwnedWriteHalf>,
     output_rx: &mut tokio::sync::broadcast::Receiver<Vec<u8>>,
     input_tx: &tokio::sync::mpsc::Sender<SessionCommand>,
+    detach_notify: &tokio::sync::Notify,
 ) -> Result<()> {
     loop {
         tokio::select! {
+            _ = detach_notify.notified() => {
+                return Ok(());
+            }
             data = output_rx.recv() => {
                 match data {
                     Ok(data) => {

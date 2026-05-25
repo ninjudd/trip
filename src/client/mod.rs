@@ -14,7 +14,10 @@ pub async fn create_session(name: String, command: Option<Vec<String>>) -> Resul
     let mut reader = BufReader::new(reader);
     let mut writer = BufWriter::new(writer);
 
-    write_control(&mut writer, &Request::CreateSession { name, command }).await?;
+    let cwd = std::env::current_dir()?
+        .to_string_lossy()
+        .to_string();
+    write_control(&mut writer, &Request::CreateSession { name, command, cwd }).await?;
 
     match read_frame(&mut reader).await? {
         Some(Frame::Control(payload)) => {
@@ -81,6 +84,33 @@ pub async fn list_sessions() -> Result<()> {
                             s.name, state, s.command
                         );
                     }
+                }
+                Response::Error { message } => {
+                    anyhow::bail!("{}", message);
+                }
+                _ => anyhow::bail!("unexpected response"),
+            }
+        }
+        _ => anyhow::bail!("unexpected frame"),
+    }
+
+    Ok(())
+}
+
+pub async fn detach_session(name: String) -> Result<()> {
+    let stream = launch::connect().await?;
+    let (reader, writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    let mut writer = BufWriter::new(writer);
+
+    write_control(&mut writer, &Request::DetachSession { name: name.clone() }).await?;
+
+    match read_frame(&mut reader).await? {
+        Some(Frame::Control(payload)) => {
+            let response: Response = serde_json::from_slice(&payload)?;
+            match response {
+                Response::Ok => {
+                    println!("session '{}' detached", name);
                 }
                 Response::Error { message } => {
                     anyhow::bail!("{}", message);

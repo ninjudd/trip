@@ -28,6 +28,12 @@ pub enum Command {
         name: String,
     },
 
+    /// Detach all clients from a session
+    Detach {
+        /// Session name
+        name: String,
+    },
+
     /// Kill a session
     Kill {
         /// Session name

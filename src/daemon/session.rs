@@ -1,13 +1,15 @@
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use nix::libc;
 use nix::pty::{openpty, OpenptyResult};
+use nix::sys::termios::{self, OutputFlags, SetArg};
 use nix::unistd::{self, ForkResult, Pid};
 use tokio::io::unix::AsyncFd;
 use tokio::io::Interest;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, Notify};
 
 use super::protocol::SessionState;
 
@@ -20,6 +22,7 @@ pub struct Session {
     pub client_count: usize,
     pub output_tx: broadcast::Sender<Vec<u8>>,
     pub input_tx: mpsc::Sender<SessionCommand>,
+    pub detach_notify: Arc<Notify>,
     parser: std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
 }
 
@@ -29,7 +32,7 @@ pub enum SessionCommand {
 }
 
 impl Session {
-    pub fn spawn(name: String, command: Option<Vec<String>>, cols: u16, rows: u16) -> Result<Self> {
+    pub fn spawn(name: String, command: Option<Vec<String>>, cwd: String, cols: u16, rows: u16) -> Result<Self> {
         let winsize = nix::pty::Winsize {
             ws_row: rows,
             ws_col: cols,
@@ -44,6 +47,13 @@ impl Session {
                 drop(master);
 
                 unistd::setsid().ok();
+                std::env::set_current_dir(&cwd).ok();
+
+                // Ensure the slave has ONLCR set so \n → \r\n
+                if let Ok(mut attrs) = termios::tcgetattr(&slave) {
+                    attrs.output_flags |= OutputFlags::OPOST | OutputFlags::ONLCR;
+                    let _ = termios::tcsetattr(&slave, SetArg::TCSANOW, &attrs);
+                }
 
                 unsafe { libc::ioctl(slave.as_raw_fd(), libc::TIOCSCTTY as _, 0) };
 
@@ -119,6 +129,7 @@ impl Session {
                     client_count: 0,
                     output_tx,
                     input_tx,
+                    detach_notify: Arc::new(Notify::new()),
                     parser,
                 })
             }
