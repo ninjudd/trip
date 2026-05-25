@@ -19,10 +19,15 @@ pub enum Request {
         cols: u16,
         rows: u16,
     },
+    GetScreen {
+        name: String,
+        watch: bool,
+    },
     GetLog {
         name: String,
         raw: bool,
         follow: bool,
+        since: Option<f64>,
     },
     SendInput {
         name: String,
@@ -63,6 +68,7 @@ pub enum Response {
     SessionCreated { name: String, pid: u32 },
     SessionList { sessions: Vec<SessionInfo> },
     Attached,
+    ScreenData { content: String },
     LogData { content: String },
 }
 

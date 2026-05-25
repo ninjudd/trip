@@ -110,13 +110,54 @@ pub async fn list_sessions() -> Result<()> {
     Ok(())
 }
 
-pub async fn get_log(name: String, raw: bool, follow: bool) -> Result<()> {
+pub const TERMINAL_RESET: &[u8] = b"\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l";
+
+pub async fn get_screen(name: String, watch: bool) -> Result<()> {
     let stream = launch::connect().await?;
     let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
     let mut writer = BufWriter::new(writer);
 
-    write_control(&mut writer, &Request::GetLog { name: name.clone(), raw, follow }).await?;
+    write_control(&mut writer, &Request::GetScreen { name: name.clone(), watch }).await?;
+
+    std::io::Write::write_all(&mut std::io::stdout(), TERMINAL_RESET).ok();
+
+    let mut first = true;
+    loop {
+        match read_frame(&mut reader).await? {
+            Some(Frame::Control(payload)) => {
+                let response: Response = serde_json::from_slice(&payload)?;
+                match response {
+                    Response::ScreenData { content } => {
+                        if !first {
+                            print!("\n--- screen updated ---\n\n");
+                        }
+                        print!("{}", content);
+                        std::io::Write::flush(&mut std::io::stdout())?;
+                        first = false;
+                        if !watch {
+                            return Ok(());
+                        }
+                    }
+                    Response::Error { message } => {
+                        anyhow::bail!("{}", message);
+                    }
+                    _ => anyhow::bail!("unexpected response"),
+                }
+            }
+            None => return Ok(()),
+            _ => anyhow::bail!("unexpected frame"),
+        }
+    }
+}
+
+pub async fn get_log(name: String, raw: bool, follow: bool, since: Option<f64>) -> Result<()> {
+    let stream = launch::connect().await?;
+    let (reader, writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    let mut writer = BufWriter::new(writer);
+
+    write_control(&mut writer, &Request::GetLog { name: name.clone(), raw, follow, since }).await?;
 
     loop {
         match read_frame(&mut reader).await? {
@@ -124,12 +165,7 @@ pub async fn get_log(name: String, raw: bool, follow: bool) -> Result<()> {
                 let response: Response = serde_json::from_slice(&payload)?;
                 match response {
                     Response::LogData { content } => {
-                        if follow && !raw {
-                            // Clear screen and show current state
-                            print!("\x1b[2J\x1b[H{}", content);
-                        } else {
-                            print!("{}", content);
-                        }
+                        print!("{}", content);
                         std::io::Write::flush(&mut std::io::stdout())?;
                         if !follow {
                             return Ok(());

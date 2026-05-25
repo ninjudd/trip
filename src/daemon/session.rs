@@ -3,6 +3,8 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::Serialize;
+
 use anyhow::Result;
 use nix::libc;
 use nix::pty::{openpty, OpenptyResult};
@@ -26,7 +28,88 @@ pub struct Session {
     pub input_tx: mpsc::Sender<SessionCommand>,
     pub detach_notify: Arc<Notify>,
     parser: std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
-    transcript: std::sync::Arc<std::sync::Mutex<VecDeque<u8>>>,
+    pub recording: Arc<std::sync::Mutex<Recording>>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(tag = "type")]
+pub enum RecordEvent {
+    #[serde(rename = "output")]
+    Output { t: f64, data: String },
+    #[serde(rename = "input")]
+    Input { t: f64, data: String },
+    #[serde(rename = "resize")]
+    Resize { t: f64, cols: u16, rows: u16 },
+    #[serde(rename = "screen")]
+    Screen { t: f64, text: String },
+}
+
+impl RecordEvent {
+    pub fn timestamp(&self) -> f64 {
+        match self {
+            RecordEvent::Output { t, .. } => *t,
+            RecordEvent::Input { t, .. } => *t,
+            RecordEvent::Resize { t, .. } => *t,
+            RecordEvent::Screen { t, .. } => *t,
+        }
+    }
+
+    fn data_len(&self) -> usize {
+        match self {
+            RecordEvent::Output { data, .. } => data.len(),
+            RecordEvent::Input { data, .. } => data.len(),
+            RecordEvent::Resize { .. } => 8,
+            RecordEvent::Screen { text, .. } => text.len(),
+        }
+    }
+
+    pub fn is_screen(&self) -> bool {
+        matches!(self, RecordEvent::Screen { .. })
+    }
+}
+
+pub struct Recording {
+    events: VecDeque<RecordEvent>,
+    total_bytes: usize,
+    max_bytes: usize,
+}
+
+impl Recording {
+    pub fn new(max_bytes: usize) -> Self {
+        Self {
+            events: VecDeque::new(),
+            total_bytes: 0,
+            max_bytes,
+        }
+    }
+
+    pub fn push(&mut self, event: RecordEvent) {
+        let len = event.data_len();
+        self.total_bytes += len;
+        self.events.push_back(event);
+        while self.total_bytes > self.max_bytes {
+            if let Some(old) = self.events.pop_front() {
+                self.total_bytes -= old.data_len();
+            } else {
+                break;
+            }
+        }
+    }
+
+    pub fn events_since(&self, since: f64) -> Vec<RecordEvent> {
+        self.events.iter().filter(|e| e.timestamp() >= since).cloned().collect()
+    }
+
+    pub fn all_events(&self) -> Vec<RecordEvent> {
+        self.events.iter().cloned().collect()
+    }
+}
+
+fn now_ts() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
 }
 
 pub enum SessionCommand {
@@ -105,7 +188,7 @@ impl Session {
 
                 let (output_tx, _) = broadcast::channel(256);
                 let (input_tx, input_rx) = mpsc::channel(64);
-                let transcript = Arc::new(std::sync::Mutex::new(VecDeque::with_capacity(
+                let recording = Arc::new(std::sync::Mutex::new(Recording::new(
                     crate::common::DEFAULT_SCROLLBACK,
                 )));
 
@@ -124,9 +207,9 @@ impl Session {
                 // Spawn the PTY I/O task
                 let output_tx_clone = output_tx.clone();
                 let parser_clone = parser.clone();
-                let transcript_clone = transcript.clone();
+                let recording_clone = recording.clone();
                 tokio::spawn(async move {
-                    pty_io_loop(async_fd, input_rx, output_tx_clone, parser_clone, transcript_clone).await;
+                    pty_io_loop(async_fd, input_rx, output_tx_clone, parser_clone, recording_clone).await;
                 });
 
                 Ok(Session {
@@ -141,7 +224,7 @@ impl Session {
                     input_tx,
                     detach_notify: Arc::new(Notify::new()),
                     parser,
-                    transcript,
+                    recording,
                 })
             }
         }
@@ -150,11 +233,6 @@ impl Session {
     pub fn screen_text(&self) -> String {
         let parser = self.parser.lock().unwrap();
         parser.screen().contents()
-    }
-
-    pub fn raw_transcript(&self) -> Vec<u8> {
-        let transcript = self.transcript.lock().unwrap();
-        transcript.iter().copied().collect()
     }
 
     pub fn screen_contents(&self) -> Vec<u8> {
@@ -183,9 +261,16 @@ async fn pty_io_loop(
     mut input_rx: mpsc::Receiver<SessionCommand>,
     output_tx: broadcast::Sender<Vec<u8>>,
     parser: std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
-    transcript: std::sync::Arc<std::sync::Mutex<VecDeque<u8>>>,
+    recording: Arc<std::sync::Mutex<Recording>>,
 ) {
+    use std::time::Duration;
+    use tokio::time::{sleep, Instant};
+
     let mut buf = vec![0u8; 4096];
+    let idle_duration = Duration::from_millis(500);
+    let mut idle_deadline = Box::pin(sleep(Duration::from_secs(86400)));
+    let mut snapshot_pending = false;
+    let mut last_screen = String::new();
 
     loop {
         tokio::select! {
@@ -207,19 +292,20 @@ async fn pty_io_loop(
                             Ok(Ok(n)) => {
                                 let data = buf[..n].to_vec();
                                 {
-                                    let mut t = transcript.lock().unwrap();
-                                    for &byte in &data {
-                                        if t.len() >= crate::common::DEFAULT_SCROLLBACK {
-                                            t.pop_front();
-                                        }
-                                        t.push_back(byte);
-                                    }
+                                    let mut rec = recording.lock().unwrap();
+                                    rec.push(RecordEvent::Output {
+                                        t: now_ts(),
+                                        data: String::from_utf8_lossy(&data).into_owned(),
+                                    });
                                 }
                                 {
                                     let mut p = parser.lock().unwrap();
                                     p.process(&data);
                                 }
                                 let _ = output_tx.send(data);
+                                // Reset idle timer
+                                idle_deadline.as_mut().reset(Instant::now() + idle_duration);
+                                snapshot_pending = true;
                             }
                             Ok(Err(_)) => break,
                             Err(_would_block) => {}
@@ -229,15 +315,43 @@ async fn pty_io_loop(
                 }
             }
 
+            _ = &mut idle_deadline, if snapshot_pending => {
+                let screen_text = {
+                    let p = parser.lock().unwrap();
+                    p.screen().contents()
+                };
+                if screen_text != last_screen {
+                    let mut rec = recording.lock().unwrap();
+                    rec.push(RecordEvent::Screen {
+                        t: now_ts(),
+                        text: screen_text.clone(),
+                    });
+                    last_screen = screen_text;
+                }
+                snapshot_pending = false;
+                idle_deadline.as_mut().reset(Instant::now() + Duration::from_secs(86400));
+            }
+
             cmd = input_rx.recv() => {
                 match cmd {
                     Some(SessionCommand::Input(data)) => {
+                        {
+                            let mut rec = recording.lock().unwrap();
+                            rec.push(RecordEvent::Input {
+                                t: now_ts(),
+                                data: String::from_utf8_lossy(&data).into_owned(),
+                            });
+                        }
                         let fd = master.get_ref().as_raw_fd();
                         unsafe {
                             libc::write(fd, data.as_ptr() as *const _, data.len());
                         }
                     }
                     Some(SessionCommand::Resize(cols, rows)) => {
+                        {
+                            let mut rec = recording.lock().unwrap();
+                            rec.push(RecordEvent::Resize { t: now_ts(), cols, rows });
+                        }
                         let winsize = libc::winsize {
                             ws_row: rows,
                             ws_col: cols,

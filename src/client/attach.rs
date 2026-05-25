@@ -166,7 +166,7 @@ pub async fn attach(name: String) -> Result<()> {
 
     // Reset terminal modes that the session's app may have enabled
     // (mouse tracking, alternate screen buffer, bracketed paste)
-    stdout.write_all(b"\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l").ok();
+    stdout.write_all(super::TERMINAL_RESET).ok();
     stdout.flush().ok();
 
     // Restore original terminal settings

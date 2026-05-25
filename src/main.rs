@@ -31,8 +31,22 @@ async fn main() -> anyhow::Result<()> {
                 Err(_) => std::process::exit(1),
             }
         }
-        Command::Log { name, raw, follow } => {
-            client::get_log(name, raw, follow).await?;
+        Command::Screen { name, watch } => {
+            client::get_screen(name, watch).await?;
+        }
+        Command::Log { name, raw, follow, since } => {
+            let since_ts = match since {
+                Some(ref s) => {
+                    let secs = cli::parse_duration(s)?;
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs_f64();
+                    Some(now - secs)
+                }
+                None => None,
+            };
+            client::get_log(name, raw, follow, since_ts).await?;
         }
         Command::Send { name, input, raw } => {
             client::send_input(name, input, raw).await?;

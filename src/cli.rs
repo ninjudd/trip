@@ -31,24 +31,32 @@ pub enum Command {
     /// Print the current session name
     Current,
 
-    /// Detach all clients from a session (defaults to current session)
-    Detach {
-        /// Session name (omit to detach from current session)
-        name: Option<String>,
+    /// Show current terminal screen
+    Screen {
+        /// Session name
+        name: String,
+
+        /// Stream screen updates
+        #[arg(long, short)]
+        watch: bool,
     },
 
-    /// Show session log/screen contents
+    /// Show session recording
     Log {
         /// Session name
         name: String,
 
-        /// Show raw PTY transcript bytes
+        /// Show raw JSONL events
         #[arg(long)]
         raw: bool,
 
-        /// Follow new output
+        /// Follow new events
         #[arg(long, short)]
         follow: bool,
+
+        /// Show events from the last duration (e.g. 10m, 1h)
+        #[arg(long)]
+        since: Option<String>,
     },
 
     /// Send input to a session
@@ -64,6 +72,12 @@ pub enum Command {
         raw: bool,
     },
 
+    /// Detach all clients from a session (defaults to current session)
+    Detach {
+        /// Session name (omit to detach from current session)
+        name: Option<String>,
+    },
+
     /// Kill a session
     Kill {
         /// Session name
@@ -73,4 +87,19 @@ pub enum Command {
     /// Start the daemon (typically auto-started)
     #[command(hide = true)]
     Daemon,
+}
+
+pub fn parse_duration(s: &str) -> anyhow::Result<f64> {
+    let s = s.trim();
+    let (num, unit) = if s.ends_with('s') {
+        (&s[..s.len() - 1], 1.0)
+    } else if s.ends_with('m') {
+        (&s[..s.len() - 1], 60.0)
+    } else if s.ends_with('h') {
+        (&s[..s.len() - 1], 3600.0)
+    } else {
+        (s, 1.0)
+    };
+    let n: f64 = num.parse().map_err(|_| anyhow::anyhow!("invalid duration: {}", s))?;
+    Ok(n * unit)
 }
