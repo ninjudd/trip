@@ -37,6 +37,33 @@ pub enum Command {
         name: Option<String>,
     },
 
+    /// Show session log/screen contents
+    Log {
+        /// Session name
+        name: String,
+
+        /// Show raw PTY transcript bytes
+        #[arg(long)]
+        raw: bool,
+
+        /// Follow new output
+        #[arg(long, short)]
+        follow: bool,
+    },
+
+    /// Send input to a session
+    Send {
+        /// Session name
+        name: String,
+
+        /// Input text to send
+        input: String,
+
+        /// Send raw bytes without appending Enter
+        #[arg(long)]
+        raw: bool,
+    },
+
     /// Kill a session
     Kill {
         /// Session name

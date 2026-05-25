@@ -19,6 +19,15 @@ pub enum Request {
         cols: u16,
         rows: u16,
     },
+    GetLog {
+        name: String,
+        raw: bool,
+        follow: bool,
+    },
+    SendInput {
+        name: String,
+        data: Vec<u8>,
+    },
     DetachSession {
         name: String,
     },
@@ -54,6 +63,7 @@ pub enum Response {
     SessionCreated { name: String, pid: u32 },
     SessionList { sessions: Vec<SessionInfo> },
     Attached,
+    LogData { content: String },
 }
 
 pub async fn write_frame<W: AsyncWrite + Unpin>(

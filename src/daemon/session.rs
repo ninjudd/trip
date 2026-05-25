@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,6 +26,7 @@ pub struct Session {
     pub input_tx: mpsc::Sender<SessionCommand>,
     pub detach_notify: Arc<Notify>,
     parser: std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
+    transcript: std::sync::Arc<std::sync::Mutex<VecDeque<u8>>>,
 }
 
 pub enum SessionCommand {
@@ -103,6 +105,9 @@ impl Session {
 
                 let (output_tx, _) = broadcast::channel(256);
                 let (input_tx, input_rx) = mpsc::channel(64);
+                let transcript = Arc::new(std::sync::Mutex::new(VecDeque::with_capacity(
+                    crate::common::DEFAULT_SCROLLBACK,
+                )));
 
                 let cmd_str = command
                     .as_ref()
@@ -119,8 +124,9 @@ impl Session {
                 // Spawn the PTY I/O task
                 let output_tx_clone = output_tx.clone();
                 let parser_clone = parser.clone();
+                let transcript_clone = transcript.clone();
                 tokio::spawn(async move {
-                    pty_io_loop(async_fd, input_rx, output_tx_clone, parser_clone).await;
+                    pty_io_loop(async_fd, input_rx, output_tx_clone, parser_clone, transcript_clone).await;
                 });
 
                 Ok(Session {
@@ -135,9 +141,20 @@ impl Session {
                     input_tx,
                     detach_notify: Arc::new(Notify::new()),
                     parser,
+                    transcript,
                 })
             }
         }
+    }
+
+    pub fn screen_text(&self) -> String {
+        let parser = self.parser.lock().unwrap();
+        parser.screen().contents()
+    }
+
+    pub fn raw_transcript(&self) -> Vec<u8> {
+        let transcript = self.transcript.lock().unwrap();
+        transcript.iter().copied().collect()
     }
 
     pub fn screen_contents(&self) -> Vec<u8> {
@@ -166,6 +183,7 @@ async fn pty_io_loop(
     mut input_rx: mpsc::Receiver<SessionCommand>,
     output_tx: broadcast::Sender<Vec<u8>>,
     parser: std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
+    transcript: std::sync::Arc<std::sync::Mutex<VecDeque<u8>>>,
 ) {
     let mut buf = vec![0u8; 4096];
 
@@ -188,6 +206,15 @@ async fn pty_io_loop(
                             Ok(Ok(0)) => break,
                             Ok(Ok(n)) => {
                                 let data = buf[..n].to_vec();
+                                {
+                                    let mut t = transcript.lock().unwrap();
+                                    for &byte in &data {
+                                        if t.len() >= crate::common::DEFAULT_SCROLLBACK {
+                                            t.pop_front();
+                                        }
+                                        t.push_back(byte);
+                                    }
+                                }
                                 {
                                     let mut p = parser.lock().unwrap();
                                     p.process(&data);

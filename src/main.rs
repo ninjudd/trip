@@ -31,6 +31,12 @@ async fn main() -> anyhow::Result<()> {
                 Err(_) => std::process::exit(1),
             }
         }
+        Command::Log { name, raw, follow } => {
+            client::get_log(name, raw, follow).await?;
+        }
+        Command::Send { name, input, raw } => {
+            client::send_input(name, input, raw).await?;
+        }
         Command::Detach { name } => {
             let name = match name {
                 Some(n) => n,

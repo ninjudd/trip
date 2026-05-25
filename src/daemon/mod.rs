@@ -159,6 +159,124 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             write_control(&mut writer, &Response::SessionList { sessions: list }).await?;
         }
 
+        Request::GetLog { name, raw, follow } => {
+            if !follow {
+                let sessions = sessions.lock().await;
+                let session = match sessions.get(&name) {
+                    Some(s) => s,
+                    None => {
+                        write_control(
+                            &mut writer,
+                            &Response::Error {
+                                message: format!("session '{}' not found", name),
+                            },
+                        )
+                        .await?;
+                        return Ok(());
+                    }
+                };
+
+                let content = if raw {
+                    String::from_utf8_lossy(&session.raw_transcript()).into_owned()
+                } else {
+                    session.screen_text()
+                };
+
+                write_control(&mut writer, &Response::LogData { content }).await?;
+            } else {
+                // Follow mode: send current screen, then stream updates
+                let (initial, mut output_rx) = {
+                    let sessions = sessions.lock().await;
+                    let session = match sessions.get(&name) {
+                        Some(s) => s,
+                        None => {
+                            write_control(
+                                &mut writer,
+                                &Response::Error {
+                                    message: format!("session '{}' not found", name),
+                                },
+                            )
+                            .await?;
+                            return Ok(());
+                        }
+                    };
+
+                    let content = if raw {
+                        String::from_utf8_lossy(&session.raw_transcript()).into_owned()
+                    } else {
+                        session.screen_text()
+                    };
+                    (content, session.output_tx.subscribe())
+                };
+
+                write_control(&mut writer, &Response::LogData { content: initial.clone() }).await?;
+
+                if raw {
+                    // Stream raw bytes
+                    loop {
+                        match output_rx.recv().await {
+                            Ok(data) => {
+                                let text = String::from_utf8_lossy(&data).into_owned();
+                                write_control(&mut writer, &Response::LogData { content: text }).await?;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                } else {
+                    // Stream screen text updates when output settles
+                    let mut last_screen = initial;
+                    loop {
+                        match output_rx.recv().await {
+                            Ok(_) => {
+                                // Wait for output to settle (500ms idle)
+                                loop {
+                                    match tokio::time::timeout(
+                                        std::time::Duration::from_millis(500),
+                                        output_rx.recv(),
+                                    ).await {
+                                        Ok(Ok(_)) => continue,
+                                        Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                                        _ => break,
+                                    }
+                                }
+                                // Snapshot screen
+                                let current = {
+                                    let sessions = sessions.lock().await;
+                                    match sessions.get(&name) {
+                                        Some(s) => s.screen_text(),
+                                        None => break,
+                                    }
+                                };
+                                if current != last_screen {
+                                    write_control(&mut writer, &Response::LogData { content: current.clone() }).await?;
+                                    last_screen = current;
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                }
+            }
+        }
+
+        Request::SendInput { name, data } => {
+            let sessions = sessions.lock().await;
+            if let Some(session) = sessions.get(&name) {
+                let _ = session.input_tx.send(SessionCommand::Input(data)).await;
+                write_control(&mut writer, &Response::Ok).await?;
+            } else {
+                write_control(
+                    &mut writer,
+                    &Response::Error {
+                        message: format!("session '{}' not found", name),
+                    },
+                )
+                .await?;
+            }
+        }
+
         Request::DetachSession { name } => {
             let sessions = sessions.lock().await;
             if let Some(session) = sessions.get(&name) {

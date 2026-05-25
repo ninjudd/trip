@@ -110,6 +110,73 @@ pub async fn list_sessions() -> Result<()> {
     Ok(())
 }
 
+pub async fn get_log(name: String, raw: bool, follow: bool) -> Result<()> {
+    let stream = launch::connect().await?;
+    let (reader, writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    let mut writer = BufWriter::new(writer);
+
+    write_control(&mut writer, &Request::GetLog { name: name.clone(), raw, follow }).await?;
+
+    loop {
+        match read_frame(&mut reader).await? {
+            Some(Frame::Control(payload)) => {
+                let response: Response = serde_json::from_slice(&payload)?;
+                match response {
+                    Response::LogData { content } => {
+                        if follow && !raw {
+                            // Clear screen and show current state
+                            print!("\x1b[2J\x1b[H{}", content);
+                        } else {
+                            print!("{}", content);
+                        }
+                        std::io::Write::flush(&mut std::io::stdout())?;
+                        if !follow {
+                            return Ok(());
+                        }
+                    }
+                    Response::Error { message } => {
+                        anyhow::bail!("{}", message);
+                    }
+                    _ => anyhow::bail!("unexpected response"),
+                }
+            }
+            None => return Ok(()),
+            _ => anyhow::bail!("unexpected frame"),
+        }
+    }
+}
+
+pub async fn send_input(name: String, input: String, raw: bool) -> Result<()> {
+    let stream = launch::connect().await?;
+    let (reader, writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    let mut writer = BufWriter::new(writer);
+
+    let mut data = input.into_bytes();
+    if !raw {
+        data.push(b'\r');
+    }
+
+    write_control(&mut writer, &Request::SendInput { name: name.clone(), data }).await?;
+
+    match read_frame(&mut reader).await? {
+        Some(Frame::Control(payload)) => {
+            let response: Response = serde_json::from_slice(&payload)?;
+            match response {
+                Response::Ok => {}
+                Response::Error { message } => {
+                    anyhow::bail!("{}", message);
+                }
+                _ => anyhow::bail!("unexpected response"),
+            }
+        }
+        _ => anyhow::bail!("unexpected frame"),
+    }
+
+    Ok(())
+}
+
 pub async fn detach_session(name: String) -> Result<()> {
     let stream = launch::connect().await?;
     let (reader, writer) = stream.into_split();
