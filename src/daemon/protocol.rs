@@ -41,6 +41,9 @@ pub struct SessionInfo {
     pub created_at: u64,
     pub state: SessionState,
     pub attached: bool,
+    pub cwd: Option<String>,
+    pub fg_command: Option<String>,
+    pub git_branch: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -1,3 +1,4 @@
+pub mod procinfo;
 pub mod protocol;
 pub mod session;
 
@@ -136,13 +137,23 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             let sessions = sessions.lock().await;
             let list: Vec<SessionInfo> = sessions
                 .values()
-                .map(|s| SessionInfo {
-                    name: s.name.clone(),
-                    command: s.command.clone(),
-                    pid: s.pid.as_raw() as u32,
-                    created_at: s.created_at,
-                    state: s.state.clone(),
-                    attached: s.client_count > 0,
+                .map(|s| {
+                    let fg_pid = procinfo::get_foreground_pid(s.master_fd);
+                    let cwd = fg_pid.and_then(procinfo::get_cwd);
+                    let fg_command = fg_pid.and_then(procinfo::get_name);
+                    let git_branch = cwd.as_ref().and_then(procinfo::get_git_branch);
+
+                    SessionInfo {
+                        name: s.name.clone(),
+                        command: s.command.clone(),
+                        pid: s.pid.as_raw() as u32,
+                        created_at: s.created_at,
+                        state: s.state.clone(),
+                        attached: s.client_count > 0,
+                        cwd: cwd.map(|p| p.to_string_lossy().into_owned()),
+                        fg_command,
+                        git_branch,
+                    }
                 })
                 .collect();
             write_control(&mut writer, &Response::SessionList { sessions: list }).await?;
