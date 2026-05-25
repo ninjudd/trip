@@ -82,17 +82,13 @@ pub async fn list_sessions() -> Result<()> {
                             }
                         };
 
-                        let location = match (&s.cwd, &s.git_branch) {
-                            (Some(cwd), Some(branch)) => format!("{}@{}", cwd, branch),
-                            (Some(cwd), None) => cwd.clone(),
-                            _ => String::new(),
-                        };
-
                         let cmd = s.fg_command.as_deref().unwrap_or(&s.command);
+                        let branch = s.git_branch.as_deref().unwrap_or("-");
+                        let cwd = s.cwd.as_deref().unwrap_or("");
 
                         println!(
-                            "{}{:<12} {:<10} {:<16} {}",
-                            marker, s.name, state, cmd, location
+                            "{}{:<12} {:<10} {:<16} {:<16} {}",
+                            marker, s.name, state, cmd, branch, cwd
                         );
                     }
                 }
