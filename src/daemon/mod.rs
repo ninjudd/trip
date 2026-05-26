@@ -702,17 +702,6 @@ async fn stream_session(
     let mut was_readonly = readonly_flag.load(std::sync::atomic::Ordering::Relaxed);
     let mut client_size: Option<(u16, u16)> = Some((initial_cols, initial_rows));
     let mut takeover_pending = false;
-
-    fn is_mouse_event(data: &[u8]) -> bool {
-        // SGR mouse: \x1b[<...M or \x1b[<...m
-        // Normal mouse: \x1b[M...
-        if data.len() >= 3 && data[0] == 0x1b && data[1] == b'[' {
-            if data[2] == b'<' || data[2] == b'M' {
-                return true;
-            }
-        }
-        false
-    }
     loop {
         let readonly = readonly_flag.load(std::sync::atomic::Ordering::Relaxed);
         if readonly && !was_readonly {
@@ -769,8 +758,6 @@ async fn stream_session(
                     Some(Frame::Data(data)) => {
                         if !readonly_flag.load(std::sync::atomic::Ordering::Relaxed) {
                             let _ = input_tx.send(SessionCommand::Input(data)).await;
-                        } else if is_mouse_event(&data) {
-                            // Ignore mouse events in read-only mode
                         } else if takeover_pending {
                             takeover_pending = false;
                             if data.first() == Some(&b'y') || data.first() == Some(&b'Y') {
