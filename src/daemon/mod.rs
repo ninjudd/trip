@@ -738,7 +738,8 @@ async fn stream_session(
             data = output_rx.recv() => {
                 match data {
                     Ok(data) => {
-                        let data = if readonly { strip_sgr(&data) } else { data };
+                        let ro = readonly_flag.load(std::sync::atomic::Ordering::Relaxed);
+                        let data = if ro { strip_sgr(&data) } else { data };
                         write_frame(&mut writer, FRAME_DATA, &data).await?;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -754,13 +755,13 @@ async fn stream_session(
             frame = read_frame(&mut reader) => {
                 match frame? {
                     Some(Frame::Data(data)) => {
-                        if !readonly {
+                        if !readonly_flag.load(std::sync::atomic::Ordering::Relaxed) {
                             let _ = input_tx.send(SessionCommand::Input(data)).await;
                         }
                     }
                     Some(Frame::Resize { cols, rows }) => {
                         client_size = Some((cols, rows));
-                        if !readonly {
+                        if !readonly_flag.load(std::sync::atomic::Ordering::Relaxed) {
                             let _ = input_tx.send(SessionCommand::Resize(cols, rows)).await;
                         }
                     }
