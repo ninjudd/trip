@@ -1,4 +1,6 @@
 pub fn inserted_lines(old: &str, new: &str) -> Vec<String> {
+    use std::collections::HashMap;
+
     let old_lines: Vec<&str> = old.lines().map(|l| l.trim()).collect();
     let new_lines: Vec<&str> = new.lines().map(|l| l.trim()).collect();
 
@@ -16,20 +18,18 @@ pub fn inserted_lines(old: &str, new: &str) -> Vec<String> {
     }
 
     let mut inserted = Vec::new();
+    let mut deleted = Vec::new();
     let mut i = m;
     let mut j = n;
     while i > 0 && j > 0 {
         if old_lines[i - 1] == new_lines[j - 1] {
             i -= 1;
             j -= 1;
-        } else if dp[i - 1][j] > dp[i][j - 1] {
+        } else if dp[i - 1][j] >= dp[i][j - 1] {
+            deleted.push(old_lines[i - 1].to_string());
             i -= 1;
-        } else if dp[i][j - 1] > dp[i - 1][j] {
-            inserted.push(new_lines[j - 1].to_string());
-            j -= 1;
         } else {
-            // Modification — suppress both
-            i -= 1;
+            inserted.push(new_lines[j - 1].to_string());
             j -= 1;
         }
     }
@@ -39,7 +39,25 @@ pub fn inserted_lines(old: &str, new: &str) -> Vec<String> {
     }
 
     inserted.reverse();
+    deleted.reverse();
+
+    // Post-process: remove insertions that exactly match a deletion (modifications)
+    let mut del_counts: HashMap<&str, usize> = HashMap::new();
+    for d in &deleted {
+        *del_counts.entry(d.as_str()).or_default() += 1;
+    }
     inserted
+        .into_iter()
+        .filter(|line| {
+            if let Some(count) = del_counts.get_mut(line.as_str()) {
+                if *count > 0 {
+                    *count -= 1;
+                    return false;
+                }
+            }
+            true
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -54,10 +72,21 @@ mod tests {
     }
 
     #[test]
-    fn modification_suppressed() {
+    fn modification_shows_new_value() {
+        // Changed lines show up as insertions (the old value is filtered
+        // as a deletion, but the new value is different so it stays)
         let old = "header\nstatus: 50%\nfooter";
         let new = "header\nstatus: 75%\nfooter";
-        assert_eq!(inserted_lines(old, new), Vec::<String>::new());
+        assert_eq!(inserted_lines(old, new), vec!["status: 75%"]);
+    }
+
+    #[test]
+    fn exact_duplicate_suppressed() {
+        // Line that exists in both old and new at different positions
+        // should not appear as an insertion
+        let old = "top\nshared line\nbottom";
+        let new = "shared line\nbottom\nnew stuff";
+        assert_eq!(inserted_lines(old, new), vec!["new stuff"]);
     }
 
     #[test]
@@ -96,5 +125,45 @@ mod tests {
     #[test]
     fn identical_screens() {
         assert_eq!(inserted_lines("a\nb\nc", "a\nb\nc"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn real_screen_scrolling_no_duplicate_heading() {
+        // Reduced version of real Claude Code screens 19→20
+        // "Current state" exists in both, content scrolls, new lines appear below it
+        let old = "\
+item 5
+item 6
+item 7
+item 8
+item 9
+
+---
+
+Current state
+
+status bar old
+mode indicator";
+
+        let new = "\
+item 7
+item 8
+item 9
+
+---
+Current state
+
+The working tree has uncommitted changes.
+
+status bar new
+mode indicator new";
+
+        let result = inserted_lines(old, new);
+        assert!(
+            !result.iter().any(|l| l.contains("Current state")),
+            "Current state should not appear as insertion, got: {:?}",
+            result
+        );
+        assert!(result.iter().any(|l| l.contains("uncommitted")));
     }
 }
