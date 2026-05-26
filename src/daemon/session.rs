@@ -28,6 +28,7 @@ pub struct Session {
     pub detach_notify: Arc<Notify>,
     pub writer_attached: bool,
     pub writer_readonly_flag: Option<Arc<AtomicBool>>,
+    pub writer_stack: Vec<Arc<AtomicBool>>,
     parser: std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
 }
 
@@ -142,6 +143,7 @@ impl Session {
                     detach_notify: Arc::new(Notify::new()),
                     writer_attached: false,
                     writer_readonly_flag: None,
+                    writer_stack: Vec::new(),
                     parser,
                 })
             }
