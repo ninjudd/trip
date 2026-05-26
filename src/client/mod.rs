@@ -97,7 +97,7 @@ pub async fn enter(name: Option<String>, command: Option<Vec<String>>) -> Result
         }
         Some((_, true)) => {
             // Session exists and someone is attached — ask what to do
-            eprint!("session '{}' has an active writer. steal it? [y/n] ", name);
+            eprint!("session '{}' is in use. take over? [y/n] ", name);
             use std::io::Read;
             let mut buf = [0u8; 1];
             std::io::stdin().read_exact(&mut buf).ok();
