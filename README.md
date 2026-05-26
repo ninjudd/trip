@@ -2,7 +2,17 @@
 
 Persistent terminal sessions.
 
-Trip is a tiny daemon that owns your terminal sessions so they survive when you close a window. Terminal apps become lightweight clients that attach and detach. Think tmux, but radically simpler — no panes, no splits, no keybindings to memorize. Just close the terminal to detach.
+Trip is a tiny daemon that keeps your terminal sessions alive when you close a window. Terminal apps become lightweight clients that attach and detach. Think tmux, but radically simpler — no panes, no splits, no keybindings to memorize. Just close the terminal to detach.
+
+## Why?
+
+Normal terminal tabs are disposable. The processes inside them usually are not.
+
+Trip separates the terminal viewport from the runtime session. This means:
+
+- sessions survive window closes
+- workspaces become durable
+- terminals become interchangeable clients
 
 ## Install
 
@@ -31,13 +41,13 @@ That's it. If a session exists for this workspace, you're attached. If not, one 
 
 **`trip enter [name]`** — Enter the canonical workspace session. Creates it if missing, attaches if it exists. Derives the session name from your git repo root when no name is given. If someone else is attached, prompts to take over.
 
-**`trip return`** — Return to the previous session. Opposite of `trip enter` — pops the session stack.
+**`trip return`** — Return to the previous session. Opposite of `trip enter`.
 
-**`trip new [name]`** — Open a fresh durable terminal. Auto-numbered (`.1`, `.2`, `.3`). Attaches immediately. Kept alive in the background; cleaned up when the shell exits.
+**`trip new [name]`** — Open a fresh durable terminal for the current workspace. Auto-numbered (`.1`, `.2`, `.3`). Kept alive in the background; cleaned up when the shell exits.
 
 **`trip create <name> [-- command]`** — Create a session without attaching. For scripting and automation.
 
-**`trip ls`** — List sessions. Shows foreground command, git branch, cwd, and marks the current session with `*`.
+**`trip ls`** — List sessions. Shows foreground command, git branch, cwd, and marks the current session with `*`. Use `-a` to include background sessions.
 
 **`trip attach <name>`** — Attach to a specific session by name.
 
@@ -69,11 +79,13 @@ That's it. If a session exists for this workspace, you're attached. If not, one 
 
 ### Programmatic control
 
-**`trip wrap [name] [-- command]`** — Wrap a command with a JSONL protocol. The wrapped process gets a real PTY internally, but stdin/stdout become structured events. This turns any interactive program into a durable, programmable session.
+**`trip wrap [name] [-- command]`** — Wrap a command with a JSONL protocol. The wrapped process gets a real PTY internally, but stdin/stdout become structured events.
 
 ```
 trip wrap -- claude
 ```
+
+Wrapped sessions are normal trip sessions. You can `trip attach`, `trip screen`, and `trip log` them from another terminal.
 
 **Input** (JSONL on stdin):
 
@@ -104,8 +116,6 @@ trip wrap -- claude
 - `screen` — full screen state, only in response to `screenshot`.
 - `exit` — process exited.
 - `error` — protocol or runtime errors.
-
-Wrapped sessions are normal trip sessions — you can `trip attach`, `trip screen`, `trip log` them from another terminal.
 
 ### Shell integration
 
@@ -145,7 +155,7 @@ One writer per session. Additional clients attach read-only (monochrome output, 
 
 ### Session switching
 
-`trip enter` from inside a trip session seamlessly switches your terminal to the target session — no nesting, no new processes. The daemon redirects the attach client's stream. `trip return` pops back to the previous session. Enter and return form a stack, so you can nest switches and unwind them.
+`trip enter` from inside a trip session seamlessly switches to the target session — no nesting, no new processes. Your terminal is rebound to the new session. `trip return` switches back. Enter and return form a stack, so you can nest switches and unwind them.
 
 ## Design philosophy
 
