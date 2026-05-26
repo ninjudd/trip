@@ -41,8 +41,11 @@ pub fn derive_session_name() -> Result<String> {
     }
 }
 
-fn session_exists(sessions: &[crate::daemon::protocol::SessionInfo], name: &str) -> bool {
-    sessions.iter().any(|s| s.name == name)
+fn find_session<'a>(
+    sessions: &'a [crate::daemon::protocol::SessionInfo],
+    name: &str,
+) -> Option<&'a crate::daemon::protocol::SessionInfo> {
+    sessions.iter().find(|s| s.name == name)
 }
 
 pub async fn enter(name: Option<String>, command: Option<Vec<String>>) -> Result<()> {
@@ -64,8 +67,8 @@ pub async fn enter(name: Option<String>, command: Option<Vec<String>>) -> Result
         }
     }
 
-    // Check if session exists
-    let exists = match launch::try_connect().await {
+    // Check if session exists and whether someone is attached
+    let session_info = match launch::try_connect().await {
         Ok(stream) => {
             let (reader, writer) = stream.into_split();
             let mut reader = BufReader::new(reader);
@@ -75,18 +78,36 @@ pub async fn enter(name: Option<String>, command: Option<Vec<String>>) -> Result
                 Some(Frame::Control(payload)) => {
                     let response: Response = serde_json::from_slice(&payload)?;
                     match response {
-                        Response::SessionList { sessions } => session_exists(&sessions, &name),
-                        _ => false,
+                        Response::SessionList { sessions } => {
+                            find_session(&sessions, &name).map(|s| (true, s.attached))
+                        }
+                        _ => None,
                     }
                 }
-                _ => false,
+                _ => None,
             }
         }
-        Err(_) => false,
+        Err(_) => None,
     };
 
-    if !exists {
-        create_session(name.clone(), command).await?;
+    match session_info {
+        None => {
+            // Session doesn't exist — create it
+            create_session(name.clone(), command).await?;
+        }
+        Some((_, true)) => {
+            // Session exists and someone is attached — ask what to do
+            eprint!("session '{}' has an active writer. steal it? [y/n] ", name);
+            use std::io::Read;
+            let mut buf = [0u8; 1];
+            std::io::stdin().read_exact(&mut buf).ok();
+            if buf[0] == b'y' || buf[0] == b'Y' {
+                detach_session(name.clone()).await?;
+            }
+        }
+        Some((_, false)) => {
+            // Session exists, no one attached — just attach
+        }
     }
 
     attach::attach(name).await?;
