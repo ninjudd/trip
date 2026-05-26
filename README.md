@@ -67,6 +67,46 @@ That's it. If a session exists for this workspace, you're attached. If not, one 
 
 **`trip current`** — Print the current session name (exit 1 if not in a session).
 
+### Programmatic control
+
+**`trip wrap [name] [-- command]`** — Wrap a command with a JSONL protocol. The wrapped process gets a real PTY internally, but stdin/stdout become structured events. This turns any interactive program into a durable, programmable session.
+
+```
+trip wrap -- claude
+```
+
+**Input** (JSONL on stdin):
+
+```json
+{"type":"send","text":"summarize this repo\n"}
+{"type":"key","key":"ctrl-c"}
+{"type":"resize","cols":120,"rows":40}
+{"type":"screenshot"}
+{"type":"close"}
+```
+
+- `send` — type text into the PTY. Include `\n` for Enter. Multi-line text is automatically bracketed-pasted.
+- `key` — named special keys: `ctrl-c`, `escape`, `enter`, `up`, `down`, `tab`, `backspace`, etc.
+- `resize` — resize the PTY.
+- `screenshot` — request the current screen state.
+- `close` — end the session.
+
+**Output** (JSONL on stdout):
+
+```json
+{"type":"log","text":"Claude is thinking..."}
+{"type":"screen","text":"full screen contents here"}
+{"type":"exit","code":0}
+{"type":"error","message":"unknown key: ctrl-bogus"}
+```
+
+- `log` — pushed automatically as meaningful screen changes occur (diffed snapshots).
+- `screen` — full screen state, only in response to `screenshot`.
+- `exit` — process exited.
+- `error` — protocol or runtime errors.
+
+Wrapped sessions are normal trip sessions — you can `trip attach`, `trip screen`, `trip log` them from another terminal.
+
 ### Shell integration
 
 `./install.sh` adds a shell hook to `.zshrc` and `.bashrc` that runs `trip init` before each command. This keeps terminal environment variables (`TERM_PROGRAM`, `COLORTERM`, etc.) in sync when you switch between different terminal apps while attached to the same session.
