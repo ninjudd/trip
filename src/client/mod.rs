@@ -119,7 +119,7 @@ pub async fn enter(name: Option<String>, command: Option<Vec<String>>) -> Result
         None => derive_session_name()?,
     };
 
-    if let Ok(current) = std::env::var("DRIP_SESSION") {
+    if let Ok(current) = std::env::var("TRIP_SESSION") {
         if current == name {
             println!("already in session '{}'", name);
             return Ok(());
@@ -254,7 +254,7 @@ pub async fn list_sessions() -> Result<()> {
                         println!("no sessions");
                         return Ok(());
                     }
-                    let current = std::env::var("DRIP_SESSION").ok();
+                    let current = std::env::var("TRIP_SESSION").ok();
                     let home = std::env::var("HOME").unwrap_or_default();
                     let rows: Vec<_> = sessions
                         .iter()

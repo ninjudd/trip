@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::Result;
 use tokio::net::UnixStream;
 
-use crate::common::{drip_dir, socket_path};
+use crate::common::{socket_path, trip_dir};
 
 pub async fn try_connect() -> Result<UnixStream> {
     let stream = UnixStream::connect(socket_path()).await?;
@@ -30,7 +30,7 @@ pub async fn connect() -> Result<UnixStream> {
 }
 
 fn start_daemon() -> Result<()> {
-    let dir = drip_dir();
+    let dir = trip_dir();
     std::fs::create_dir_all(&dir)?;
 
     let exe = std::env::current_exe()?;

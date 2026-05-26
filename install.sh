@@ -2,28 +2,29 @@
 set -e
 
 if [ "$1" = "--dev" ]; then
-    echo "Building drip (debug)..."
+    echo "Building trip (debug)..."
     cargo build
-    echo "Linking to /usr/local/bin/drip..."
-    sudo ln -sf "$(pwd)/target/debug/drip" /usr/local/bin/drip
+    echo "Linking to /usr/local/bin/trip..."
+    sudo ln -sf "$(pwd)/target/debug/trip" /usr/local/bin/trip
 else
-    echo "Building drip..."
+    echo "Building trip..."
     cargo build --release
-    echo "Installing to /usr/local/bin/drip..."
-    sudo cp target/release/drip /usr/local/bin/drip
+    echo "Installing to /usr/local/bin/trip..."
+    sudo cp target/release/trip /usr/local/bin/trip
 fi
 
-HOOK='# drip shell hook
-if [ -n "$DRIP_SESSION" ]; then
-  _drip_preexec() { eval "$(drip init)"; }
+HOOK='# trip shell hook
+if [ -n "$TRIP_SESSION" ]; then
+  _trip_preexec() { eval "$(trip init)"; }
   if [ -n "$ZSH_VERSION" ]; then
-    preexec_functions+=(_drip_preexec)
+    preexec_functions+=(_trip_preexec)
   elif [ -n "$BASH_VERSION" ]; then
-    trap '"'"'eval "$(drip init)"'"'"' DEBUG
+    trap '"'"'eval "$(trip init)"'"'"' DEBUG
   fi
 fi'
 
-MARKER="# drip shell hook"
+MARKER="# trip shell hook"
+OLD_MARKER="# drip shell hook"
 
 resolve_path() {
     # Follow symlinks portably (macOS lacks readlink -f)
@@ -37,9 +38,11 @@ resolve_path() {
 remove_old_hook() {
     file="$(resolve_path "$1")"
     [ -f "$file" ] || return 0
-    if grep -qF "$MARKER" "$file"; then
-        sed -i '' "/$MARKER/,/^$/d" "$file"
-    fi
+    for marker in "$MARKER" "$OLD_MARKER"; do
+        if grep -qF "$marker" "$file"; then
+            sed -i '' "/$marker/,/^$/d" "$file"
+        fi
+    done
 }
 
 install_hook() {
@@ -52,4 +55,4 @@ install_hook() {
 install_hook "$HOME/.zshrc"
 install_hook "$HOME/.bashrc"
 
-echo "Done. Run 'drip enter' to get started."
+echo "Done. Run 'trip enter' to get started."

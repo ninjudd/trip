@@ -15,7 +15,7 @@ use tokio::io::{BufReader, BufWriter};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 
-use crate::common::{drip_dir, lock_path, socket_path, terminal_env_path};
+use crate::common::{lock_path, socket_path, terminal_env_path, trip_dir};
 use protocol::{
     read_frame, write_control, write_frame, Frame, Request, Response, ScreenEntry, SessionInfo,
     SessionState, FRAME_DATA,
@@ -66,7 +66,7 @@ pub async fn run() -> Result<()> {
     // Detach from controlling terminal so closing a tab doesn't kill us
     nix::unistd::setsid().ok();
 
-    let dir = drip_dir();
+    let dir = trip_dir();
     std::fs::create_dir_all(&dir)?;
 
     let lock_file = std::fs::File::create(lock_path())?;
@@ -759,7 +759,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
 
                 match result {
                     StreamExit::SwitchTo(target) => {
-                        // Delayed GC — let drip enter exit before checking
+                        // Delayed GC — let trip enter exit before checking
                         let old_name = current_name.clone();
                         let sessions_gc = sessions.clone();
                         tokio::spawn(async move {

@@ -41,7 +41,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Attach { name } => {
             client::attach::attach(name).await?;
         }
-        Command::Current => match std::env::var("DRIP_SESSION") {
+        Command::Current => match std::env::var("TRIP_SESSION") {
             Ok(name) => println!("{}", name),
             Err(_) => std::process::exit(1),
         },
@@ -74,15 +74,15 @@ async fn main() -> anyhow::Result<()> {
             client::send_input(name, input, raw).await?;
         }
         Command::Return => {
-            let name = std::env::var("DRIP_SESSION")
-                .map_err(|_| anyhow::anyhow!("not in a drip session"))?;
+            let name = std::env::var("TRIP_SESSION")
+                .map_err(|_| anyhow::anyhow!("not in a trip session"))?;
             client::return_session(name).await?;
         }
         Command::Detach { name } => {
             let name = match name {
                 Some(n) => n,
-                None => std::env::var("DRIP_SESSION").map_err(|_| {
-                    anyhow::anyhow!("not in a drip session (use: drip detach <name>)")
+                None => std::env::var("TRIP_SESSION").map_err(|_| {
+                    anyhow::anyhow!("not in a trip session (use: trip detach <name>)")
                 })?,
             };
             client::detach_session(name).await?;
@@ -94,7 +94,7 @@ async fn main() -> anyhow::Result<()> {
             client::shutdown(yes).await?;
         }
         Command::Init => {
-            if let Ok(name) = std::env::var("DRIP_SESSION") {
+            if let Ok(name) = std::env::var("TRIP_SESSION") {
                 let path = common::terminal_env_path(&name);
                 if path.exists() {
                     let content = std::fs::read_to_string(&path).unwrap_or_default();

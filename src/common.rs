@@ -1,20 +1,20 @@
 use std::path::PathBuf;
 
-pub fn drip_dir() -> PathBuf {
+pub fn trip_dir() -> PathBuf {
     let home = std::env::var("HOME").expect("HOME not set");
-    PathBuf::from(home).join(".drip")
+    PathBuf::from(home).join(".trip")
 }
 
 pub fn socket_path() -> PathBuf {
-    drip_dir().join("daemon.sock")
+    trip_dir().join("daemon.sock")
 }
 
 pub fn lock_path() -> PathBuf {
-    drip_dir().join("daemon.lock")
+    trip_dir().join("daemon.lock")
 }
 
 pub fn session_dir(name: &str) -> PathBuf {
-    drip_dir().join("sessions").join(name)
+    trip_dir().join("sessions").join(name)
 }
 
 pub fn screens_dir(name: &str) -> PathBuf {
