@@ -16,6 +16,21 @@ use super::diff;
 use super::protocol::SessionState;
 use super::recording::{self, RecordEvent};
 
+fn resolve_command(cmd: &str, env: &HashMap<String, String>) -> String {
+    if cmd.contains('/') {
+        return cmd.to_string();
+    }
+    if let Some(path) = env.get("PATH") {
+        for dir in path.split(':') {
+            let full = format!("{}/{}", dir, cmd);
+            if std::fs::metadata(&full).is_ok() {
+                return full;
+            }
+        }
+    }
+    cmd.to_string()
+}
+
 pub struct Session {
     pub name: String,
     pub command: String,
@@ -59,6 +74,20 @@ impl Session {
 
         let OpenptyResult { master, slave } = openpty(&winsize, None)?;
 
+        // Resolve command before fork (safe to use std library here)
+        let resolved_command = command
+            .as_ref()
+            .and_then(|parts| parts.first().map(|cmd| resolve_command(cmd, &env)));
+
+        // Build env vars before fork
+        let mut env_vars: Vec<std::ffi::CString> = env
+            .iter()
+            .filter(|(k, _)| k.as_str() != "TERM" && k.as_str() != "TRIP_SESSION")
+            .map(|(k, v)| std::ffi::CString::new(format!("{}={}", k, v)).unwrap())
+            .collect();
+        env_vars.push(std::ffi::CString::new(format!("TRIP_SESSION={}", name)).unwrap());
+        env_vars.push(std::ffi::CString::new("TERM=xterm-256color").unwrap());
+
         match unsafe { unistd::fork()? } {
             ForkResult::Child => {
                 drop(master);
@@ -84,7 +113,8 @@ impl Session {
 
                 let (cmd, args) = match &command {
                     Some(parts) if !parts.is_empty() => {
-                        let cmd = std::ffi::CString::new(parts[0].as_str()).unwrap();
+                        let resolved = resolved_command.unwrap_or_else(|| parts[0].clone());
+                        let cmd = std::ffi::CString::new(resolved).unwrap();
                         let args: Vec<std::ffi::CString> = parts
                             .iter()
                             .map(|a| std::ffi::CString::new(a.as_str()).unwrap())
@@ -92,7 +122,10 @@ impl Session {
                         (cmd, args)
                     }
                     _ => {
-                        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+                        let shell = env
+                            .get("SHELL")
+                            .cloned()
+                            .unwrap_or_else(|| "/bin/sh".into());
                         let cmd = std::ffi::CString::new(shell.as_str()).unwrap();
                         let basename = shell.rsplit('/').next().unwrap_or(&shell);
                         let login_name = std::ffi::CString::new(format!("-{}", basename)).unwrap();
@@ -100,24 +133,6 @@ impl Session {
                         (cmd, args)
                     }
                 };
-
-                let filtered_env_keys: &[&str] = &[
-                    "TERM_PROGRAM",
-                    "TERM_PROGRAM_VERSION",
-                    "COLORTERM",
-                    "LC_TERMINAL",
-                    "LC_TERMINAL_VERSION",
-                ];
-                let mut env_vars: Vec<std::ffi::CString> = std::env::vars()
-                    .filter(|(k, _)| !filtered_env_keys.contains(&k.as_str()))
-                    .filter(|(k, _)| k != "TERM" && k != "TRIP_SESSION")
-                    .map(|(k, v)| std::ffi::CString::new(format!("{}={}", k, v)).unwrap())
-                    .collect();
-                env_vars.push(std::ffi::CString::new(format!("TRIP_SESSION={}", name)).unwrap());
-                env_vars.push(std::ffi::CString::new("TERM=xterm-256color").unwrap());
-                for (key, val) in &env {
-                    env_vars.push(std::ffi::CString::new(format!("{}={}", key, val)).unwrap());
-                }
 
                 eprintln!("trip · {}", name);
                 unistd::execve(&cmd, &args, &env_vars).ok();

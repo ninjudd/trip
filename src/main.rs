@@ -27,6 +27,18 @@ async fn main() -> anyhow::Result<()> {
             };
             client::new_session(name, cmd).await?;
         }
+        Command::Wrap { name, command } => {
+            let name = match name {
+                Some(n) => n,
+                None => client::derive_session_name()?,
+            };
+            let cmd = if command.is_empty() {
+                None
+            } else {
+                Some(command)
+            };
+            client::wrap::wrap(name, cmd).await?;
+        }
         Command::Create { name, command } => {
             let cmd = if command.is_empty() {
                 None
@@ -35,8 +47,8 @@ async fn main() -> anyhow::Result<()> {
             };
             client::create_session(name, cmd).await?;
         }
-        Command::Ls => {
-            client::list_sessions().await?;
+        Command::Ls { all } => {
+            client::list_sessions(all).await?;
         }
         Command::Attach { name } => {
             client::attach::attach(name).await?;

@@ -29,6 +29,16 @@ pub enum Command {
         command: Vec<String>,
     },
 
+    /// Wrap a command with JSONL protocol (stdin/stdout become structured events)
+    Wrap {
+        /// Session name (derived from workspace if omitted)
+        name: Option<String>,
+
+        /// Command to run (defaults to $SHELL)
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
+
     /// Create a session without attaching
     Create {
         /// Session name
@@ -40,7 +50,11 @@ pub enum Command {
     },
 
     /// List sessions
-    Ls,
+    Ls {
+        /// Show all sessions including hidden background ones
+        #[arg(short, long)]
+        all: bool,
+    },
 
     /// Attach to a session
     Attach {

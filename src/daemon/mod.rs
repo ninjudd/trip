@@ -183,7 +183,6 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             let sessions = sessions.lock().await;
             let list: Vec<SessionInfo> = sessions
                 .values()
-                .filter(|s| !is_numbered_session(&s.name) || s.client_count > 0)
                 .map(|s| {
                     let fg_pid = procinfo::get_foreground_pid(s.master_fd);
                     let cwd = fg_pid.and_then(procinfo::get_cwd);

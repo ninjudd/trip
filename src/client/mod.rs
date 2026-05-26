@@ -1,5 +1,6 @@
 pub mod attach;
 pub mod launch;
+pub mod wrap;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -9,19 +10,8 @@ use tokio::io::{BufReader, BufWriter};
 
 use crate::daemon::protocol::{read_frame, write_control, Frame, Request, Response, SessionState};
 
-const TERMINAL_ENV_VARS: &[&str] = &[
-    "TERM_PROGRAM",
-    "TERM_PROGRAM_VERSION",
-    "COLORTERM",
-    "LC_TERMINAL",
-    "LC_TERMINAL_VERSION",
-];
-
 pub fn terminal_env() -> HashMap<String, String> {
-    TERMINAL_ENV_VARS
-        .iter()
-        .filter_map(|&key| std::env::var(key).ok().map(|val| (key.to_string(), val)))
-        .collect()
+    std::env::vars().collect()
 }
 
 fn read_yn() -> bool {
@@ -80,7 +70,7 @@ pub fn derive_session_name() -> Result<String> {
     }
 }
 
-async fn get_session_list() -> Result<Vec<crate::daemon::protocol::SessionInfo>> {
+pub async fn get_session_list() -> Result<Vec<crate::daemon::protocol::SessionInfo>> {
     match launch::try_connect().await {
         Ok(stream) => {
             let (reader, writer) = stream.into_split();
@@ -102,7 +92,16 @@ async fn get_session_list() -> Result<Vec<crate::daemon::protocol::SessionInfo>>
     }
 }
 
-fn next_available_name(sessions: &[crate::daemon::protocol::SessionInfo], base: &str) -> String {
+fn is_numbered_session(name: &str) -> bool {
+    name.rsplit_once('.')
+        .map(|(_, suffix)| suffix.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or(false)
+}
+
+pub fn next_available_name(
+    sessions: &[crate::daemon::protocol::SessionInfo],
+    base: &str,
+) -> String {
     let mut n = 1;
     loop {
         let candidate = format!("{}.{}", base, n);
@@ -230,7 +229,7 @@ pub async fn create_session(name: String, command: Option<Vec<String>>) -> Resul
     Ok(())
 }
 
-pub async fn list_sessions() -> Result<()> {
+pub async fn list_sessions(all: bool) -> Result<()> {
     let stream = match launch::try_connect().await {
         Ok(s) => s,
         Err(_) => {
@@ -250,6 +249,14 @@ pub async fn list_sessions() -> Result<()> {
             let response: Response = serde_json::from_slice(&payload)?;
             match response {
                 Response::SessionList { sessions } => {
+                    let sessions: Vec<_> = if all {
+                        sessions
+                    } else {
+                        sessions
+                            .into_iter()
+                            .filter(|s| !is_numbered_session(&s.name) || s.attached)
+                            .collect()
+                    };
                     if sessions.is_empty() {
                         println!("no sessions");
                         return Ok(());
