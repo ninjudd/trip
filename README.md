@@ -7,8 +7,13 @@ Drip is a tiny daemon that owns your terminal sessions so they survive when you 
 ## Install
 
 ```
-cargo build --release
-cp target/release/drip ~/bin/
+./install.sh
+```
+
+For development (symlinks debug build so `cargo build` updates it instantly):
+
+```
+./install.sh --dev
 ```
 
 ## Quick start
