@@ -20,71 +20,6 @@ use protocol::{
 };
 use session::{RecordEvent, Session, SessionCommand};
 
-fn diff_inserted_lines(old: &str, new: &str) -> Vec<String> {
-    let old_lines: Vec<&str> = old.lines().collect();
-    let new_lines: Vec<&str> = new.lines().collect();
-
-    // Build LCS table
-    let m = old_lines.len();
-    let n = new_lines.len();
-    let mut dp = vec![vec![0u32; n + 1]; m + 1];
-    for i in 1..=m {
-        for j in 1..=n {
-            if old_lines[i - 1] == new_lines[j - 1] {
-                dp[i][j] = dp[i - 1][j - 1] + 1;
-            } else {
-                dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]);
-            }
-        }
-    }
-
-    // Backtrack to find insertions (lines in new but not matched in old)
-    let mut inserted = Vec::new();
-    let mut i = m;
-    let mut j = n;
-    while i > 0 && j > 0 {
-        if old_lines[i - 1] == new_lines[j - 1] {
-            i -= 1;
-            j -= 1;
-        } else if dp[i - 1][j] > dp[i][j - 1] {
-            // Deletion — skip
-            i -= 1;
-        } else if dp[i][j - 1] > dp[i - 1][j] {
-            // Insertion — this line is new
-            inserted.push(new_lines[j - 1].to_string());
-            j -= 1;
-        } else {
-            // Modification (line changed in place) — suppress both
-            i -= 1;
-            j -= 1;
-        }
-    }
-    while j > 0 {
-        inserted.push(new_lines[j - 1].to_string());
-        j -= 1;
-    }
-
-    inserted.reverse();
-    inserted
-}
-
-fn filter_screen(text: &str) -> String {
-    let mut out = String::new();
-    let mut prev_empty = false;
-    for line in text.lines() {
-        let empty = line.trim().is_empty();
-        if empty && prev_empty {
-            continue;
-        }
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str(line);
-        prev_empty = empty;
-    }
-    out
-}
-
 fn format_events(events: &[RecordEvent], raw: bool) -> String {
     if raw {
         events
@@ -95,27 +30,16 @@ fn format_events(events: &[RecordEvent], raw: bool) -> String {
             + if events.is_empty() { "" } else { "\n" }
     } else {
         let mut out = String::new();
-        let mut last_filtered = String::new();
         for event in events {
             if let RecordEvent::Screen { t: _, text } = event {
-                let filtered = filter_screen(text);
-                if filtered == last_filtered {
-                    continue;
-                }
-                let added = diff_inserted_lines(&last_filtered, &filtered);
-                if added.is_empty() {
-                    last_filtered = filtered;
-                    continue;
-                }
                 if !out.is_empty() {
                     out.push('\n');
                 }
-                out.push_str(&added.join("\n"));
+                out.push_str(text);
                 out.push('\n');
-                last_filtered = filtered;
             }
         }
-        filter_screen(&out)
+        out
     }
 }
 
@@ -273,56 +197,49 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
         }
 
         Request::ListScreens { name } => {
-            let result = {
-                let sessions = sessions.lock().await;
-                sessions.get(&name).map(|s| {
-                    let rec = s.recording.lock().unwrap();
-                    rec.screen_events()
-                        .iter()
-                        .enumerate()
-                        .map(|(i, e)| {
-                            let (t, lines) = match e {
-                                RecordEvent::Screen { t, text } => (*t, text.lines().count()),
-                                _ => (0.0, 0),
-                            };
-                            ScreenEntry { index: i, timestamp: format_timestamp(t), lines }
-                        })
-                        .collect::<Vec<_>>()
-                })
-            };
-            match result {
-                Some(screens) => {
-                    write_control(&mut writer, &Response::ScreenList { screens }).await?;
-                }
-                None => {
-                    write_control(&mut writer, &Response::Error {
-                        message: format!("session '{}' not found", name),
-                    }).await?;
-                }
+            let dir = crate::common::screens_dir(&name);
+            if !dir.exists() {
+                write_control(&mut writer, &Response::Error {
+                    message: format!("session '{}' not found", name),
+                }).await?;
+            } else {
+                let mut entries: Vec<_> = std::fs::read_dir(&dir)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().map(|x| x == "txt").unwrap_or(false))
+                    .collect();
+                entries.sort_by_key(|e| e.file_name());
+                let screens: Vec<ScreenEntry> = entries
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| {
+                        let content = std::fs::read_to_string(e.path()).unwrap_or_default();
+                        let ts = e.metadata()
+                            .and_then(|m| m.modified())
+                            .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64())
+                            .unwrap_or(0.0);
+                        ScreenEntry {
+                            index: i,
+                            timestamp: format_timestamp(ts),
+                            lines: content.lines().count(),
+                        }
+                    })
+                    .collect();
+                write_control(&mut writer, &Response::ScreenList { screens }).await?;
             }
         }
 
         Request::GetScreenAt { name, index } => {
-            let result = {
-                let sessions = sessions.lock().await;
-                sessions.get(&name).map(|s| {
-                    let rec = s.recording.lock().unwrap();
-                    let events = rec.screen_events();
-                    events.get(index).cloned()
-                })
-            };
-            match result {
-                Some(Some(RecordEvent::Screen { text, .. })) => {
-                    write_control(&mut writer, &Response::ScreenData { content: text }).await?;
+            let dir = crate::common::screens_dir(&name);
+            let path = dir.join(format!("{:04}.txt", index));
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    write_control(&mut writer, &Response::ScreenData { content }).await?;
                 }
-                Some(_) => {
+                Err(_) => {
                     write_control(&mut writer, &Response::Error {
                         message: format!("screen {} not found", index),
-                    }).await?;
-                }
-                None => {
-                    write_control(&mut writer, &Response::Error {
-                        message: format!("session '{}' not found", name),
                     }).await?;
                 }
             }
@@ -393,63 +310,65 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
         }
 
         Request::GetLog { name, raw, follow, since } => {
-            let (events, output_rx) = {
-                let sessions = sessions.lock().await;
-                match sessions.get(&name) {
-                    Some(s) => {
-                        let rec = s.recording.lock().unwrap();
-                        let events = match since {
-                            Some(ts) => rec.events_since(ts),
-                            None => rec.all_events(),
-                        };
-                        let rx = if follow { Some(s.output_tx.subscribe()) } else { None };
-                        (events, rx)
-                    }
-                    None => {
-                        write_control(&mut writer, &Response::Error {
-                            message: format!("session '{}' not found", name),
-                        }).await?;
-                        return Ok(());
-                    }
-                }
+            let log_path = crate::common::log_path(&name);
+
+            // Read existing log from disk
+            let events = if log_path.exists() {
+                let content = std::fs::read_to_string(&log_path).unwrap_or_default();
+                content.lines()
+                    .filter_map(|line| serde_json::from_str::<RecordEvent>(line).ok())
+                    .filter(|e| since.map_or(true, |ts| e.timestamp() >= ts))
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
             };
 
-            // Send existing events
             let content = format_events(&events, raw);
-            let mut last_ts = events.last().map(|e| e.timestamp()).unwrap_or(0.0);
             if !content.is_empty() {
                 write_control(&mut writer, &Response::LogData { content }).await?;
             }
 
-            // If follow, stream new events
-            if let Some(mut rx) = output_rx {
-                loop {
-                    match rx.recv().await {
-                        Ok(_) => {
-                            // Wait briefly for screen events to be generated
-                            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-                            let new_events = {
-                                let sessions = sessions.lock().await;
-                                match sessions.get(&name) {
-                                    Some(s) => {
-                                        let rec = s.recording.lock().unwrap();
-                                        rec.events_since(last_ts + 0.0001)
+            if follow {
+                // Follow by watching log file for new lines
+                let output_rx = {
+                    let sessions = sessions.lock().await;
+                    match sessions.get(&name) {
+                        Some(s) => Some(s.output_tx.subscribe()),
+                        None => None,
+                    }
+                };
+                if let Some(mut rx) = output_rx {
+                    let mut last_size = std::fs::metadata(&log_path)
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                    loop {
+                        match rx.recv().await {
+                            Ok(_) => {
+                                tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+                                let current_size = std::fs::metadata(&log_path)
+                                    .map(|m| m.len())
+                                    .unwrap_or(0);
+                                if current_size > last_size {
+                                    let content = std::fs::read_to_string(&log_path).unwrap_or_default();
+                                    let new_lines: String = content
+                                        .bytes()
+                                        .skip(last_size as usize)
+                                        .map(|b| b as char)
+                                        .collect();
+                                    let new_events: Vec<RecordEvent> = new_lines
+                                        .lines()
+                                        .filter_map(|line| serde_json::from_str(line).ok())
+                                        .collect();
+                                    let formatted = format_events(&new_events, raw);
+                                    if !formatted.is_empty() {
+                                        write_control(&mut writer, &Response::LogData { content: formatted }).await?;
                                     }
-                                    None => break,
-                                }
-                            };
-                            if !new_events.is_empty() {
-                                if let Some(ts) = new_events.last().map(|e| e.timestamp()) {
-                                    last_ts = ts;
-                                }
-                                let content = format_events(&new_events, raw);
-                                if !content.is_empty() {
-                                    write_control(&mut writer, &Response::LogData { content }).await?;
+                                    last_size = current_size;
                                 }
                             }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
             }

@@ -1,9 +1,8 @@
-use std::collections::VecDeque;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use anyhow::Result;
 use nix::libc;
@@ -28,10 +27,9 @@ pub struct Session {
     pub input_tx: mpsc::Sender<SessionCommand>,
     pub detach_notify: Arc<Notify>,
     parser: std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
-    pub recording: Arc<std::sync::Mutex<Recording>>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum RecordEvent {
     #[serde(rename = "output")]
@@ -68,45 +66,85 @@ impl RecordEvent {
     }
 }
 
-pub struct Recording {
-    events: VecDeque<RecordEvent>,
-    total_bytes: usize,
-    max_bytes: usize,
-}
-
-impl Recording {
-    pub fn new(max_bytes: usize) -> Self {
-        Self {
-            events: VecDeque::new(),
-            total_bytes: 0,
-            max_bytes,
+fn append_event(log_path: &std::path::Path, event: &RecordEvent) {
+    if let Ok(line) = serde_json::to_string(event) {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            let _ = writeln!(f, "{}", line);
         }
     }
+}
 
-    pub fn push(&mut self, event: RecordEvent) {
-        let len = event.data_len();
-        self.total_bytes += len;
-        self.events.push_back(event);
-        while self.total_bytes > self.max_bytes {
-            if let Some(old) = self.events.pop_front() {
-                self.total_bytes -= old.data_len();
+fn is_decorative(line: &str) -> bool {
+    let trimmed = line.trim();
+    !trimmed.is_empty() && trimmed.chars().all(|c| matches!(c, '─' | '━' | '═' | '│' | '┃' | '║' | '┌' | '┐' | '└' | '┘' | '├' | '┤' | '┬' | '┴' | '┼' | '╔' | '╗' | '╚' | '╝' | '╠' | '╣' | '╦' | '╩' | '╬' | '▔' | '▁' | '─' | ' '))
+}
+
+fn clean_screen(text: &str) -> String {
+    let mut out = String::new();
+    let mut prev_empty = false;
+    for line in text.lines() {
+        if is_decorative(line) {
+            continue;
+        }
+        let empty = line.trim().is_empty();
+        if empty && prev_empty {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(line);
+        prev_empty = empty;
+    }
+    out
+}
+
+fn diff_inserted_lines(old: &str, new: &str) -> Vec<String> {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    let m = old_lines.len();
+    let n = new_lines.len();
+    let mut dp = vec![vec![0u32; n + 1]; m + 1];
+    for i in 1..=m {
+        for j in 1..=n {
+            if old_lines[i - 1] == new_lines[j - 1] {
+                dp[i][j] = dp[i - 1][j - 1] + 1;
             } else {
-                break;
+                dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]);
             }
         }
     }
 
-    pub fn events_since(&self, since: f64) -> Vec<RecordEvent> {
-        self.events.iter().filter(|e| e.timestamp() >= since).cloned().collect()
+    let mut inserted = Vec::new();
+    let mut i = m;
+    let mut j = n;
+    while i > 0 && j > 0 {
+        if old_lines[i - 1] == new_lines[j - 1] {
+            i -= 1;
+            j -= 1;
+        } else if dp[i - 1][j] > dp[i][j - 1] {
+            i -= 1;
+        } else if dp[i][j - 1] > dp[i - 1][j] {
+            inserted.push(new_lines[j - 1].to_string());
+            j -= 1;
+        } else {
+            i -= 1;
+            j -= 1;
+        }
+    }
+    while j > 0 {
+        inserted.push(new_lines[j - 1].to_string());
+        j -= 1;
     }
 
-    pub fn all_events(&self) -> Vec<RecordEvent> {
-        self.events.iter().cloned().collect()
-    }
-
-    pub fn screen_events(&self) -> Vec<RecordEvent> {
-        self.events.iter().filter(|e| matches!(e, RecordEvent::Screen { .. })).cloned().collect()
-    }
+    inserted.reverse();
+    inserted
 }
 
 fn now_ts() -> f64 {
@@ -192,9 +230,6 @@ impl Session {
 
                 let (output_tx, _) = broadcast::channel(256);
                 let (input_tx, input_rx) = mpsc::channel(64);
-                let recording = Arc::new(std::sync::Mutex::new(Recording::new(
-                    crate::common::DEFAULT_SCROLLBACK,
-                )));
 
                 let cmd_str = command
                     .as_ref()
@@ -208,12 +243,16 @@ impl Session {
                     .unwrap()
                     .as_secs();
 
+                // Set up session directories
+                let screens_dir = crate::common::screens_dir(&name);
+                std::fs::create_dir_all(&screens_dir).ok();
+                let log_path = crate::common::log_path(&name);
+
                 // Spawn the PTY I/O task
                 let output_tx_clone = output_tx.clone();
                 let parser_clone = parser.clone();
-                let recording_clone = recording.clone();
                 tokio::spawn(async move {
-                    pty_io_loop(async_fd, input_rx, output_tx_clone, parser_clone, recording_clone).await;
+                    pty_io_loop(async_fd, input_rx, output_tx_clone, parser_clone, screens_dir, log_path).await;
                 });
 
                 Ok(Session {
@@ -228,7 +267,6 @@ impl Session {
                     input_tx,
                     detach_notify: Arc::new(Notify::new()),
                     parser,
-                    recording,
                 })
             }
         }
@@ -265,7 +303,8 @@ async fn pty_io_loop(
     mut input_rx: mpsc::Receiver<SessionCommand>,
     output_tx: broadcast::Sender<Vec<u8>>,
     parser: std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
-    recording: Arc<std::sync::Mutex<Recording>>,
+    screens_dir: std::path::PathBuf,
+    log_path: std::path::PathBuf,
 ) {
     use std::time::Duration;
     use tokio::time::{sleep, Instant};
@@ -275,6 +314,7 @@ async fn pty_io_loop(
     let mut idle_deadline = Box::pin(sleep(Duration::from_secs(86400)));
     let mut snapshot_pending = false;
     let mut last_screen = String::new();
+    let mut screen_seq: u32 = 0;
 
     loop {
         tokio::select! {
@@ -295,13 +335,10 @@ async fn pty_io_loop(
                             Ok(Ok(0)) => break,
                             Ok(Ok(n)) => {
                                 let data = buf[..n].to_vec();
-                                {
-                                    let mut rec = recording.lock().unwrap();
-                                    rec.push(RecordEvent::Output {
-                                        t: now_ts(),
-                                        data: String::from_utf8_lossy(&data).into_owned(),
-                                    });
-                                }
+                                append_event(&log_path, &RecordEvent::Output {
+                                    t: now_ts(),
+                                    data: String::from_utf8_lossy(&data).into_owned(),
+                                });
                                 {
                                     let mut p = parser.lock().unwrap();
                                     p.process(&data);
@@ -332,13 +369,25 @@ async fn pty_io_loop(
                         .collect::<Vec<_>>()
                         .join("\n")
                 };
-                if screen_text != last_screen {
-                    let mut rec = recording.lock().unwrap();
-                    rec.push(RecordEvent::Screen {
-                        t: now_ts(),
-                        text: screen_text.clone(),
-                    });
-                    last_screen = screen_text;
+                let filtered = clean_screen(&screen_text);
+                if filtered != last_screen {
+                    // Write full snapshot to disk
+                    let path = screens_dir.join(format!("{:04}.txt", screen_seq));
+                    std::fs::write(&path, &filtered).ok();
+                    screen_seq += 1;
+
+                    // Compute diff and append to log file
+                    let inserted = diff_inserted_lines(&last_screen, &filtered);
+                    if !inserted.is_empty() {
+                        let diff_text = clean_screen(&inserted.join("\n"));
+                        if !diff_text.trim().is_empty() {
+                            append_event(&log_path, &RecordEvent::Screen {
+                                t: now_ts(),
+                                text: diff_text,
+                            });
+                        }
+                    }
+                    last_screen = filtered;
                 }
                 snapshot_pending = false;
                 idle_deadline.as_mut().reset(Instant::now() + Duration::from_secs(86400));
@@ -347,23 +396,17 @@ async fn pty_io_loop(
             cmd = input_rx.recv() => {
                 match cmd {
                     Some(SessionCommand::Input(data)) => {
-                        {
-                            let mut rec = recording.lock().unwrap();
-                            rec.push(RecordEvent::Input {
-                                t: now_ts(),
-                                data: String::from_utf8_lossy(&data).into_owned(),
-                            });
-                        }
+                        append_event(&log_path, &RecordEvent::Input {
+                            t: now_ts(),
+                            data: String::from_utf8_lossy(&data).into_owned(),
+                        });
                         let fd = master.get_ref().as_raw_fd();
                         unsafe {
                             libc::write(fd, data.as_ptr() as *const _, data.len());
                         }
                     }
                     Some(SessionCommand::Resize(cols, rows)) => {
-                        {
-                            let mut rec = recording.lock().unwrap();
-                            rec.push(RecordEvent::Resize { t: now_ts(), cols, rows });
-                        }
+                        append_event(&log_path, &RecordEvent::Resize { t: now_ts(), cols, rows });
                         let winsize = libc::winsize {
                             ws_row: rows,
                             ws_col: cols,
