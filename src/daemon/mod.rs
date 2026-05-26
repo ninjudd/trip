@@ -110,23 +110,21 @@ async fn reap_children(sessions: Sessions) {
                 match waitpid(session.pid, Some(WaitPidFlag::WNOHANG)) {
                     Ok(WaitStatus::Exited(_, code)) => {
                         session.state = SessionState::Exited(code);
+                        session.detach_notify.notify_waiters();
                     }
                     Ok(WaitStatus::Signaled(_, _, _)) => {
                         session.state = SessionState::Exited(-1);
+                        session.detach_notify.notify_waiters();
                     }
                     _ => {}
                 }
             }
         }
 
-        let should_exit = !sessions.is_empty()
-            && sessions.values().all(|s| {
-                matches!(s.state, SessionState::Exited(_)) && s.client_count == 0
-            });
-
-        if should_exit {
-            sessions.clear();
-        }
+        // Remove exited sessions with no clients
+        sessions.retain(|_, s| {
+            !(matches!(s.state, SessionState::Exited(_)) && s.client_count == 0)
+        });
 
         if sessions.is_empty() {
             let _ = std::fs::remove_file(socket_path());
