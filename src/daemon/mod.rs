@@ -755,12 +755,24 @@ fn strip_sgr(data: &[u8]) -> Vec<u8> {
     out
 }
 
+const TERMINAL_ENV_KEYS: &[&str] = &[
+    "TERM_PROGRAM",
+    "TERM_PROGRAM_VERSION",
+    "COLORTERM",
+    "LC_TERMINAL",
+    "LC_TERMINAL_VERSION",
+];
+
 fn write_terminal_env(name: &str, env: &HashMap<String, String>) {
     let path = terminal_env_path(name);
-    let content: String = env
-        .iter()
-        .map(|(k, v)| format!("export {}={}\n", k, shell_escape(v)))
-        .collect();
+    let mut content = String::new();
+    for &key in TERMINAL_ENV_KEYS {
+        if let Some(val) = env.get(key) {
+            content.push_str(&format!("export {}={}\n", key, shell_escape(val)));
+        } else {
+            content.push_str(&format!("unset {}\n", key));
+        }
+    }
     let tmp = path.with_extension("tmp");
     if std::fs::write(&tmp, &content).is_ok() {
         std::fs::rename(&tmp, &path).ok();

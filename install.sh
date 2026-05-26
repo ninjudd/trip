@@ -15,24 +15,36 @@ fi
 
 HOOK='# drip shell hook
 if [ -n "$DRIP_SESSION" ]; then
-  _drip_precmd() { eval "$(drip init)"; }
+  _drip_preexec() { eval "$(drip init)"; }
   if [ -n "$ZSH_VERSION" ]; then
-    precmd_functions+=(_drip_precmd)
+    preexec_functions+=(_drip_preexec)
   elif [ -n "$BASH_VERSION" ]; then
-    PROMPT_COMMAND="_drip_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+    trap '"'"'eval "$(drip init)"'"'"' DEBUG
   fi
 fi'
 
 MARKER="# drip shell hook"
 
+resolve_path() {
+    # Follow symlinks portably (macOS lacks readlink -f)
+    target="$1"
+    while [ -L "$target" ]; do
+        target="$(readlink "$target")"
+    done
+    echo "$target"
+}
+
+remove_old_hook() {
+    file="$(resolve_path "$1")"
+    [ -f "$file" ] || return 0
+    if grep -qF "$MARKER" "$file"; then
+        sed -i '' "/$MARKER/,/^$/d" "$file"
+    fi
+}
+
 install_hook() {
     file="$1"
-    if [ -f "$file" ]; then
-        if grep -qF "$MARKER" "$file"; then
-            echo "Shell hook already in $file"
-            return
-        fi
-    fi
+    remove_old_hook "$file"
     printf '\n%s\n' "$HOOK" >> "$file"
     echo "Added shell hook to $file"
 }
