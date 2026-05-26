@@ -160,11 +160,13 @@ async fn get_exit_code(name: &str) -> i32 {
 
 pub async fn wrap(base_name: String, command: Option<Vec<String>>) -> Result<()> {
     let sessions = super::get_session_list().await?;
-    let name = super::next_available_name(&sessions, &base_name);
-    eprintln!("session: {}", name);
+    let existing = sessions.iter().any(|s| s.name == base_name);
 
-    // Create session
-    {
+    let name = if existing && command.is_none() {
+        base_name.clone()
+    } else {
+        let name = super::next_available_name(&sessions, &base_name);
+
         let stream = super::launch::connect().await?;
         let (reader, writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
@@ -193,7 +195,10 @@ pub async fn wrap(base_name: String, command: Option<Vec<String>>) -> Result<()>
             }
             _ => anyhow::bail!("unexpected frame"),
         }
-    }
+
+        name
+    };
+    eprintln!("session: {}", name);
 
     // Attach to session (retry briefly in case of race with session startup)
     let (mut reader, mut writer) = {
