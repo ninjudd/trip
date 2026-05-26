@@ -701,6 +701,7 @@ async fn stream_session(
 ) -> Result<(StreamExit, SocketReader, SocketWriter)> {
     let mut was_readonly = readonly_flag.load(std::sync::atomic::Ordering::Relaxed);
     let mut client_size: Option<(u16, u16)> = Some((initial_cols, initial_rows));
+    let mut takeover_pending = false;
     loop {
         let readonly = readonly_flag.load(std::sync::atomic::Ordering::Relaxed);
         if readonly && !was_readonly {
@@ -757,6 +758,32 @@ async fn stream_session(
                     Some(Frame::Data(data)) => {
                         if !readonly_flag.load(std::sync::atomic::Ordering::Relaxed) {
                             let _ = input_tx.send(SessionCommand::Input(data)).await;
+                        } else if takeover_pending {
+                            takeover_pending = false;
+                            if data.first() == Some(&b'y') || data.first() == Some(&b'Y') {
+                                // Do the takeover
+                                let mut sessions = sessions.lock().await;
+                                if let Some(session) = sessions.get_mut(&session_name) {
+                                    if let Some(flag) = session.writer_readonly_flag.take() {
+                                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                                        session.writer_stack.push(flag);
+                                    }
+                                    session.writer_attached = true;
+                                    session.writer_readonly_flag = Some(readonly_flag.clone());
+                                    readonly_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                                    if let Some((cols, rows)) = client_size {
+                                        let _ = input_tx.send(SessionCommand::Resize(cols, rows)).await;
+                                    }
+                                    let screen = session.screen_contents();
+                                    drop(sessions);
+                                    write_frame(&mut writer, FRAME_DATA, &screen).await?;
+                                }
+                            } else {
+                                write_frame(&mut writer, FRAME_DATA, b"\r\n").await?;
+                            }
+                        } else {
+                            takeover_pending = true;
+                            write_frame(&mut writer, FRAME_DATA, b"\r\n[read-only] take over? (y/n) ").await?;
                         }
                     }
                     Some(Frame::Resize { cols, rows }) => {
