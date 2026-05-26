@@ -255,42 +255,68 @@ pub async fn list_sessions() -> Result<()> {
                         return Ok(());
                     }
                     let current = std::env::var("DRIP_SESSION").ok();
-                    for s in sessions {
-                        let marker = if current.as_deref() == Some(&s.name) {
-                            "* "
-                        } else {
-                            "  "
-                        };
-                        let state = match s.state {
-                            SessionState::Running => {
-                                if s.attached {
-                                    "attached"
-                                } else {
-                                    "detached"
+                    let home = std::env::var("HOME").unwrap_or_default();
+                    let rows: Vec<_> = sessions
+                        .iter()
+                        .map(|s| {
+                            let marker = if current.as_deref() == Some(&s.name) {
+                                "* "
+                            } else {
+                                "  "
+                            };
+                            let state = match s.state {
+                                SessionState::Running => {
+                                    if s.attached {
+                                        "attached"
+                                    } else {
+                                        "detached"
+                                    }
                                 }
-                            }
-                            SessionState::Exited(code) => {
-                                if code == 0 {
-                                    "exited"
-                                } else {
-                                    "failed"
+                                SessionState::Exited(code) => {
+                                    if code == 0 {
+                                        "exited"
+                                    } else {
+                                        "failed"
+                                    }
                                 }
-                            }
-                        };
+                            };
+                            let cmd = s.fg_command.as_deref().unwrap_or(&s.command);
+                            let branch = s.git_branch.as_deref().unwrap_or("-");
+                            let cwd = s.cwd.as_deref().unwrap_or("");
+                            let cwd = if !home.is_empty() && cwd.starts_with(&home) {
+                                format!("~{}", &cwd[home.len()..])
+                            } else {
+                                cwd.to_string()
+                            };
+                            (
+                                marker.to_string(),
+                                s.name.clone(),
+                                state.to_string(),
+                                cmd.to_string(),
+                                branch.to_string(),
+                                cwd,
+                            )
+                        })
+                        .collect();
 
-                        let cmd = s.fg_command.as_deref().unwrap_or(&s.command);
-                        let branch = s.git_branch.as_deref().unwrap_or("-");
-                        let home = std::env::var("HOME").unwrap_or_default();
-                        let cwd = s.cwd.as_deref().unwrap_or("");
-                        let cwd = if !home.is_empty() && cwd.starts_with(&home) {
-                            format!("~{}", &cwd[home.len()..])
-                        } else {
-                            cwd.to_string()
-                        };
+                    let nw = rows.iter().map(|r| r.1.len()).max().unwrap_or(0);
+                    let sw = rows.iter().map(|r| r.2.len()).max().unwrap_or(0);
+                    let cw = rows.iter().map(|r| r.3.len()).max().unwrap_or(0);
+                    let bw = rows.iter().map(|r| r.4.len()).max().unwrap_or(0);
 
+                    for (marker, name, state, cmd, branch, cwd) in &rows {
                         println!(
-                            "{}{:<12} {:<10} {:<16} {:<16} {}",
-                            marker, s.name, state, cmd, branch, &cwd
+                            "{}{:<nw$}  {:<sw$}  {:<cw$}  {:<bw$}  {}",
+                            marker,
+                            name,
+                            state,
+                            cmd,
+                            branch,
+                            cwd,
+                            nw = nw,
+                            sw = sw,
+                            cw = cw,
+                            bw = bw,
                         );
                     }
                 }
