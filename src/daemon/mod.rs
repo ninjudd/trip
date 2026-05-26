@@ -635,6 +635,9 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                     write_control(&mut writer, &Response::Attached { readonly }).await?;
                     first = false;
                 }
+                // Set tab title to session name
+                let title = format!("\x1b]1;{}\x07", current_name);
+                write_frame(&mut writer, FRAME_DATA, title.as_bytes()).await?;
                 let screen_data = if readonly {
                     strip_sgr(&screen_data)
                 } else {
