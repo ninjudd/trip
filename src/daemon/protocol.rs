@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -12,6 +14,8 @@ pub enum Request {
         name: String,
         command: Option<Vec<String>>,
         cwd: String,
+        #[serde(default)]
+        env: HashMap<String, String>,
     },
     ListSessions,
     Attach {
@@ -48,6 +52,8 @@ pub enum Request {
         to: String,
         command: Option<Vec<String>>,
         cwd: String,
+        #[serde(default)]
+        env: HashMap<String, String>,
     },
     DetachSession {
         name: String,

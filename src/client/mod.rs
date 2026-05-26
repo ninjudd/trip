@@ -1,12 +1,28 @@
 pub mod attach;
 pub mod launch;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
 use tokio::io::{BufReader, BufWriter};
 
 use crate::daemon::protocol::{read_frame, write_control, Frame, Request, Response, SessionState};
+
+const TERMINAL_ENV_VARS: &[&str] = &[
+    "TERM_PROGRAM",
+    "TERM_PROGRAM_VERSION",
+    "COLORTERM",
+    "LC_TERMINAL",
+    "LC_TERMINAL_VERSION",
+];
+
+fn terminal_env() -> HashMap<String, String> {
+    TERMINAL_ENV_VARS
+        .iter()
+        .filter_map(|&key| std::env::var(key).ok().map(|val| (key.to_string(), val)))
+        .collect()
+}
 
 fn read_yn() -> bool {
     use nix::sys::termios::{self, LocalFlags, SetArg};
@@ -124,6 +140,7 @@ pub async fn enter(name: Option<String>, command: Option<Vec<String>>) -> Result
                 to: name,
                 command,
                 cwd,
+                env: terminal_env(),
             },
         )
         .await?;
@@ -183,7 +200,16 @@ pub async fn create_session(name: String, command: Option<Vec<String>>) -> Resul
     let mut writer = BufWriter::new(writer);
 
     let cwd = std::env::current_dir()?.to_string_lossy().to_string();
-    write_control(&mut writer, &Request::CreateSession { name, command, cwd }).await?;
+    write_control(
+        &mut writer,
+        &Request::CreateSession {
+            name,
+            command,
+            cwd,
+            env: terminal_env(),
+        },
+    )
+    .await?;
 
     match read_frame(&mut reader).await? {
         Some(Frame::Control(payload)) => {

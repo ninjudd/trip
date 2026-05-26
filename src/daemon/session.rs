@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -46,6 +47,7 @@ impl Session {
         cwd: String,
         cols: u16,
         rows: u16,
+        env: HashMap<String, String>,
     ) -> Result<Self> {
         let winsize = nix::pty::Winsize {
             ws_row: rows,
@@ -64,6 +66,9 @@ impl Session {
                 std::env::set_current_dir(&cwd).ok();
                 std::env::set_var("DRIP_SESSION", &name);
                 std::env::set_var("TERM", "xterm-256color");
+                for (key, val) in &env {
+                    std::env::set_var(key, val);
+                }
 
                 // Ensure the slave has ONLCR set so \n → \r\n
                 if let Ok(mut attrs) = termios::tcgetattr(&slave) {

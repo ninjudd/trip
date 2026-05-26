@@ -153,7 +153,12 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
     };
 
     match request {
-        Request::CreateSession { name, command, cwd } => {
+        Request::CreateSession {
+            name,
+            command,
+            cwd,
+            env,
+        } => {
             let mut sessions = sessions.lock().await;
             if sessions.contains_key(&name) {
                 write_control(
@@ -166,7 +171,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                 return Ok(());
             }
 
-            let session = Session::spawn(name.clone(), command, cwd, 80, 24)?;
+            let session = Session::spawn(name.clone(), command, cwd, 80, 24, env)?;
             let pid = session.pid.as_raw() as u32;
             sessions.insert(name.clone(), session);
 
@@ -446,11 +451,12 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             to,
             command,
             cwd,
+            env,
         } => {
             let mut sessions = sessions.lock().await;
 
             if !sessions.contains_key(&to) {
-                match Session::spawn(to.clone(), command, cwd, 80, 24) {
+                match Session::spawn(to.clone(), command, cwd, 80, 24, env) {
                     Ok(session) => {
                         sessions.insert(to.clone(), session);
                     }
