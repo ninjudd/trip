@@ -92,6 +92,7 @@ impl Session {
                     }
                 };
 
+                eprintln!("drip · {}", name);
                 unistd::execvp(&cmd, &args).ok();
                 std::process::exit(1);
             }
