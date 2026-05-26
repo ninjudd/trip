@@ -63,6 +63,9 @@ fn format_timestamp(t: f64) -> String {
 type Sessions = Arc<Mutex<HashMap<String, Session>>>;
 
 pub async fn run() -> Result<()> {
+    // Detach from controlling terminal so closing a tab doesn't kill us
+    nix::unistd::setsid().ok();
+
     let dir = drip_dir();
     std::fs::create_dir_all(&dir)?;
 
