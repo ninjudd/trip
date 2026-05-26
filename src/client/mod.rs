@@ -21,11 +21,6 @@ pub fn terminal_env() -> HashMap<String, String> {
     TERMINAL_ENV_VARS
         .iter()
         .filter_map(|&key| std::env::var(key).ok().map(|val| (key.to_string(), val)))
-        .filter(|(key, val)| !(key == "TERM_PROGRAM" && val == "Apple_Terminal"))
-        .filter(|(key, _)| {
-            key != "TERM_PROGRAM_VERSION"
-                || std::env::var("TERM_PROGRAM").ok().as_deref() != Some("Apple_Terminal")
-        })
         .collect()
 }
 
