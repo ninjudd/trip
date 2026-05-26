@@ -169,6 +169,45 @@ impl Session {
     }
 }
 
+fn take_snapshot(
+    parser: &std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
+    screens_dir: &std::path::Path,
+    log_path: &std::path::Path,
+    screen_seq: &mut u32,
+    last_screen: &mut String,
+) {
+    let screen_text = {
+        let p = parser.lock().unwrap();
+        let screen = p.screen();
+        let (cursor_row, _) = screen.cursor_position();
+        let text = screen.contents();
+        text.lines()
+            .enumerate()
+            .filter(|(i, _)| *i != cursor_row as usize)
+            .map(|(_, l)| l)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let filtered = recording::clean_screen(&screen_text);
+    if filtered != *last_screen {
+        let path = screens_dir.join(format!("{:04}.txt", *screen_seq));
+        std::fs::write(&path, &filtered).ok();
+        *screen_seq += 1;
+
+        let inserted = diff::inserted_lines(last_screen, &filtered);
+        if !inserted.is_empty() {
+            let diff_text = recording::clean_screen(&inserted.join("\n"));
+            if !diff_text.trim().is_empty() {
+                recording::append_event(log_path, &RecordEvent::Screen {
+                    t: recording::now_ts(),
+                    text: diff_text,
+                });
+            }
+        }
+        *last_screen = filtered;
+    }
+}
+
 async fn pty_io_loop(
     master: AsyncFd<OwnedFd>,
     mut input_rx: mpsc::Receiver<SessionCommand>,
@@ -182,7 +221,9 @@ async fn pty_io_loop(
 
     let mut buf = vec![0u8; 4096];
     let idle_duration = Duration::from_millis(500);
+    let max_interval = Duration::from_secs(5);
     let mut idle_deadline = Box::pin(sleep(Duration::from_secs(86400)));
+    let mut max_deadline = Box::pin(sleep(Duration::from_secs(86400)));
     let mut snapshot_pending = false;
     let mut last_screen = String::new();
     let mut screen_seq: u32 = 0;
@@ -215,8 +256,11 @@ async fn pty_io_loop(
                                     p.process(&data);
                                 }
                                 let _ = output_tx.send(data);
-                                // Reset idle timer
+                                // Reset idle timer; start max timer if not already running
                                 idle_deadline.as_mut().reset(Instant::now() + idle_duration);
+                                if !snapshot_pending {
+                                    max_deadline.as_mut().reset(Instant::now() + max_interval);
+                                }
                                 snapshot_pending = true;
                             }
                             Ok(Err(_)) => break,
@@ -228,40 +272,17 @@ async fn pty_io_loop(
             }
 
             _ = &mut idle_deadline, if snapshot_pending => {
-                let screen_text = {
-                    let p = parser.lock().unwrap();
-                    let screen = p.screen();
-                    let (cursor_row, _) = screen.cursor_position();
-                    let text = screen.contents();
-                    text.lines()
-                        .enumerate()
-                        .filter(|(i, _)| *i != cursor_row as usize)
-                        .map(|(_, l)| l)
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                };
-                let filtered = recording::clean_screen(&screen_text);
-                if filtered != last_screen {
-                    // Write full snapshot to disk
-                    let path = screens_dir.join(format!("{:04}.txt", screen_seq));
-                    std::fs::write(&path, &filtered).ok();
-                    screen_seq += 1;
-
-                    // Compute diff and append to log file
-                    let inserted = diff::inserted_lines(&last_screen, &filtered);
-                    if !inserted.is_empty() {
-                        let diff_text = recording::clean_screen(&inserted.join("\n"));
-                        if !diff_text.trim().is_empty() {
-                            recording::append_event(&log_path, &RecordEvent::Screen {
-                                t: recording::now_ts(),
-                                text: diff_text,
-                            });
-                        }
-                    }
-                    last_screen = filtered;
-                }
+                take_snapshot(&parser, &screens_dir, &log_path, &mut screen_seq, &mut last_screen);
                 snapshot_pending = false;
                 idle_deadline.as_mut().reset(Instant::now() + Duration::from_secs(86400));
+                max_deadline.as_mut().reset(Instant::now() + Duration::from_secs(86400));
+            }
+
+            _ = &mut max_deadline, if snapshot_pending => {
+                take_snapshot(&parser, &screens_dir, &log_path, &mut screen_seq, &mut last_screen);
+                snapshot_pending = false;
+                idle_deadline.as_mut().reset(Instant::now() + Duration::from_secs(86400));
+                max_deadline.as_mut().reset(Instant::now() + Duration::from_secs(86400));
             }
 
             cmd = input_rx.recv() => {
