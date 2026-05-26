@@ -318,7 +318,15 @@ async fn pty_io_loop(
             _ = &mut idle_deadline, if snapshot_pending => {
                 let screen_text = {
                     let p = parser.lock().unwrap();
-                    p.screen().contents()
+                    let screen = p.screen();
+                    let (cursor_row, _) = screen.cursor_position();
+                    let text = screen.contents();
+                    text.lines()
+                        .enumerate()
+                        .filter(|(i, _)| *i != cursor_row as usize)
+                        .map(|(_, l)| l)
+                        .collect::<Vec<_>>()
+                        .join("\n")
                 };
                 if screen_text != last_screen {
                     let mut rec = recording.lock().unwrap();

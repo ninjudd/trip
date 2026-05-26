@@ -20,6 +20,63 @@ use protocol::{
 };
 use session::{RecordEvent, Session, SessionCommand};
 
+fn diff_inserted_lines(old: &str, new: &str) -> Vec<String> {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    // Build LCS table
+    let m = old_lines.len();
+    let n = new_lines.len();
+    let mut dp = vec![vec![0u32; n + 1]; m + 1];
+    for i in 1..=m {
+        for j in 1..=n {
+            if old_lines[i - 1] == new_lines[j - 1] {
+                dp[i][j] = dp[i - 1][j - 1] + 1;
+            } else {
+                dp[i][j] = dp[i - 1][j].max(dp[i][j - 1]);
+            }
+        }
+    }
+
+    // Backtrack to find insertions (lines in new but not matched in old)
+    let mut inserted = Vec::new();
+    let mut i = m;
+    let mut j = n;
+    while j > 0 {
+        if i > 0 && old_lines[i - 1] == new_lines[j - 1] {
+            i -= 1;
+            j -= 1;
+        } else if i > 0 && dp[i - 1][j] >= dp[i][j - 1] {
+            // Deletion (old line removed) — skip
+            i -= 1;
+        } else {
+            // Insertion — this line is new
+            inserted.push(new_lines[j - 1].to_string());
+            j -= 1;
+        }
+    }
+
+    inserted.reverse();
+    inserted
+}
+
+fn filter_screen(text: &str) -> String {
+    let mut out = String::new();
+    let mut prev_empty = false;
+    for line in text.lines() {
+        let empty = line.trim().is_empty();
+        if empty && prev_empty {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(line);
+        prev_empty = empty;
+    }
+    out
+}
+
 fn format_events(events: &[RecordEvent], raw: bool) -> String {
     if raw {
         events
@@ -30,30 +87,27 @@ fn format_events(events: &[RecordEvent], raw: bool) -> String {
             + if events.is_empty() { "" } else { "\n" }
     } else {
         let mut out = String::new();
-        let mut last_text: Option<String> = None;
+        let mut last_filtered = String::new();
         for event in events {
-            if let RecordEvent::Screen { t, text } = event {
-                if last_text.as_ref() == Some(text) {
+            if let RecordEvent::Screen { t: _, text } = event {
+                let filtered = filter_screen(text);
+                if filtered == last_filtered {
                     continue;
                 }
-                let trimmed: String = text
-                    .lines()
-                    .filter(|l| !l.trim().is_empty())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if trimmed.is_empty() {
+                let added = diff_inserted_lines(&last_filtered, &filtered);
+                if added.is_empty() {
+                    last_filtered = filtered;
                     continue;
                 }
                 if !out.is_empty() {
                     out.push('\n');
                 }
-                out.push_str(&format!("--- {} ---\n", format_timestamp(*t)));
-                out.push_str(&trimmed);
+                out.push_str(&added.join("\n"));
                 out.push('\n');
-                last_text = Some(text.clone());
+                last_filtered = filtered;
             }
         }
-        out
+        filter_screen(&out)
     }
 }
 
