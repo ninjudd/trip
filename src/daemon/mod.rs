@@ -512,7 +512,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             write_frame(&mut writer, FRAME_DATA, &screen_data).await?;
 
             let result =
-                stream_session(reader, writer, &mut output_rx, &input_tx, &detach_notify, &readonly_flag, sessions.clone(), name.clone()).await;
+                stream_session(reader, writer, &mut output_rx, &input_tx, &detach_notify, &readonly_flag, sessions.clone(), name.clone(), cols, rows).await;
 
             let mut sessions = sessions.lock().await;
             if let Some(session) = sessions.get_mut(&name) {
@@ -584,12 +584,14 @@ async fn stream_session(
     readonly_flag: &Arc<std::sync::atomic::AtomicBool>,
     sessions: Sessions,
     session_name: String,
+    initial_cols: u16,
+    initial_rows: u16,
 ) -> Result<()> {
     let mut was_readonly = readonly_flag.load(std::sync::atomic::Ordering::Relaxed);
+    let mut client_size: Option<(u16, u16)> = Some((initial_cols, initial_rows));
     loop {
         let readonly = readonly_flag.load(std::sync::atomic::Ordering::Relaxed);
         if readonly && !was_readonly {
-            // Just got demoted — re-render screen in monochrome
             let screen_data = {
                 let sessions = sessions.lock().await;
                 sessions.get(&session_name).map(|s| s.screen_contents())
@@ -598,7 +600,10 @@ async fn stream_session(
                 write_frame(&mut writer, FRAME_DATA, &strip_sgr(&data)).await?;
             }
         } else if !readonly && was_readonly {
-            // Got promoted back — re-render with color
+            // Promoted — resize PTY to this client's size, then re-render
+            if let Some((cols, rows)) = client_size {
+                let _ = input_tx.send(SessionCommand::Resize(cols, rows)).await;
+            }
             let screen_data = {
                 let sessions = sessions.lock().await;
                 sessions.get(&session_name).map(|s| s.screen_contents())
@@ -636,6 +641,7 @@ async fn stream_session(
                         }
                     }
                     Some(Frame::Resize { cols, rows }) => {
+                        client_size = Some((cols, rows));
                         if !readonly {
                             let _ = input_tx.send(SessionCommand::Resize(cols, rows)).await;
                         }
