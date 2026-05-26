@@ -105,16 +105,35 @@ pub async fn enter(name: Option<String>, command: Option<Vec<String>>) -> Result
         None => derive_session_name()?,
     };
 
-    // Check if we're already in this session
     if let Ok(current) = std::env::var("DRIP_SESSION") {
         if current == name {
             println!("already in session '{}'", name);
             return Ok(());
-        } else {
-            anyhow::bail!(
-                "already in session '{}' (use drip enter --force to switch — not yet implemented)",
-                current
-            );
+        }
+        // Switch the attach client to the new session
+        let stream = launch::connect().await?;
+        let (reader, writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+        let mut writer = BufWriter::new(writer);
+        let cwd = std::env::current_dir()?
+            .to_string_lossy()
+            .to_string();
+        write_control(&mut writer, &Request::SwitchSession {
+            from: current,
+            to: name,
+            command,
+            cwd,
+        }).await?;
+        match read_frame(&mut reader).await? {
+            Some(Frame::Control(payload)) => {
+                let response: Response = serde_json::from_slice(&payload)?;
+                match response {
+                    Response::Ok => return Ok(()),
+                    Response::Error { message } => anyhow::bail!("{}", message),
+                    _ => anyhow::bail!("unexpected response"),
+                }
+            }
+            _ => anyhow::bail!("unexpected frame"),
         }
     }
 

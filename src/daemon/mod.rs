@@ -394,6 +394,35 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             }
         }
 
+        Request::SwitchSession { from, to, command, cwd } => {
+            let mut sessions = sessions.lock().await;
+
+            if !sessions.contains_key(&to) {
+                match Session::spawn(to.clone(), command, cwd, 80, 24) {
+                    Ok(session) => {
+                        sessions.insert(to.clone(), session);
+                    }
+                    Err(e) => {
+                        write_control(&mut writer, &Response::Error {
+                            message: format!("failed to create session: {}", e),
+                        }).await?;
+                        return Ok(());
+                    }
+                }
+            }
+
+            // Signal the attach client on `from` to switch
+            if let Some(session) = sessions.get(&from) {
+                *session.switch_target.lock().unwrap() = Some(to.clone());
+                session.switch_notify.notify_waiters();
+                write_control(&mut writer, &Response::Ok).await?;
+            } else {
+                write_control(&mut writer, &Response::Error {
+                    message: format!("session '{}' not found", from),
+                }).await?;
+            }
+        }
+
         Request::TakeOver { name } => {
             let mut sessions = sessions.lock().await;
             if let Some(session) = sessions.get_mut(&name) {
@@ -471,74 +500,99 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
         }
 
         Request::Attach { name, cols, rows } => {
-            let (screen_data, mut output_rx, input_tx, detach_notify, readonly, readonly_flag) = {
-                let mut sessions = sessions.lock().await;
-                let session = match sessions.get_mut(&name) {
-                    Some(s) => s,
-                    None => {
-                        write_control(
-                            &mut writer,
-                            &Response::Error {
-                                message: format!("session '{}' not found", name),
-                            },
-                        )
-                        .await?;
-                        return Ok(());
+            let mut current_name = name;
+            let mut current_cols = cols;
+            let mut current_rows = rows;
+            let mut first = true;
+
+            loop {
+                let (screen_data, mut output_rx, input_tx, detach_notify, switch_notify, switch_target, readonly, readonly_flag) = {
+                    let mut sessions = sessions.lock().await;
+                    let session = match sessions.get_mut(&current_name) {
+                        Some(s) => s,
+                        None => {
+                            write_control(
+                                &mut writer,
+                                &Response::Error {
+                                    message: format!("session '{}' not found", current_name),
+                                },
+                            )
+                            .await?;
+                            return Ok(());
+                        }
+                    };
+
+                    let readonly = session.writer_attached;
+                    let readonly_flag = Arc::new(std::sync::atomic::AtomicBool::new(readonly));
+                    if !readonly {
+                        session.writer_attached = true;
+                        session.writer_readonly_flag = Some(readonly_flag.clone());
+                        let _ = session
+                            .input_tx
+                            .send(SessionCommand::Resize(current_cols, current_rows))
+                            .await;
                     }
+                    session.client_count += 1;
+                    let screen = session.screen_contents();
+                    let rx = session.output_tx.subscribe();
+                    let tx = session.input_tx.clone();
+                    let detach = session.detach_notify.clone();
+                    let sw_notify = session.switch_notify.clone();
+                    let sw_target = session.switch_target.clone();
+                    (screen, rx, tx, detach, sw_notify, sw_target, readonly, readonly_flag)
                 };
 
-                let readonly = session.writer_attached;
-                let readonly_flag = Arc::new(std::sync::atomic::AtomicBool::new(readonly));
-                if !readonly {
-                    session.writer_attached = true;
-                    session.writer_readonly_flag = Some(readonly_flag.clone());
-                    let _ = session
-                        .input_tx
-                        .send(SessionCommand::Resize(cols, rows))
-                        .await;
+                if first {
+                    write_control(&mut writer, &Response::Attached { readonly }).await?;
+                    first = false;
                 }
-                session.client_count += 1;
-                let screen = session.screen_contents();
-                let rx = session.output_tx.subscribe();
-                let tx = session.input_tx.clone();
-                let detach = session.detach_notify.clone();
-                (screen, rx, tx, detach, readonly, readonly_flag)
-            };
+                let screen_data = if readonly { strip_sgr(&screen_data) } else { screen_data };
+                write_frame(&mut writer, FRAME_DATA, &screen_data).await?;
 
-            write_control(&mut writer, &Response::Attached { readonly }).await?;
-            let screen_data = if readonly { strip_sgr(&screen_data) } else { screen_data };
-            write_frame(&mut writer, FRAME_DATA, &screen_data).await?;
+                let (result, r, w) = stream_session(
+                    reader, writer, &mut output_rx, &input_tx,
+                    &detach_notify, &switch_notify, &switch_target, &readonly_flag,
+                    sessions.clone(), current_name.clone(), current_cols, current_rows,
+                ).await?;
+                reader = r;
+                writer = w;
 
-            let result =
-                stream_session(reader, writer, &mut output_rx, &input_tx, &detach_notify, &readonly_flag, sessions.clone(), name.clone(), cols, rows).await;
+                // Clean up old session
+                {
+                    let mut sessions = sessions.lock().await;
+                    if let Some(session) = sessions.get_mut(&current_name) {
+                        session.client_count = session.client_count.saturating_sub(1);
+                        let was_writer = !readonly_flag.load(std::sync::atomic::Ordering::Relaxed);
+                        if was_writer {
+                            session.writer_readonly_flag = None;
+                            if let Some(prev_flag) = session.writer_stack.pop() {
+                                prev_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                                session.writer_readonly_flag = Some(prev_flag);
+                            } else {
+                                session.writer_attached = false;
+                            }
+                        }
+                    }
 
-            let mut sessions = sessions.lock().await;
-            if let Some(session) = sessions.get_mut(&name) {
-                session.client_count = session.client_count.saturating_sub(1);
-                let was_writer = !readonly_flag.load(std::sync::atomic::Ordering::Relaxed);
-                if was_writer {
-                    session.writer_readonly_flag = None;
-                    if let Some(prev_flag) = session.writer_stack.pop() {
-                        prev_flag.store(false, std::sync::atomic::Ordering::Relaxed);
-                        session.writer_readonly_flag = Some(prev_flag);
-                    } else {
-                        session.writer_attached = false;
+                    let should_exit = !sessions.is_empty()
+                        && sessions.values().all(|s| {
+                            matches!(s.state, SessionState::Exited(_)) && s.client_count == 0
+                        });
+                    if should_exit {
+                        sessions.clear();
+                        drop(sessions);
+                        let _ = std::fs::remove_file(socket_path());
+                        std::process::exit(0);
                     }
                 }
-            }
 
-            let should_exit = !sessions.is_empty()
-                && sessions.values().all(|s| {
-                    matches!(s.state, SessionState::Exited(_)) && s.client_count == 0
-                });
-            if should_exit {
-                sessions.clear();
-                drop(sessions);
-                let _ = std::fs::remove_file(socket_path());
-                std::process::exit(0);
+                match result {
+                    StreamExit::SwitchTo(target) => {
+                        current_name = target;
+                    }
+                    StreamExit::Disconnected => break,
+                }
             }
-
-            result?;
         }
     }
 
@@ -573,18 +627,28 @@ fn strip_sgr(data: &[u8]) -> Vec<u8> {
     out
 }
 
+enum StreamExit {
+    Disconnected,
+    SwitchTo(String),
+}
+
+type SocketReader = BufReader<tokio::net::unix::OwnedReadHalf>;
+type SocketWriter = BufWriter<tokio::net::unix::OwnedWriteHalf>;
+
 async fn stream_session(
-    mut reader: BufReader<tokio::net::unix::OwnedReadHalf>,
-    mut writer: BufWriter<tokio::net::unix::OwnedWriteHalf>,
+    mut reader: SocketReader,
+    mut writer: SocketWriter,
     output_rx: &mut tokio::sync::broadcast::Receiver<Vec<u8>>,
     input_tx: &tokio::sync::mpsc::Sender<SessionCommand>,
     detach_notify: &tokio::sync::Notify,
+    switch_notify: &tokio::sync::Notify,
+    switch_target: &Arc<std::sync::Mutex<Option<String>>>,
     readonly_flag: &Arc<std::sync::atomic::AtomicBool>,
     sessions: Sessions,
     session_name: String,
     initial_cols: u16,
     initial_rows: u16,
-) -> Result<()> {
+) -> Result<(StreamExit, SocketReader, SocketWriter)> {
     let mut was_readonly = readonly_flag.load(std::sync::atomic::Ordering::Relaxed);
     let mut client_size: Option<(u16, u16)> = Some((initial_cols, initial_rows));
     loop {
@@ -613,7 +677,13 @@ async fn stream_session(
         was_readonly = readonly;
         tokio::select! {
             _ = detach_notify.notified() => {
-                return Ok(());
+                return Ok((StreamExit::Disconnected, reader, writer));
+            }
+            _ = switch_notify.notified() => {
+                let target = switch_target.lock().unwrap().take();
+                if let Some(target) = target {
+                    return Ok((StreamExit::SwitchTo(target), reader, writer));
+                }
             }
             data = output_rx.recv() => {
                 match data {
@@ -626,7 +696,7 @@ async fn stream_session(
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         write_frame(&mut writer, FRAME_DATA, b"\r\n[session ended]\r\n").await?;
-                        return Ok(());
+                        return Ok((StreamExit::Disconnected, reader, writer));
                     }
                 }
             }
@@ -645,10 +715,10 @@ async fn stream_session(
                         }
                     }
                     Some(Frame::Control(_)) => {
-                        return Ok(());
+                        return Ok((StreamExit::Disconnected, reader, writer));
                     }
                     None => {
-                        return Ok(());
+                        return Ok((StreamExit::Disconnected, reader, writer));
                     }
                 }
             }

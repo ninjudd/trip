@@ -43,6 +43,12 @@ pub enum Request {
     TakeOver {
         name: String,
     },
+    SwitchSession {
+        from: String,
+        to: String,
+        command: Option<Vec<String>>,
+        cwd: String,
+    },
     DetachSession {
         name: String,
     },
