@@ -100,6 +100,10 @@ pub async fn attach(name: String) -> Result<()> {
         eprintln!("[read-only]");
     }
 
+    // Set tab title to session name
+    print!("\x1b]1;{}\x07", name);
+    std::io::Write::flush(&mut std::io::stdout()).ok();
+
     let _guard = RawModeGuard::enter();
 
     let mut sigwinch = signal(SignalKind::window_change())?;
