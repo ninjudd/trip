@@ -108,7 +108,10 @@ pub async fn enter(name: Option<String>, command: Option<Vec<String>>) -> Result
             println!("already in session '{}'", name);
             return Ok(());
         }
-        // Switch the attach client to the new session
+        // Set tab title before switching
+        print!("\x1b]1;{}\x07", name);
+        std::io::Write::flush(&mut std::io::stdout()).ok();
+
         let stream = launch::connect().await?;
         let (reader, writer) = stream.into_split();
         let mut reader = BufReader::new(reader);

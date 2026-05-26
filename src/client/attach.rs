@@ -137,8 +137,19 @@ pub async fn attach(name: String) -> Result<()> {
                         stdout.write_all(&data)?;
                         stdout.flush()?;
                     }
-                    Some(Frame::Control(_)) => {
-                        break;
+                    Some(Frame::Control(payload)) => {
+                        if let Ok(response) = serde_json::from_slice::<Response>(&payload) {
+                            match response {
+                                Response::SessionName { name } => {
+                                    let title = format!("\x1b]1;{}\x07", name);
+                                    stdout.write_all(title.as_bytes())?;
+                                    stdout.flush()?;
+                                }
+                                _ => break,
+                            }
+                        } else {
+                            break;
+                        }
                     }
                     None => {
                         break;

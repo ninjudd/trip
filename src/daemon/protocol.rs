@@ -85,6 +85,7 @@ pub enum Response {
     SessionCreated { name: String, pid: u32 },
     SessionList { sessions: Vec<SessionInfo> },
     Attached { readonly: bool },
+    SessionName { name: String },
     ScreenData { content: String },
     ScreenList { screens: Vec<ScreenEntry> },
     LogData { content: String },
