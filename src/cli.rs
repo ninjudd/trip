@@ -101,6 +101,9 @@ pub enum Command {
         raw: bool,
     },
 
+    /// Return to the previous session (opposite of enter)
+    Return,
+
     /// Detach all clients from a session (defaults to current session)
     Detach {
         /// Session name (omit to detach from current session)

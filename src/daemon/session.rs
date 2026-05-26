@@ -32,6 +32,7 @@ pub struct Session {
     pub writer_attached: bool,
     pub writer_readonly_flag: Option<Arc<AtomicBool>>,
     pub writer_stack: Vec<Arc<AtomicBool>>,
+    pub return_stack: Vec<String>,
     parser: std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
 }
 
@@ -181,6 +182,7 @@ impl Session {
                     writer_attached: false,
                     writer_readonly_flag: None,
                     writer_stack: Vec::new(),
+                    return_stack: Vec::new(),
                     parser,
                 })
             }

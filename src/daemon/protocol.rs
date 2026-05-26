@@ -59,6 +59,9 @@ pub enum Request {
         #[serde(default)]
         env: HashMap<String, String>,
     },
+    ReturnSession {
+        name: String,
+    },
     DetachSession {
         name: String,
     },

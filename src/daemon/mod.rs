@@ -183,6 +183,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             let sessions = sessions.lock().await;
             let list: Vec<SessionInfo> = sessions
                 .values()
+                .filter(|s| !is_numbered_session(&s.name) || s.client_count > 0)
                 .map(|s| {
                     let fg_pid = procinfo::get_foreground_pid(s.master_fd);
                     let cwd = fg_pid.and_then(procinfo::get_cwd);
@@ -486,6 +487,11 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                 }
             }
 
+            // Push onto target's return stack
+            if let Some(target) = sessions.get_mut(&to) {
+                target.return_stack.push(from.clone());
+            }
+
             // Signal the attach client on `from` to switch
             if let Some(session) = sessions.get(&from) {
                 *session.switch_target.lock().unwrap() = Some(to.clone());
@@ -496,6 +502,51 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                     &mut writer,
                     &Response::Error {
                         message: format!("session '{}' not found", from),
+                    },
+                )
+                .await?;
+            }
+        }
+
+        Request::ReturnSession { name } => {
+            let mut sessions = sessions.lock().await;
+            let stack = sessions
+                .get_mut(&name)
+                .map(|s| std::mem::take(&mut s.return_stack));
+            if let Some(mut stack) = stack {
+                let target = loop {
+                    match stack.pop() {
+                        Some(t) if sessions.contains_key(&t) => {
+                            // Put remaining entries back
+                            if let Some(session) = sessions.get_mut(&name) {
+                                session.return_stack = stack;
+                            }
+                            break Some(t);
+                        }
+                        Some(_) => continue,
+                        None => break None,
+                    }
+                };
+                if let Some(target) = target {
+                    if let Some(session) = sessions.get(&name) {
+                        *session.switch_target.lock().unwrap() = Some(target);
+                        session.switch_notify.notify_waiters();
+                    }
+                    write_control(&mut writer, &Response::Ok).await?;
+                } else {
+                    write_control(
+                        &mut writer,
+                        &Response::Error {
+                            message: "no session to return to".to_string(),
+                        },
+                    )
+                    .await?;
+                }
+            } else {
+                write_control(
+                    &mut writer,
+                    &Response::Error {
+                        message: format!("session '{}' not found", name),
                     },
                 )
                 .await?;
@@ -795,25 +846,13 @@ fn is_numbered_session(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn is_only_shell_running(session: &Session) -> bool {
-    let fg_pid = procinfo::get_foreground_pid(session.master_fd);
-    match fg_pid {
-        Some(pid) => pid == session.pid.as_raw(),
-        None => true,
-    }
-}
-
 fn try_gc_session(sessions: &mut HashMap<String, Session>, name: &str) {
     let should_kill = sessions.get(name).is_some_and(|s| {
         is_numbered_session(name)
             && s.client_count == 0
-            && matches!(s.state, SessionState::Running)
-            && is_only_shell_running(s)
+            && matches!(s.state, SessionState::Exited(_))
     });
     if should_kill {
-        if let Some(session) = sessions.get(name) {
-            nix::sys::signal::kill(session.pid, nix::sys::signal::Signal::SIGHUP).ok();
-        }
         sessions.remove(name);
     }
 }

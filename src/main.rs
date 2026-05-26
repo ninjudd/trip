@@ -73,6 +73,11 @@ async fn main() -> anyhow::Result<()> {
         Command::Send { name, input, raw } => {
             client::send_input(name, input, raw).await?;
         }
+        Command::Return => {
+            let name = std::env::var("DRIP_SESSION")
+                .map_err(|_| anyhow::anyhow!("not in a drip session"))?;
+            client::return_session(name).await?;
+        }
         Command::Detach { name } => {
             let name = match name {
                 Some(n) => n,

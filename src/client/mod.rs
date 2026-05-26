@@ -539,6 +539,29 @@ async fn take_over(name: String) -> Result<()> {
     Ok(())
 }
 
+pub async fn return_session(name: String) -> Result<()> {
+    let stream = launch::connect().await?;
+    let (reader, writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    let mut writer = BufWriter::new(writer);
+
+    write_control(&mut writer, &Request::ReturnSession { name }).await?;
+
+    match read_frame(&mut reader).await? {
+        Some(Frame::Control(payload)) => {
+            let response: Response = serde_json::from_slice(&payload)?;
+            match response {
+                Response::Ok => {}
+                Response::Error { message } => anyhow::bail!("{}", message),
+                _ => anyhow::bail!("unexpected response"),
+            }
+        }
+        _ => anyhow::bail!("unexpected frame"),
+    }
+
+    Ok(())
+}
+
 pub async fn detach_session(name: String) -> Result<()> {
     let stream = launch::connect().await?;
     let (reader, writer) = stream.into_split();
