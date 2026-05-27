@@ -335,7 +335,9 @@ async fn pty_io_loop(
                                 {
                                     let mut p = parser.lock().unwrap();
                                     p.process(&data);
-                                    if !p.screen().alternate_screen() {
+                                    if !p.screen().alternate_screen()
+                                        && !super::agent::agent_config_path(&session_name).exists()
+                                    {
                                         recording::append_event(&log_path, &RecordEvent::Output {
                                             t: recording::now_ts(),
                                             data: String::from_utf8_lossy(&data).into_owned(),

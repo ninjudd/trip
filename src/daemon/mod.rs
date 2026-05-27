@@ -24,7 +24,7 @@ use protocol::{
 use recording::RecordEvent;
 use session::{Session, SessionCommand};
 
-fn format_events(events: &[RecordEvent], raw: bool) -> String {
+fn format_events(events: &[RecordEvent], raw: bool, verbose: bool) -> String {
     if raw {
         events
             .iter()
@@ -69,7 +69,7 @@ fn format_events(events: &[RecordEvent], raw: bool) -> String {
                 }
                 RecordEvent::AgentToolResult {
                     is_error, output, ..
-                } => {
+                } if verbose => {
                     let prefix = if *is_error { "[error] " } else { "[result] " };
                     let summary = match output {
                         serde_json::Value::String(s) => {
@@ -347,6 +347,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
         Request::GetLog {
             name,
             raw,
+            verbose,
             follow,
             since,
         } => {
@@ -364,7 +365,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                 Vec::new()
             };
 
-            let content = format_events(&events, raw);
+            let content = format_events(&events, raw, verbose);
             if !content.is_empty() {
                 write_control(&mut writer, &Response::LogData { content }).await?;
             }
@@ -395,7 +396,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                                         .lines()
                                         .filter_map(|line| serde_json::from_str(line).ok())
                                         .collect();
-                                    let formatted = format_events(&new_events, raw);
+                                    let formatted = format_events(&new_events, raw, verbose);
                                     if !formatted.is_empty() {
                                         write_control(
                                             &mut writer,

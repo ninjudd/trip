@@ -63,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Log {
             name,
             raw,
+            verbose,
             follow,
             since,
         } => {
@@ -77,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 None => None,
             };
-            client::get_log(name, raw, follow, since_ts).await?;
+            client::get_log(name, raw, verbose, follow, since_ts).await?;
         }
         Command::Send { name, input, raw } => {
             client::send_input(name, input, raw).await?;

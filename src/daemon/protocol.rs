@@ -32,6 +32,8 @@ pub enum Request {
     GetLog {
         name: String,
         raw: bool,
+        #[serde(default)]
+        verbose: bool,
         follow: bool,
         since: Option<f64>,
     },

@@ -84,6 +84,10 @@ pub enum Command {
         #[arg(long)]
         raw: bool,
 
+        /// Show tool results in agent logs
+        #[arg(long, short)]
+        verbose: bool,
+
         /// Follow new events
         #[arg(long, short)]
         follow: bool,

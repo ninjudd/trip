@@ -385,7 +385,13 @@ pub async fn get_screen(name: String, watch: bool) -> Result<()> {
     }
 }
 
-pub async fn get_log(name: String, raw: bool, follow: bool, since: Option<f64>) -> Result<()> {
+pub async fn get_log(
+    name: String,
+    raw: bool,
+    verbose: bool,
+    follow: bool,
+    since: Option<f64>,
+) -> Result<()> {
     let stream = launch::connect().await?;
     let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -396,6 +402,7 @@ pub async fn get_log(name: String, raw: bool, follow: bool, since: Option<f64>) 
         &Request::GetLog {
             name: name.clone(),
             raw,
+            verbose,
             follow,
             since,
         },
