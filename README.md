@@ -26,6 +26,30 @@ For development (symlinks debug build so `cargo build` updates it instantly):
 ./install.sh --dev
 ```
 
+## Terminal setup
+
+For the best experience, configure your terminal to run trip automatically on new tabs.
+
+### macOS Terminal
+
+Open **Settings → Profiles → Shell**:
+
+- **Startup → Run command:** `/usr/local/bin/trip enter`
+- **When the shell exits:** Close if the shell exited cleanly
+- **Ask before closing:** Only if there are processes other than the login shell and: add `trip` and `-trip` to the list
+
+### iTerm2
+
+Open **Settings → Profiles → General**:
+
+- **Command:** choose **Custom Shell**, set to `/usr/local/bin/trip enter`
+
+Open **Settings → Profiles → Session**:
+
+- **After a session ends:** Close
+
+This way every tab is a trip session. Close the tab to detach, open a new tab to reattach.
+
 ## Quick start
 
 ```
