@@ -657,3 +657,58 @@ pub async fn kill_session(name: String) -> Result<()> {
 
     Ok(())
 }
+
+pub fn agent_on() -> Result<()> {
+    let session_name =
+        std::env::var("TRIP_SESSION").map_err(|_| anyhow::anyhow!("not in a trip session"))?;
+
+    let cwd = std::env::current_dir()?.to_string_lossy().to_string();
+
+    let (kind, log_path) = if let Ok(session_id) = std::env::var("CLAUDE_CODE_SESSION_ID") {
+        let encoded_cwd = cwd.replace('/', "-");
+        let home = std::env::var("HOME").unwrap_or_default();
+        let path = format!(
+            "{}/.claude/projects/{}/{}.jsonl",
+            home, encoded_cwd, session_id
+        );
+        ("claude".to_string(), path)
+    } else if let Ok(thread_id) = std::env::var("CODEX_THREAD_ID") {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let codex_dir = format!("{}/.codex/sessions", home);
+        match find_codex_log(&codex_dir, &thread_id) {
+            Some(path) => ("codex".to_string(), path),
+            None => anyhow::bail!("could not find codex log for thread {}", thread_id),
+        }
+    } else {
+        anyhow::bail!("no agent detected (need CLAUDE_CODE_SESSION_ID or CODEX_THREAD_ID)");
+    };
+
+    let config = crate::daemon::agent::AgentConfig {
+        kind,
+        log_path: log_path.clone(),
+    };
+    let config_path = crate::daemon::agent::agent_config_path(&session_name);
+    let json = serde_json::to_string(&config)?;
+    std::fs::write(&config_path, json)?;
+    eprintln!("trip on: {}", log_path);
+    Ok(())
+}
+
+fn find_codex_log(base_dir: &str, thread_id: &str) -> Option<String> {
+    fn search_dir(dir: &std::path::Path, thread_id: &str) -> Option<String> {
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = search_dir(&path, thread_id) {
+                    return Some(found);
+                }
+            } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.contains(thread_id) && name.ends_with(".jsonl") {
+                    return Some(path.to_string_lossy().to_string());
+                }
+            }
+        }
+        None
+    }
+    search_dir(std::path::Path::new(base_dir), thread_id)
+}

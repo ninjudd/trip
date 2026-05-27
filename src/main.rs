@@ -105,12 +105,24 @@ async fn main() -> anyhow::Result<()> {
         Command::Shutdown { yes } => {
             client::shutdown(yes).await?;
         }
-        Command::Init => {
+        Command::On => {
+            client::agent_on()?;
+        }
+        Command::Env => {
             if let Ok(name) = std::env::var("TRIP_SESSION") {
                 let path = common::terminal_env_path(&name);
                 if path.exists() {
                     let content = std::fs::read_to_string(&path).unwrap_or_default();
                     print!("{}", content);
+                }
+                // Clean up agent.json if no agent is running
+                if std::env::var("CLAUDE_CODE_SESSION_ID").is_err()
+                    && std::env::var("CODEX_THREAD_ID").is_err()
+                {
+                    let agent_path = common::session_dir(&name).join("agent.json");
+                    if agent_path.exists() {
+                        let _ = std::fs::remove_file(&agent_path);
+                    }
                 }
             }
         }

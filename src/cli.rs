@@ -137,9 +137,12 @@ pub enum Command {
         yes: bool,
     },
 
-    /// Initialize shell environment (called from precmd)
+    /// Connect trip to the current agent's structured log
+    On,
+
+    /// Sync shell environment (called from preexec hook)
     #[command(hide = true)]
-    Init,
+    Env,
 
     /// Start the daemon (typically auto-started)
     #[command(hide = true)]

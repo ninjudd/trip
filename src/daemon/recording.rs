@@ -13,16 +13,64 @@ pub enum RecordEvent {
     Resize { t: f64, cols: u16, rows: u16 },
     #[serde(rename = "screen")]
     Screen { t: f64, text: String },
+    #[serde(rename = "agent_session_start")]
+    AgentSessionStart { t: f64, continuation: String },
+    #[serde(rename = "agent_session_end")]
+    AgentSessionEnd { t: f64, stop_reason: String },
+    #[serde(rename = "agent_text")]
+    AgentText { t: f64, text: String },
+    #[serde(rename = "agent_thinking")]
+    AgentThinking { t: f64, text: String },
+    #[serde(rename = "agent_tool_call")]
+    AgentToolCall {
+        t: f64,
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    #[serde(rename = "agent_tool_result")]
+    AgentToolResult {
+        t: f64,
+        tool_call_id: String,
+        output: serde_json::Value,
+        is_error: bool,
+    },
+    #[serde(rename = "agent_turn_end")]
+    AgentTurnEnd { t: f64, duration_ms: Option<u64> },
+    #[serde(rename = "agent_activity")]
+    AgentActivity { t: f64 },
 }
 
 impl RecordEvent {
     pub fn timestamp(&self) -> f64 {
         match self {
-            RecordEvent::Output { t, .. } => *t,
-            RecordEvent::Input { t, .. } => *t,
-            RecordEvent::Resize { t, .. } => *t,
-            RecordEvent::Screen { t, .. } => *t,
+            RecordEvent::Output { t, .. }
+            | RecordEvent::Input { t, .. }
+            | RecordEvent::Resize { t, .. }
+            | RecordEvent::Screen { t, .. }
+            | RecordEvent::AgentSessionStart { t, .. }
+            | RecordEvent::AgentSessionEnd { t, .. }
+            | RecordEvent::AgentText { t, .. }
+            | RecordEvent::AgentThinking { t, .. }
+            | RecordEvent::AgentToolCall { t, .. }
+            | RecordEvent::AgentToolResult { t, .. }
+            | RecordEvent::AgentTurnEnd { t, .. }
+            | RecordEvent::AgentActivity { t, .. } => *t,
         }
+    }
+
+    pub fn is_agent_event(&self) -> bool {
+        matches!(
+            self,
+            RecordEvent::AgentSessionStart { .. }
+                | RecordEvent::AgentSessionEnd { .. }
+                | RecordEvent::AgentText { .. }
+                | RecordEvent::AgentThinking { .. }
+                | RecordEvent::AgentToolCall { .. }
+                | RecordEvent::AgentToolResult { .. }
+                | RecordEvent::AgentTurnEnd { .. }
+                | RecordEvent::AgentActivity { .. }
+        )
     }
 }
 

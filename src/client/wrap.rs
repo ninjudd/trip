@@ -78,7 +78,7 @@ fn key_to_bytes(name: &str) -> Option<Vec<u8>> {
     }
 }
 
-fn check_log(log_path: &Path, last_size: &mut u64) {
+fn check_log(log_path: &Path, last_size: &mut u64, in_agent: &mut bool) {
     let current_size = std::fs::metadata(log_path).map(|m| m.len()).unwrap_or(0);
     if current_size <= *last_size {
         return;
@@ -89,9 +89,25 @@ fn check_log(log_path: &Path, last_size: &mut u64) {
             let mut new_bytes = String::new();
             if file.read_to_string(&mut new_bytes).is_ok() {
                 for line in new_bytes.lines() {
-                    if let Ok(RecordEvent::Screen { text, .. }) = serde_json::from_str(line) {
-                        if !text.is_empty() {
-                            emit(&WrapOutput::Log { text });
+                    if let Ok(event) = serde_json::from_str::<RecordEvent>(line) {
+                        match &event {
+                            RecordEvent::AgentSessionStart { .. } => {
+                                *in_agent = true;
+                                emit_raw(line);
+                            }
+                            RecordEvent::AgentSessionEnd { .. } => {
+                                *in_agent = false;
+                                emit_raw(line);
+                            }
+                            _ if event.is_agent_event() => {
+                                emit_raw(line);
+                            }
+                            RecordEvent::Screen { text, .. } if !*in_agent => {
+                                if !text.is_empty() {
+                                    emit(&WrapOutput::Log { text: text.clone() });
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -99,6 +115,12 @@ fn check_log(log_path: &Path, last_size: &mut u64) {
         }
     }
     *last_size = current_size;
+}
+
+fn emit_raw(json_line: &str) {
+    let mut stdout = std::io::stdout().lock();
+    let _ = writeln!(stdout, "{}", json_line);
+    let _ = stdout.flush();
 }
 
 async fn get_screen_text(name: &str) -> Result<String> {
@@ -245,6 +267,7 @@ pub async fn wrap(base_name: String, command: Option<Vec<String>>) -> Result<()>
     // Track log file
     let log_path = crate::common::log_path(&name);
     let mut last_log_size = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+    let mut in_agent = false;
 
     // Read JSONL lines from stdin in a blocking thread
     let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::channel::<String>(32);
@@ -282,7 +305,7 @@ pub async fn wrap(base_name: String, command: Option<Vec<String>>) -> Result<()>
             }
 
             _ = &mut idle_deadline, if log_pending => {
-                check_log(&log_path, &mut last_log_size);
+                check_log(&log_path, &mut last_log_size, &mut in_agent);
                 log_pending = false;
                 idle_deadline.as_mut().reset(Instant::now() + far_future);
             }
@@ -325,7 +348,7 @@ pub async fn wrap(base_name: String, command: Option<Vec<String>>) -> Result<()>
                             Ok(WrapInput::Screenshot) => {
                                 // Flush pending log first
                                 if log_pending {
-                                    check_log(&log_path, &mut last_log_size);
+                                    check_log(&log_path, &mut last_log_size, &mut in_agent);
                                     log_pending = false;
                                 }
                                 match get_screen_text(&name).await {
@@ -353,7 +376,7 @@ pub async fn wrap(base_name: String, command: Option<Vec<String>>) -> Result<()>
 
     // Final log flush
     tokio::time::sleep(Duration::from_millis(600)).await;
-    check_log(&log_path, &mut last_log_size);
+    check_log(&log_path, &mut last_log_size, &mut in_agent);
 
     // Wait for reaper to update exit code
     let mut code = -1;

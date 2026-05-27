@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod diff;
 pub mod procinfo;
 pub mod protocol;
@@ -32,14 +33,72 @@ fn format_events(events: &[RecordEvent], raw: bool) -> String {
             .join("\n")
             + if events.is_empty() { "" } else { "\n" }
     } else {
+        let mut in_agent = false;
         let mut out = String::new();
         for event in events {
-            if let RecordEvent::Screen { t: _, text } = event {
-                if !out.is_empty() {
+            match event {
+                RecordEvent::AgentSessionStart { .. } => {
+                    in_agent = true;
+                }
+                RecordEvent::AgentSessionEnd { .. } => {
+                    in_agent = false;
+                }
+                RecordEvent::Screen { text, .. } if !in_agent => {
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(text);
                     out.push('\n');
                 }
-                out.push_str(text);
-                out.push('\n');
+                RecordEvent::AgentText { text, .. } => {
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(text);
+                    out.push('\n');
+                }
+                RecordEvent::AgentThinking { text, .. } => {
+                    out.push_str("[thinking] ");
+                    out.push_str(text.lines().next().unwrap_or(""));
+                    out.push('\n');
+                }
+                RecordEvent::AgentToolCall { name, input, .. } => {
+                    out.push_str(&format!("[tool] {}", name));
+                    if let Some(cmd) = input.get("command").and_then(|v| v.as_str()) {
+                        out.push_str(&format!(": {}", cmd));
+                    } else if let Some(path) = input.get("file_path").and_then(|v| v.as_str()) {
+                        out.push_str(&format!(": {}", path));
+                    }
+                    out.push('\n');
+                }
+                RecordEvent::AgentToolResult {
+                    is_error, output, ..
+                } => {
+                    let prefix = if *is_error { "[error] " } else { "[result] " };
+                    let summary = match output {
+                        serde_json::Value::String(s) => {
+                            let trimmed = s.trim();
+                            if trimmed.len() > 200 {
+                                format!("{}...", &trimmed[..200])
+                            } else {
+                                trimmed.to_string()
+                            }
+                        }
+                        _ => String::new(),
+                    };
+                    if !summary.is_empty() {
+                        out.push_str(prefix);
+                        out.push_str(&summary);
+                        out.push('\n');
+                    }
+                }
+                RecordEvent::AgentTurnEnd {
+                    duration_ms: Some(ms),
+                    ..
+                } => {
+                    out.push_str(&format!("[turn] {}ms\n", ms));
+                }
+                _ => {}
             }
         }
         out

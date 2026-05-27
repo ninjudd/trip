@@ -181,6 +181,17 @@ impl Session {
                     .await;
                 });
 
+                // Watch for agent.json and tail agent logs when present
+                let agent_session_name = name.clone();
+                tokio::spawn(async move {
+                    loop {
+                        if super::agent::read_agent_config(&agent_session_name).is_some() {
+                            super::agent::tail_agent_log(agent_session_name.clone()).await;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+                });
+
                 Ok(Session {
                     name,
                     command: cmd_str,

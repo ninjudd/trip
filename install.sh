@@ -15,11 +15,11 @@ fi
 
 HOOK='# trip shell hook
 if [ -n "$TRIP_SESSION" ]; then
-  _trip_preexec() { eval "$(trip init)"; }
+  _trip_preexec() { eval "$(trip env)"; }
   if [ -n "$ZSH_VERSION" ]; then
     preexec_functions+=(_trip_preexec)
   elif [ -n "$BASH_VERSION" ]; then
-    trap '"'"'eval "$(trip init)"'"'"' DEBUG
+    trap '"'"'_trip_preexec'"'"' DEBUG
   fi
 fi'
 
