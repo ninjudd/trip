@@ -189,6 +189,9 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                     let fg_command = fg_pid.and_then(procinfo::get_name);
                     let git_branch = cwd.as_ref().and_then(|p| procinfo::get_git_branch(p));
 
+                    let title = s.title();
+                    let title = if title.is_empty() { None } else { Some(title) };
+
                     SessionInfo {
                         name: s.name.clone(),
                         command: s.command.clone(),
@@ -199,6 +202,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                         cwd: cwd.map(|p| p.to_string_lossy().into_owned()),
                         fg_command,
                         git_branch,
+                        title,
                     }
                 })
                 .collect();

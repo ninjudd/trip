@@ -266,28 +266,22 @@ pub async fn list_sessions(all: bool) -> Result<()> {
                     let rows: Vec<_> = sessions
                         .iter()
                         .map(|s| {
-                            let marker = if current.as_deref() == Some(&s.name) {
-                                "* "
+                            let is_current = current.as_deref() == Some(&s.name);
+                            let marker = if is_current {
+                                "*"
+                            } else if s.attached {
+                                "+"
                             } else {
-                                "  "
-                            };
-                            let state = match s.state {
-                                SessionState::Running => {
-                                    if s.attached {
-                                        "attached"
-                                    } else {
-                                        "detached"
-                                    }
-                                }
-                                SessionState::Exited(code) => {
-                                    if code == 0 {
-                                        "exited"
-                                    } else {
-                                        "failed"
-                                    }
+                                match s.state {
+                                    SessionState::Exited(_) => "✕",
+                                    _ => "-",
                                 }
                             };
-                            let cmd = s.fg_command.as_deref().unwrap_or(&s.command);
+                            let cmd = s
+                                .title
+                                .as_deref()
+                                .or(s.fg_command.as_deref())
+                                .unwrap_or(&s.command);
                             let branch = s.git_branch.as_deref().unwrap_or("-");
                             let cwd = s.cwd.as_deref().unwrap_or("");
                             let cwd = if !home.is_empty() && cwd.starts_with(&home) {
@@ -298,7 +292,6 @@ pub async fn list_sessions(all: bool) -> Result<()> {
                             (
                                 marker.to_string(),
                                 s.name.clone(),
-                                state.to_string(),
                                 cmd.to_string(),
                                 branch.to_string(),
                                 cwd,
@@ -307,21 +300,18 @@ pub async fn list_sessions(all: bool) -> Result<()> {
                         .collect();
 
                     let nw = rows.iter().map(|r| r.1.len()).max().unwrap_or(0);
-                    let sw = rows.iter().map(|r| r.2.len()).max().unwrap_or(0);
-                    let cw = rows.iter().map(|r| r.3.len()).max().unwrap_or(0);
-                    let bw = rows.iter().map(|r| r.4.len()).max().unwrap_or(0);
+                    let cw = rows.iter().map(|r| r.2.len()).max().unwrap_or(0);
+                    let bw = rows.iter().map(|r| r.3.len()).max().unwrap_or(0);
 
-                    for (marker, name, state, cmd, branch, cwd) in &rows {
+                    for (marker, name, cmd, branch, cwd) in &rows {
                         println!(
-                            "{}{:<nw$}  {:<sw$}  {:<cw$}  {:<bw$}  {}",
+                            "{} {:<nw$}  {:<cw$}  {:<bw$}  {}",
                             marker,
                             name,
-                            state,
                             cmd,
                             branch,
                             cwd,
                             nw = nw,
-                            sw = sw,
                             cw = cw,
                             bw = bw,
                         );

@@ -88,6 +88,7 @@ pub struct SessionInfo {
     pub cwd: Option<String>,
     pub fg_command: Option<String>,
     pub git_branch: Option<String>,
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

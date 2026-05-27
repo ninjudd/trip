@@ -209,6 +209,11 @@ impl Session {
         parser.screen().contents()
     }
 
+    pub fn title(&self) -> String {
+        let parser = self.parser.lock().unwrap();
+        parser.screen().title().to_string()
+    }
+
     pub fn screen_contents(&self) -> Vec<u8> {
         let parser = self.parser.lock().unwrap();
         let screen = parser.screen();
