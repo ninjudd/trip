@@ -122,6 +122,11 @@ async fn main() -> anyhow::Result<()> {
                         let _ = std::fs::remove_file(&agent_path);
                     }
                 }
+                // Reset TUI mode (user is back at shell prompt)
+                let tui_path = common::session_dir(&name).join("tui_mode");
+                if tui_path.exists() {
+                    let _ = std::fs::remove_file(&tui_path);
+                }
             }
         }
         Command::Daemon => {

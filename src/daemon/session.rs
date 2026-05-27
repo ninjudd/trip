@@ -247,18 +247,43 @@ impl Session {
     }
 }
 
+fn has_cursor_positioning(data: &[u8]) -> bool {
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] == 0x1b && i + 1 < data.len() && data[i + 1] == b'[' {
+            i += 2;
+            // Skip numeric params and semicolons
+            while i < data.len() && (data[i].is_ascii_digit() || data[i] == b';') {
+                i += 1;
+            }
+            if i < data.len() {
+                match data[i] {
+                    // H/f = cursor position, A/B = up/down (not just scrolling — used with params)
+                    b'H' | b'f' => return true,
+                    _ => {}
+                }
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
 fn take_snapshot(
     parser: &std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
     session_name: &str,
     log_path: &std::path::Path,
     last_screen: &mut String,
+    tui_mode: bool,
 ) {
-    let p = parser.lock().unwrap();
-    let screen = p.screen();
-
-    if !screen.alternate_screen() {
+    if !tui_mode {
         return;
     }
+
+    let p = parser.lock().unwrap();
+    let screen = p.screen();
 
     if super::agent::agent_config_path(session_name).exists() {
         return;
@@ -312,6 +337,8 @@ async fn pty_io_loop(
     let mut max_deadline = Box::pin(sleep(Duration::from_secs(86400)));
     let mut snapshot_pending = false;
     let mut last_screen = String::new();
+    let tui_mode_path = crate::common::session_dir(&session_name).join("tui_mode");
+    let mut tui_mode = false;
 
     loop {
         tokio::select! {
@@ -332,17 +359,31 @@ async fn pty_io_loop(
                             Ok(Ok(0)) => break,
                             Ok(Ok(n)) => {
                                 let data = buf[..n].to_vec();
+
+                                // Detect TUI mode from cursor positioning
+                                if !tui_mode && has_cursor_positioning(&data) {
+                                    tui_mode = true;
+                                    std::fs::write(&tui_mode_path, "").ok();
+                                }
+                                // Reset TUI mode when preexec removes the marker
+                                if tui_mode && !tui_mode_path.exists() {
+                                    tui_mode = false;
+                                    last_screen.clear();
+                                }
+
                                 {
                                     let mut p = parser.lock().unwrap();
                                     p.process(&data);
-                                    if !p.screen().alternate_screen()
-                                        && !super::agent::agent_config_path(&session_name).exists()
-                                    {
-                                        recording::append_event(&log_path, &RecordEvent::Output {
-                                            t: recording::now_ts(),
-                                            data: String::from_utf8_lossy(&data).into_owned(),
-                                        });
-                                    }
+                                }
+
+                                let agent_active =
+                                    super::agent::agent_config_path(&session_name).exists();
+
+                                if !tui_mode && !agent_active {
+                                    recording::append_event(&log_path, &RecordEvent::Output {
+                                        t: recording::now_ts(),
+                                        data: String::from_utf8_lossy(&data).into_owned(),
+                                    });
                                 }
                                 let _ = output_tx.send(data);
                                 // Reset idle timer; start max timer if not already running
@@ -361,14 +402,14 @@ async fn pty_io_loop(
             }
 
             _ = &mut idle_deadline, if snapshot_pending => {
-                take_snapshot(&parser, &session_name, &log_path, &mut last_screen);
+                take_snapshot(&parser, &session_name, &log_path, &mut last_screen, tui_mode);
                 snapshot_pending = false;
                 idle_deadline.as_mut().reset(Instant::now() + Duration::from_secs(86400));
                 max_deadline.as_mut().reset(Instant::now() + Duration::from_secs(86400));
             }
 
             _ = &mut max_deadline, if snapshot_pending => {
-                take_snapshot(&parser, &session_name, &log_path, &mut last_screen);
+                take_snapshot(&parser, &session_name, &log_path, &mut last_screen, tui_mode);
                 snapshot_pending = false;
                 idle_deadline.as_mut().reset(Instant::now() + Duration::from_secs(86400));
                 max_deadline.as_mut().reset(Instant::now() + Duration::from_secs(86400));
