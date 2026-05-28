@@ -616,12 +616,15 @@ pub async fn kill_session(name: String) -> Result<()> {
 }
 
 pub fn agent_on() -> Result<()> {
-    let session_name =
-        std::env::var("TRIP_SESSION").map_err(|_| anyhow::anyhow!("not in a trip session"))?;
+    let session_name = match std::env::var("TRIP_SESSION") {
+        Ok(name) => name,
+        Err(_) => return Ok(()),
+    };
 
-    let cwd = std::env::current_dir()?.to_string_lossy().to_string();
-
-    let (kind, log_path) = if let Ok(session_id) = std::env::var("CLAUDE_CODE_SESSION_ID") {
+    let (kind, log_path) = if let Some((k, p)) = read_hook_stdin()? {
+        (k, p)
+    } else if let Ok(session_id) = std::env::var("CLAUDE_CODE_SESSION_ID") {
+        let cwd = std::env::current_dir()?.to_string_lossy().to_string();
         let encoded_cwd = cwd.replace('/', "-");
         let home = std::env::var("HOME").unwrap_or_default();
         let path = format!(
@@ -637,7 +640,7 @@ pub fn agent_on() -> Result<()> {
             None => anyhow::bail!("could not find codex log for thread {}", thread_id),
         }
     } else {
-        anyhow::bail!("no agent detected (need CLAUDE_CODE_SESSION_ID or CODEX_THREAD_ID)");
+        return Ok(());
     };
 
     let config = crate::daemon::agent::AgentConfig {
@@ -649,6 +652,23 @@ pub fn agent_on() -> Result<()> {
     std::fs::write(&config_path, json)?;
     eprintln!("trip on: {}", log_path);
     Ok(())
+}
+
+fn read_hook_stdin() -> Result<Option<(String, String)>> {
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() {
+        return Ok(None);
+    }
+    let mut input = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
+    if input.is_empty() {
+        return Ok(None);
+    }
+    let v: serde_json::Value = serde_json::from_str(&input)?;
+    if let Some(path) = v.get("transcript_path").and_then(|p| p.as_str()) {
+        return Ok(Some(("codex".to_string(), path.to_string())));
+    }
+    Ok(None)
 }
 
 fn find_codex_log(base_dir: &str, thread_id: &str) -> Option<String> {

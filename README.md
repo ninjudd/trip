@@ -85,21 +85,65 @@ That's it. If a session exists for this workspace, you're attached. If not, one 
 
 **`trip screen <name>`** — Show the current terminal screen (what you'd see if attached).
 
-**`trip log <name>`** — Show what happened over time. Screen snapshots are captured on idle and diffed to show only new content.
+**`trip log <name>`** — Show what happened over time. Three modes depending on context: raw output for normal shell, screen diffs for full-screen TUIs, and structured agent events when `trip on` is active.
 
-**`trip log <name> --raw`** — Full JSONL event stream (output, input, resize, screen events).
+**`trip log <name> -v`** — Include tool results (hidden by default for agent sessions).
+
+**`trip log <name> --raw`** — Full JSONL event stream (output, screen, agent events).
 
 **`trip log <name> --follow`** — Stream new events as they happen.
 
 **`trip log <name> --since 10m`** — Events from the last 10 minutes.
-
-**`trip screens <name> [index]`** — Browse captured screen snapshots.
 
 ### Interaction
 
 **`trip send <name> <input>`** — Send input to a session without attaching. Auto-appends Enter. Use `--raw` for exact bytes.
 
 **`trip current`** — Print the current session name (exit 1 if not in a session).
+
+### Agent integration
+
+**`trip on`** — Register a running AI agent (Claude Code, Codex) with the current trip session. Reads `CLAUDE_CODE_SESSION_ID` or `CODEX_THREAD_ID` from the environment, locates the agent's JSONL log file, and tells the daemon to tail it for structured events. Raw terminal output is suppressed while agent logging is active.
+
+Run this inside an agent session:
+
+```
+! trip on
+```
+
+Or automate it with a SessionStart hook:
+
+**Claude Code** — add to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "trip on"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Codex** — add to `~/.codex/config.toml`:
+
+```toml
+[[hooks.SessionStart]]
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "trip on"
+```
+
+With `trip on` active, `trip log` shows structured output: assistant text, thinking blocks, tool calls, and turn boundaries — instead of raw terminal escape sequences.
 
 ### Programmatic control
 
@@ -143,7 +187,7 @@ Wrapped sessions are normal trip sessions. You can `trip attach`, `trip screen`,
 
 ### Shell integration
 
-`./install.sh` adds a shell hook to `.zshrc` and `.bashrc` that runs `trip init` before each command. This keeps terminal environment variables (`TERM_PROGRAM`, `COLORTERM`, etc.) in sync when you switch between different terminal apps while attached to the same session.
+`./install.sh` adds a shell hook to `.zshrc` and `.bashrc` that runs `trip env` before each command. This keeps terminal environment variables (`TERM_PROGRAM`, `COLORTERM`, etc.) in sync when you switch between different terminal apps while attached to the same session. It also cleans up agent and TUI markers when the user returns to a shell prompt.
 
 ## How it works
 
