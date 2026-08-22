@@ -142,6 +142,10 @@ pub enum Command {
     /// Start the daemon (typically auto-started)
     #[command(hide = true)]
     Daemon,
+
+    /// Run trip-<name> from PATH (git-style external subcommand)
+    #[command(external_subcommand)]
+    External(Vec<String>),
 }
 
 pub fn parse_duration(s: &str) -> anyhow::Result<f64> {

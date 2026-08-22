@@ -129,6 +129,19 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Command::External(args) => {
+            use std::os::unix::process::CommandExt;
+            let name = args[0].clone();
+            let bin = format!("trip-{}", name);
+            let err = std::process::Command::new(&bin).args(&args[1..]).exec();
+            // exec only returns on failure
+            if err.kind() == std::io::ErrorKind::NotFound {
+                eprintln!("trip: '{}' is not a trip command, and no {} on PATH", name, bin);
+            } else {
+                eprintln!("trip: failed to exec {}: {}", bin, err);
+            }
+            std::process::exit(127);
+        }
         Command::Daemon => {
             daemon::run().await?;
         }
