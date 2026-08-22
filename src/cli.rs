@@ -145,7 +145,7 @@ pub enum Command {
 
     /// Run trip-<name> from PATH (git-style external subcommand)
     #[command(external_subcommand)]
-    External(Vec<String>),
+    External(Vec<std::ffi::OsString>),
 }
 
 pub fn parse_duration(s: &str) -> anyhow::Result<f64> {
