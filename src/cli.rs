@@ -1,3 +1,5 @@
+use std::ffi::OsString;
+
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -145,7 +147,7 @@ pub enum Command {
 
     /// Run trip-<name> from PATH (git-style external subcommand)
     #[command(external_subcommand)]
-    External(Vec<std::ffi::OsString>),
+    External(Vec<OsString>),
 }
 
 pub fn parse_duration(s: &str) -> anyhow::Result<f64> {
