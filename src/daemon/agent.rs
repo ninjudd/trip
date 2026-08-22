@@ -187,6 +187,37 @@ fn parse_codex_line(line: &str, session_started: &mut bool) -> Vec<RecordEvent> 
                             .unwrap_or(serde_json::Value::Null),
                     });
                 }
+                // Codex records shell execution as custom_tool_call, not
+                // function_call: in a real transcript it is 96 of them
+                // against a single function_call. Dropping them meant a Codex
+                // agent logged no agent_tool_call at all, so anything
+                // deriving state from tool calls was blind to every command
+                // it ran. `input` is a source string rather than JSON here,
+                // so it is passed through as a string when it does not parse.
+                "custom_tool_call" => {
+                    let raw = payload.get("input").and_then(|v| v.as_str()).unwrap_or("");
+                    events.push(RecordEvent::AgentToolCall {
+                        t,
+                        id: payload["call_id"].as_str().unwrap_or("").to_string(),
+                        name: payload["name"].as_str().unwrap_or("").to_string(),
+                        input: serde_json::from_str(raw)
+                            .unwrap_or_else(|_| serde_json::Value::String(raw.to_string())),
+                    });
+                }
+                "custom_tool_call_output" => {
+                    events.push(RecordEvent::AgentToolResult {
+                        t,
+                        tool_call_id: payload["call_id"].as_str().unwrap_or("").to_string(),
+                        output: payload
+                            .get("output")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null),
+                        is_error: payload
+                            .get("is_error")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                    });
+                }
                 "function_call_output" => {
                     events.push(RecordEvent::AgentToolResult {
                         t,
@@ -283,5 +314,50 @@ pub async fn tail_agent_log(session_name: String) {
                 stop_reason: "stop".to_string(),
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod codex_parser_tests {
+    use super::{parse_codex_line, RecordEvent};
+
+    /// Verbatim from a real rollout transcript, trimmed to the fields the
+    /// parser reads. That transcript held 96 custom_tool_call entries and one
+    /// function_call, so this is the shape Codex actually emits for shell work.
+    const CALL: &str = r#"{"type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_085c","status":"completed","call_id":"call_94K4","name":"exec","input":"const r = await tools.exec_command({\"cmd\":\"ls -la\"});\ntext(r.output);\n"}}"#;
+    const OUTPUT: &str = r#"{"type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco_01a0","call_id":"call_94K4","output":[{"type":"input_text","text":"Script completed"}]}}"#;
+
+    #[test]
+    fn custom_tool_call_becomes_a_tool_call() {
+        let mut started = true;
+        let events = parse_codex_line(CALL, &mut started);
+        assert_eq!(events.len(), 1, "expected exactly one event");
+        match &events[0] {
+            RecordEvent::AgentToolCall { id, name, input, .. } => {
+                assert_eq!(id, "call_94K4");
+                assert_eq!(name, "exec");
+                // input is a source string, not JSON, so it survives as one
+                // rather than being dropped to null.
+                assert!(input.as_str().unwrap().contains("exec_command"));
+            }
+            _ => panic!("expected AgentToolCall"),
+        }
+    }
+
+    #[test]
+    fn custom_tool_call_output_becomes_a_tool_result_on_the_same_id() {
+        let mut started = true;
+        let events = parse_codex_line(OUTPUT, &mut started);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            RecordEvent::AgentToolResult { tool_call_id, output, is_error, .. } => {
+                // The call and its result correlate, which is what lets a
+                // consumer tell a pending call from an answered one.
+                assert_eq!(tool_call_id, "call_94K4");
+                assert!(!is_error);
+                assert!(output.is_array());
+            }
+            _ => panic!("expected AgentToolResult"),
+        }
     }
 }
