@@ -666,9 +666,69 @@ fn read_hook_stdin() -> Result<Option<(String, String)>> {
     }
     let v: serde_json::Value = serde_json::from_str(&input)?;
     if let Some(path) = v.get("transcript_path").and_then(|p| p.as_str()) {
-        return Ok(Some(("codex".to_string(), path.to_string())));
+        return Ok(Some((kind_for_transcript(path), path.to_string())));
     }
     Ok(None)
+}
+
+/// Which engine wrote the transcript a hook just handed us.
+///
+/// The hook payload does not say. It used to be assumed to be codex, but
+/// Claude Code's `SessionStart` hook passes exactly this shape — it is the
+/// setup trip's own README recommends — so a Claude agent registered through
+/// a hook got an `agent.json` claiming codex against a Claude transcript. The
+/// codex parser keys on `session_meta`/`event_msg`/`response_item`, none of
+/// which a Claude transcript contains, so the session registered cleanly and
+/// then produced no agent events at all.
+///
+/// The transcript's own location is the most direct evidence, since it names
+/// the file we are about to parse. The engines' environment markers are the
+/// fallback for a transcript kept somewhere else.
+fn kind_for_transcript(path: &str) -> String {
+    if path.contains("/.codex/") {
+        return "codex".to_string();
+    }
+    if path.contains("/.claude/") {
+        return "claude".to_string();
+    }
+    if std::env::var("CODEX_THREAD_ID").is_ok() {
+        return "codex".to_string();
+    }
+    "claude".to_string()
+}
+
+#[cfg(test)]
+mod kind_tests {
+    use super::kind_for_transcript;
+
+    #[test]
+    fn claude_transcripts_are_claude() {
+        // The regression: this path used to resolve to codex, and the codex
+        // parser then dropped every event in it.
+        assert_eq!(
+            kind_for_transcript(
+                "/Users/x/.claude/projects/-Users-x-repo/65056f26-3825-446a-a866-ee21e6cb1220.jsonl"
+            ),
+            "claude"
+        );
+    }
+
+    #[test]
+    fn codex_transcripts_are_codex() {
+        assert_eq!(
+            kind_for_transcript("/Users/x/.codex/sessions/2026/08/22/rollout-abc.jsonl"),
+            "codex"
+        );
+    }
+
+    #[test]
+    fn an_unplaceable_transcript_falls_back_to_the_environment() {
+        // Neither home directory appears, so the engine's own marker decides.
+        std::env::set_var("CODEX_THREAD_ID", "t-1");
+        assert_eq!(kind_for_transcript("/tmp/elsewhere.jsonl"), "codex");
+        std::env::remove_var("CODEX_THREAD_ID");
+        assert_eq!(kind_for_transcript("/tmp/elsewhere.jsonl"), "claude");
+    }
 }
 
 fn find_codex_log(base_dir: &str, thread_id: &str) -> Option<String> {
