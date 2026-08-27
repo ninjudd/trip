@@ -99,10 +99,27 @@ pub async fn get_session_list() -> Result<Vec<crate::daemon::protocol::SessionIn
     }
 }
 
-fn is_numbered_session(name: &str) -> bool {
-    name.rsplit_once('.')
-        .map(|(_, suffix)| suffix.chars().all(|c| c.is_ascii_digit()))
-        .unwrap_or(false)
+/// Split a numbered session name (`foo.3` → `("foo", 3)`). Only a purely
+/// numeric suffix counts as numbering — a workspace named `next.js` stays
+/// whole.
+fn split_numbered(name: &str) -> Option<(&str, u64)> {
+    let (base, suffix) = name.rsplit_once('.')?;
+    if base.is_empty() || suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((base, suffix.parse().ok()?))
+}
+
+/// The workspace base name a session belongs to: its name with any `.N`
+/// numbering stripped.
+pub fn session_base(name: &str) -> &str {
+    split_numbered(name).map(|(base, _)| base).unwrap_or(name)
+}
+
+/// Sort key that puts the canonical session first, then numbered sessions in
+/// numeric order.
+fn group_order(name: &str) -> Option<u64> {
+    split_numbered(name).map(|(_, n)| n)
 }
 
 pub fn next_available_name(
@@ -119,10 +136,213 @@ pub fn next_available_name(
     }
 }
 
+enum Key {
+    Up,
+    Down,
+    Enter,
+    Cancel,
+    Digit(usize),
+    Other,
+}
+
+/// Read one keypress from a raw-mode terminal, byte by byte so that several
+/// keys arriving in one burst (held arrows, paste) parse individually.
+fn read_key(fd: std::os::fd::BorrowedFd) -> Key {
+    use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+
+    fn read_byte(fd: std::os::fd::BorrowedFd) -> Option<u8> {
+        use std::os::fd::AsRawFd;
+        let mut b = [0u8; 1];
+        match nix::unistd::read(fd.as_raw_fd(), &mut b) {
+            Ok(1) => Some(b[0]),
+            _ => None,
+        }
+    }
+
+    let Some(b) = read_byte(fd) else {
+        return Key::Cancel;
+    };
+    match b {
+        b'\r' | b'\n' => Key::Enter,
+        0x03 | b'q' => Key::Cancel,
+        b'k' => Key::Up,
+        b'j' => Key::Down,
+        d @ b'1'..=b'9' => Key::Digit((d - b'0') as usize),
+        0x1b => {
+            // Arrow keys arrive as ESC [ A/B (or ESC O A/B); a lone ESC is a
+            // cancel. The terminal writes a whole arrow sequence at once, so
+            // a short poll tells them apart.
+            let mut fds = [PollFd::new(fd, PollFlags::POLLIN)];
+            let pending = matches!(poll(&mut fds, PollTimeout::from(25u16)), Ok(n) if n > 0);
+            if !pending {
+                return Key::Cancel;
+            }
+            if !matches!(read_byte(fd), Some(b'[') | Some(b'O')) {
+                return Key::Other;
+            }
+            match read_byte(fd) {
+                Some(b'A') => Key::Up,
+                Some(b'B') => Key::Down,
+                _ => Key::Other,
+            }
+        }
+        _ => Key::Other,
+    }
+}
+
+/// Interactive list selector: ↑/↓ (or j/k) move the highlight, Enter
+/// confirms, 1-9 jump directly, and q/Esc/Ctrl-C cancel. Renders to stderr,
+/// redrawing the list in place. Returns the chosen index, or None on cancel.
+fn select_choice(rows: &[String]) -> Option<usize> {
+    use nix::sys::termios::{self, LocalFlags, SetArg};
+    use std::os::fd::{AsRawFd, BorrowedFd};
+
+    let fd = std::io::stdin().as_raw_fd();
+    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+    let original = termios::tcgetattr(borrowed).ok();
+    if let Some(ref orig) = original {
+        let mut raw = orig.clone();
+        // ISIG off so Ctrl-C arrives as a byte and we can restore the
+        // terminal instead of dying with the cursor hidden
+        raw.local_flags &= !(LocalFlags::ICANON | LocalFlags::ECHO | LocalFlags::ISIG);
+        termios::tcsetattr(borrowed, SetArg::TCSANOW, &raw).ok();
+    }
+    eprint!("\x1b[?25l");
+
+    let render = |selected: usize, redraw: bool| {
+        let mut out = String::new();
+        if redraw {
+            out.push_str(&format!("\r\x1b[{}A", rows.len()));
+        }
+        for (i, row) in rows.iter().enumerate() {
+            if i == selected {
+                out.push_str(&format!("\x1b[2K> \x1b[7m{}\x1b[0m\n", row));
+            } else {
+                out.push_str(&format!("\x1b[2K  {}\n", row));
+            }
+        }
+        eprint!("{}", out);
+    };
+
+    let mut selected = 0usize;
+    render(selected, false);
+
+    let result = loop {
+        match read_key(borrowed) {
+            Key::Enter => break Some(selected),
+            Key::Cancel => break None,
+            Key::Up => {
+                selected = if selected == 0 {
+                    rows.len() - 1
+                } else {
+                    selected - 1
+                };
+            }
+            Key::Down => {
+                selected = (selected + 1) % rows.len();
+            }
+            Key::Digit(n) if n <= rows.len() => break Some(n - 1),
+            _ => continue,
+        }
+        render(selected, true);
+    };
+
+    eprint!("\x1b[?25h");
+    if let Some(ref orig) = original {
+        termios::tcsetattr(borrowed, SetArg::TCSANOW, orig).ok();
+    }
+    result
+}
+
+/// When the workspace has sessions beyond the canonical one, let the user
+/// pick which to enter. Plain Enter keeps the old behavior: the canonical
+/// session, created if missing. Non-interactive callers always get the
+/// canonical session. Returns None if the user cancels.
+async fn pick_group_session(base: &str) -> Result<Option<String>> {
+    use std::io::IsTerminal;
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return Ok(Some(base.to_string()));
+    }
+
+    let sessions = get_session_list().await?;
+    let mut group: Vec<_> = sessions
+        .iter()
+        .filter(|s| session_base(&s.name) == base)
+        .collect();
+    if !group.iter().any(|s| s.name != base) {
+        return Ok(Some(base.to_string()));
+    }
+    group.sort_by_key(|s| group_order(&s.name));
+
+    // The canonical session is always choice 1, as a to-be-created entry when
+    // it doesn't exist, so the empty-input default matches what a plain
+    // `trip enter` did before the picker.
+    let current = std::env::var("TRIP_SESSION").ok();
+    let mut choices: Vec<(String, String, &str)> = Vec::new();
+    if !group.iter().any(|s| s.name == base) {
+        choices.push((base.to_string(), String::new(), "(new session)"));
+    }
+    for s in &group {
+        let cmd = s
+            .title
+            .as_deref()
+            .or(s.fg_command.as_deref())
+            .unwrap_or(&s.command);
+        let tag = if current.as_deref() == Some(s.name.as_str()) {
+            "(current)"
+        } else if s.attached {
+            "(attached)"
+        } else if matches!(s.state, SessionState::Exited(_)) {
+            "(exited)"
+        } else {
+            ""
+        };
+        choices.push((s.name.clone(), cmd.to_string(), tag));
+    }
+
+    eprintln!(
+        "sessions for '{}':  \x1b[2m↑/↓ + enter · 1-9 · q cancels\x1b[0m",
+        base
+    );
+    let nw = choices
+        .iter()
+        .map(|(name, _, _)| name.len())
+        .max()
+        .unwrap_or(0);
+    let cw = choices
+        .iter()
+        .map(|(_, cmd, _)| cmd.len())
+        .max()
+        .unwrap_or(0);
+    let rows: Vec<String> = choices
+        .iter()
+        .enumerate()
+        .map(|(i, (name, cmd, tag))| {
+            format!("{}) {:<nw$}  {:<cw$}  {}", i + 1, name, cmd, tag)
+                .trim_end()
+                .to_string()
+        })
+        .collect();
+
+    match select_choice(&rows) {
+        Some(i) => Ok(Some(choices[i].0.clone())),
+        None => {
+            eprintln!("cancelled");
+            Ok(None)
+        }
+    }
+}
+
 pub async fn enter(name: Option<String>, command: Option<Vec<String>>) -> Result<()> {
     let name = match name {
         Some(n) => n,
-        None => derive_session_name()?,
+        None => {
+            let base = derive_session_name()?;
+            match pick_group_session(&base).await? {
+                Some(n) => n,
+                None => return Ok(()),
+            }
+        }
     };
 
     if let Ok(current) = std::env::var("TRIP_SESSION") {
@@ -236,7 +456,7 @@ pub async fn create_session(name: String, command: Option<Vec<String>>) -> Resul
     Ok(())
 }
 
-pub async fn list_sessions(all: bool) -> Result<()> {
+pub async fn list_sessions(all: bool, attached_only: bool) -> Result<()> {
     let stream = match launch::try_connect().await {
         Ok(s) => s,
         Err(_) => {
@@ -256,18 +476,38 @@ pub async fn list_sessions(all: bool) -> Result<()> {
             let response: Response = serde_json::from_slice(&payload)?;
             match response {
                 Response::SessionList { sessions } => {
-                    let sessions: Vec<_> = if all {
-                        sessions
+                    // "which sessions are attached" is a cross-workspace
+                    // question, so --attached implies the all-workspace view
+                    let grouped = all || attached_only;
+                    let scope = if grouped {
+                        None
                     } else {
-                        sessions
-                            .into_iter()
-                            .filter(|s| !is_numbered_session(&s.name) || s.attached)
-                            .collect()
+                        Some(derive_session_name()?)
                     };
+                    let mut sessions: Vec<_> = sessions
+                        .into_iter()
+                        .filter(|s| !attached_only || s.attached)
+                        .filter(|s| {
+                            scope
+                                .as_deref()
+                                .is_none_or(|base| session_base(&s.name) == base)
+                        })
+                        .collect();
                     if sessions.is_empty() {
-                        println!("no sessions");
+                        match &scope {
+                            Some(base) => {
+                                println!("no sessions for '{}' (try: trip ls -a)", base)
+                            }
+                            None if attached_only => println!("no attached sessions"),
+                            None => println!("no sessions"),
+                        }
                         return Ok(());
                     }
+                    sessions.sort_by(|a, b| {
+                        (session_base(&a.name), group_order(&a.name))
+                            .cmp(&(session_base(&b.name), group_order(&b.name)))
+                    });
+
                     let current = std::env::var("TRIP_SESSION").ok();
                     let home = std::env::var("HOME").unwrap_or_default();
                     let rows: Vec<_> = sessions
@@ -297,6 +537,7 @@ pub async fn list_sessions(all: bool) -> Result<()> {
                                 cwd.to_string()
                             };
                             (
+                                session_base(&s.name).to_string(),
                                 marker.to_string(),
                                 s.name.clone(),
                                 cmd.to_string(),
@@ -306,13 +547,22 @@ pub async fn list_sessions(all: bool) -> Result<()> {
                         })
                         .collect();
 
-                    let nw = rows.iter().map(|r| r.1.len()).max().unwrap_or(0);
-                    let cw = rows.iter().map(|r| r.2.len()).max().unwrap_or(0);
-                    let bw = rows.iter().map(|r| r.3.len()).max().unwrap_or(0);
+                    let nw = rows.iter().map(|r| r.2.len()).max().unwrap_or(0);
+                    let cw = rows.iter().map(|r| r.3.len()).max().unwrap_or(0);
+                    let bw = rows.iter().map(|r| r.4.len()).max().unwrap_or(0);
 
-                    for (marker, name, cmd, branch, cwd) in &rows {
+                    let indent = if grouped { "  " } else { "" };
+                    let mut last_base: Option<&str> = None;
+                    for (base, marker, name, cmd, branch, cwd) in &rows {
+                        if grouped && last_base != Some(base.as_str()) {
+                            if last_base.is_some() {
+                                println!();
+                            }
+                            println!("{}", base);
+                            last_base = Some(base);
+                        }
                         println!(
-                            "{} {:<nw$}  {:<cw$}  {:<bw$}  {}",
+                            "{indent}{} {:<nw$}  {:<cw$}  {:<bw$}  {}",
                             marker,
                             name,
                             cmd,
@@ -695,6 +945,50 @@ fn kind_for_transcript(path: &str) -> String {
         return "codex".to_string();
     }
     "claude".to_string()
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::{group_order, session_base, split_numbered};
+
+    #[test]
+    fn numbered_names_split_into_base_and_number() {
+        assert_eq!(split_numbered("trip.1"), Some(("trip", 1)));
+        assert_eq!(
+            split_numbered("ninjudd/trip.12"),
+            Some(("ninjudd/trip", 12))
+        );
+        assert_eq!(session_base("ninjudd/trip.3"), "ninjudd/trip");
+        assert_eq!(session_base("ninjudd/trip"), "ninjudd/trip");
+    }
+
+    #[test]
+    fn a_dotted_workspace_name_is_not_numbering() {
+        // ~/next.js derives the session name `next.js`; splitting on the dot
+        // would wrongly group it under `next`.
+        assert_eq!(split_numbered("next.js"), None);
+        assert_eq!(session_base("next.js"), "next.js");
+    }
+
+    #[test]
+    fn an_all_numeric_dotted_suffix_is_ambiguous_and_reads_as_numbering() {
+        // A workspace literally named `v2.0` collides with numbering; the
+        // numeric reading wins because `.N` is trip's own convention.
+        assert_eq!(session_base("v2.0"), "v2");
+    }
+
+    #[test]
+    fn degenerate_names_stay_whole() {
+        assert_eq!(session_base("trip."), "trip.");
+        assert_eq!(session_base(".1"), ".1");
+    }
+
+    #[test]
+    fn canonical_sorts_before_numbered() {
+        let mut names = vec!["trip.10", "trip.2", "trip"];
+        names.sort_by_key(|n| group_order(n));
+        assert_eq!(names, vec!["trip", "trip.2", "trip.10"]);
+    }
 }
 
 #[cfg(test)]

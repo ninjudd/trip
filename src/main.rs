@@ -47,8 +47,8 @@ async fn main() -> anyhow::Result<()> {
             };
             client::create_session(name, cmd).await?;
         }
-        Command::Ls { all } => {
-            client::list_sessions(all).await?;
+        Command::Ls { all, attached } => {
+            client::list_sessions(all, attached).await?;
         }
         Command::Attach { name } => {
             client::attach::attach(name).await?;
@@ -138,7 +138,10 @@ async fn main() -> anyhow::Result<()> {
             let name = args[0].to_string_lossy();
             let bin = bin.to_string_lossy();
             if err.kind() == std::io::ErrorKind::NotFound {
-                eprintln!("trip: '{}' is not a trip command, and no {} on PATH", name, bin);
+                eprintln!(
+                    "trip: '{}' is not a trip command, and no {} on PATH",
+                    name, bin
+                );
                 std::process::exit(127);
             } else {
                 eprintln!("trip: failed to exec {}: {}", bin, err);

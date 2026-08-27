@@ -11,7 +11,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Enter the canonical workspace session (create or attach)
+    /// Enter a workspace session (create or attach; pick when several exist)
     Enter {
         /// Session name (derived from workspace if omitted)
         name: Option<String>,
@@ -51,11 +51,15 @@ pub enum Command {
         command: Vec<String>,
     },
 
-    /// List sessions
+    /// List sessions for the current workspace
     Ls {
-        /// Show all sessions including hidden background ones
+        /// Show sessions for all workspaces, grouped by base name
         #[arg(short, long)]
         all: bool,
+
+        /// Show only attached sessions (implies --all)
+        #[arg(long)]
+        attached: bool,
     },
 
     /// Attach to a session
