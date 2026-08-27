@@ -78,9 +78,17 @@ fn parse_detach_key(value: &str) -> Option<u8> {
     if let Some(rest) = value.strip_prefix('^') {
         let mut chars = rest.chars();
         if let (Some(c), None) = (chars.next(), chars.next()) {
-            if c.is_ascii() {
-                return Some((c.to_ascii_uppercase() as u8) & 0x1f);
-            }
+            let c = c.to_ascii_uppercase();
+            return match c {
+                // What terminals send for Ctrl+- (aliased to Ctrl+_).
+                '-' => Some(0x1f),
+                // Ctrl+? is DEL by convention.
+                '?' => Some(0x7f),
+                // The & 0x1f trick is only valid in this range; outside it
+                // ('^-' would become CR!) fall through to the default.
+                '@'..='_' => Some((c as u8) & 0x1f),
+                _ => Some(DEFAULT_DETACH_KEY),
+            };
         }
     }
     Some(DEFAULT_DETACH_KEY)
@@ -365,9 +373,19 @@ mod tests {
         assert_eq!(parse_detach_key("^\\"), Some(0x1c));
         assert_eq!(parse_detach_key("^z"), Some(0x1a));
         assert_eq!(parse_detach_key("^Z"), Some(0x1a));
+        assert_eq!(parse_detach_key("^_"), Some(0x1f));
+        assert_eq!(parse_detach_key("^?"), Some(0x7f));
         assert_eq!(parse_detach_key("none"), None);
         assert_eq!(parse_detach_key("OFF"), None);
         assert_eq!(parse_detach_key("garbage"), Some(DEFAULT_DETACH_KEY));
         assert_eq!(parse_detach_key(""), Some(DEFAULT_DETACH_KEY));
+    }
+
+    #[test]
+    fn ctrl_dash_is_0x1f_not_cr() {
+        assert_eq!(parse_detach_key("^-"), Some(0x1f));
+        // '1' & 0x1f would be 0x11 (^Q); out-of-range chars keep the default
+        // instead of binding a surprise key.
+        assert_eq!(parse_detach_key("^1"), Some(DEFAULT_DETACH_KEY));
     }
 }

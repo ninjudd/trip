@@ -72,6 +72,7 @@ To change or disable the key, set `TRIP_DETACH_KEY`:
 
 ```
 TRIP_DETACH_KEY='^z'    # detach on Ctrl-Z instead
+TRIP_DETACH_KEY='^-'    # Ctrl+dash (sent by terminals as ^_, 0x1f)
 TRIP_DETACH_KEY=none    # no detach key; close the terminal to detach
 ```
 
