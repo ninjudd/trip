@@ -82,10 +82,25 @@ impl Session {
         // Build env vars before fork
         let mut env_vars: Vec<std::ffi::CString> = env
             .iter()
-            .filter(|(k, _)| k.as_str() != "TERM" && k.as_str() != "TRIP_SESSION")
+            .filter(|(k, _)| {
+                k.as_str() != "TERM"
+                    && k.as_str() != "TRIP_SESSION"
+                    && k.as_str() != "TRIP_WORKSPACE"
+            })
             .map(|(k, v)| std::ffi::CString::new(format!("{}={}", k, v)).unwrap())
             .collect();
         env_vars.push(std::ffi::CString::new(format!("TRIP_SESSION={}", name)).unwrap());
+        // The workspace this session belongs to — TRIP_SESSION with any .N
+        // numbering stripped. Exported separately so prompts and scripts can
+        // key on the workspace without reimplementing the split (and getting
+        // a name like `next.js` wrong).
+        env_vars.push(
+            std::ffi::CString::new(format!(
+                "TRIP_WORKSPACE={}",
+                crate::client::session_base(&name)
+            ))
+            .unwrap(),
+        );
         env_vars.push(std::ffi::CString::new("TERM=xterm-256color").unwrap());
 
         match unsafe { unistd::fork()? } {
