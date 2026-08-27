@@ -83,7 +83,7 @@ default Ctrl-\ sacrifices only SIGQUIT, which almost nothing wants.
 
 ### Sessions
 
-**`trip enter [name]`** — Enter the canonical workspace session. Creates it if missing, attaches if it exists. Derives the session name from your git repo root when no name is given. If someone else is attached, prompts to take over.
+**`trip enter [name]`** — Enter a workspace session. Creates it if missing, attaches if it exists. Derives the session name from your git repo root when no name is given. When the workspace has extra numbered sessions (from `trip new`), shows a picker — plain Enter takes the canonical session, so the default flow is unchanged. If someone else is attached, prompts to take over.
 
 **`trip return`** — Return to the previous session. Opposite of `trip enter`.
 
@@ -91,7 +91,7 @@ default Ctrl-\ sacrifices only SIGQUIT, which almost nothing wants.
 
 **`trip create <name> [-- command]`** — Create a session without attaching. For scripting and automation.
 
-**`trip ls`** — List sessions. Shows foreground command, git branch, cwd, and marks the current session with `*`. Use `-a` to include background sessions.
+**`trip ls`** — List the current workspace's sessions. Shows foreground command, git branch, cwd, and marks the current session with `*`. Use `-a` to show every workspace, grouped by base name, and `--attached` to show only attached sessions across all workspaces.
 
 **`trip attach <name>`** — Attach to a specific session by name.
 
