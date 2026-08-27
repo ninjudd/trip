@@ -136,13 +136,131 @@ pub fn next_available_name(
     }
 }
 
+enum Key {
+    Up,
+    Down,
+    Enter,
+    Cancel,
+    Digit(usize),
+    Other,
+}
+
+/// Read one keypress from a raw-mode terminal, byte by byte so that several
+/// keys arriving in one burst (held arrows, paste) parse individually.
+fn read_key(fd: std::os::fd::BorrowedFd) -> Key {
+    use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+
+    fn read_byte(fd: std::os::fd::BorrowedFd) -> Option<u8> {
+        use std::os::fd::AsRawFd;
+        let mut b = [0u8; 1];
+        match nix::unistd::read(fd.as_raw_fd(), &mut b) {
+            Ok(1) => Some(b[0]),
+            _ => None,
+        }
+    }
+
+    let Some(b) = read_byte(fd) else {
+        return Key::Cancel;
+    };
+    match b {
+        b'\r' | b'\n' => Key::Enter,
+        0x03 | b'q' => Key::Cancel,
+        b'k' => Key::Up,
+        b'j' => Key::Down,
+        d @ b'1'..=b'9' => Key::Digit((d - b'0') as usize),
+        0x1b => {
+            // Arrow keys arrive as ESC [ A/B (or ESC O A/B); a lone ESC is a
+            // cancel. The terminal writes a whole arrow sequence at once, so
+            // a short poll tells them apart.
+            let mut fds = [PollFd::new(fd, PollFlags::POLLIN)];
+            let pending = matches!(poll(&mut fds, PollTimeout::from(25u16)), Ok(n) if n > 0);
+            if !pending {
+                return Key::Cancel;
+            }
+            if !matches!(read_byte(fd), Some(b'[') | Some(b'O')) {
+                return Key::Other;
+            }
+            match read_byte(fd) {
+                Some(b'A') => Key::Up,
+                Some(b'B') => Key::Down,
+                _ => Key::Other,
+            }
+        }
+        _ => Key::Other,
+    }
+}
+
+/// Interactive list selector: ↑/↓ (or j/k) move the highlight, Enter
+/// confirms, 1-9 jump directly, and q/Esc/Ctrl-C cancel. Renders to stderr,
+/// redrawing the list in place. Returns the chosen index, or None on cancel.
+fn select_choice(rows: &[String]) -> Option<usize> {
+    use nix::sys::termios::{self, LocalFlags, SetArg};
+    use std::os::fd::{AsRawFd, BorrowedFd};
+
+    let fd = std::io::stdin().as_raw_fd();
+    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+    let original = termios::tcgetattr(borrowed).ok();
+    if let Some(ref orig) = original {
+        let mut raw = orig.clone();
+        // ISIG off so Ctrl-C arrives as a byte and we can restore the
+        // terminal instead of dying with the cursor hidden
+        raw.local_flags &= !(LocalFlags::ICANON | LocalFlags::ECHO | LocalFlags::ISIG);
+        termios::tcsetattr(borrowed, SetArg::TCSANOW, &raw).ok();
+    }
+    eprint!("\x1b[?25l");
+
+    let render = |selected: usize, redraw: bool| {
+        let mut out = String::new();
+        if redraw {
+            out.push_str(&format!("\r\x1b[{}A", rows.len()));
+        }
+        for (i, row) in rows.iter().enumerate() {
+            if i == selected {
+                out.push_str(&format!("\x1b[2K> \x1b[7m{}\x1b[0m\n", row));
+            } else {
+                out.push_str(&format!("\x1b[2K  {}\n", row));
+            }
+        }
+        eprint!("{}", out);
+    };
+
+    let mut selected = 0usize;
+    render(selected, false);
+
+    let result = loop {
+        match read_key(borrowed) {
+            Key::Enter => break Some(selected),
+            Key::Cancel => break None,
+            Key::Up => {
+                selected = if selected == 0 {
+                    rows.len() - 1
+                } else {
+                    selected - 1
+                };
+            }
+            Key::Down => {
+                selected = (selected + 1) % rows.len();
+            }
+            Key::Digit(n) if n <= rows.len() => break Some(n - 1),
+            _ => continue,
+        }
+        render(selected, true);
+    };
+
+    eprint!("\x1b[?25h");
+    if let Some(ref orig) = original {
+        termios::tcsetattr(borrowed, SetArg::TCSANOW, orig).ok();
+    }
+    result
+}
+
 /// When the workspace has sessions beyond the canonical one, let the user
 /// pick which to enter. Plain Enter keeps the old behavior: the canonical
 /// session, created if missing. Non-interactive callers always get the
 /// canonical session. Returns None if the user cancels.
 async fn pick_group_session(base: &str) -> Result<Option<String>> {
     use std::io::IsTerminal;
-    if !std::io::stdin().is_terminal() {
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
         return Ok(Some(base.to_string()));
     }
 
@@ -182,7 +300,10 @@ async fn pick_group_session(base: &str) -> Result<Option<String>> {
         choices.push((s.name.clone(), cmd.to_string(), tag));
     }
 
-    eprintln!("sessions for '{}':", base);
+    eprintln!(
+        "sessions for '{}':  \x1b[2m↑/↓ + enter · 1-9 · q cancels\x1b[0m",
+        base
+    );
     let nw = choices
         .iter()
         .map(|(name, _, _)| name.len())
@@ -193,20 +314,19 @@ async fn pick_group_session(base: &str) -> Result<Option<String>> {
         .map(|(_, cmd, _)| cmd.len())
         .max()
         .unwrap_or(0);
-    for (i, (name, cmd, tag)) in choices.iter().enumerate() {
-        eprintln!("  {}) {:<nw$}  {:<cw$}  {}", i + 1, name, cmd, tag);
-    }
-    eprint!("enter [1-{}] (default 1): ", choices.len());
+    let rows: Vec<String> = choices
+        .iter()
+        .enumerate()
+        .map(|(i, (name, cmd, tag))| {
+            format!("{}) {:<nw$}  {:<cw$}  {}", i + 1, name, cmd, tag)
+                .trim_end()
+                .to_string()
+        })
+        .collect();
 
-    let mut line = String::new();
-    std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line).ok();
-    let line = line.trim();
-    if line.is_empty() {
-        return Ok(Some(choices[0].0.clone()));
-    }
-    match line.parse::<usize>() {
-        Ok(n) if (1..=choices.len()).contains(&n) => Ok(Some(choices[n - 1].0.clone())),
-        _ => {
+    match select_choice(&rows) {
+        Some(i) => Ok(Some(choices[i].0.clone())),
+        None => {
             eprintln!("cancelled");
             Ok(None)
         }

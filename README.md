@@ -83,7 +83,7 @@ default Ctrl-\ sacrifices only SIGQUIT, which almost nothing wants.
 
 ### Sessions
 
-**`trip enter [name]`** — Enter a workspace session. Creates it if missing, attaches if it exists. Derives the session name from your git repo root when no name is given. When the workspace has extra numbered sessions (from `trip new`), shows a picker — plain Enter takes the canonical session, so the default flow is unchanged. If someone else is attached, prompts to take over.
+**`trip enter [name]`** — Enter a workspace session. Creates it if missing, attaches if it exists. Derives the session name from your git repo root when no name is given. When the workspace has extra numbered sessions (from `trip new`), shows a picker — arrow keys (or j/k) move, 1-9 jump, Enter selects, and q/Esc cancels. Plain Enter takes the canonical session, so the default flow is unchanged. If someone else is attached, prompts to take over.
 
 **`trip return`** — Return to the previous session. Opposite of `trip enter`.
 
