@@ -38,7 +38,9 @@ remove_old_hook() {
     file="$(resolve_path "$1")"
     [ -f "$file" ] || return 0
     if grep -qF "$MARKER" "$file"; then
-        sed -i '' "/$MARKER/,/^$/d" "$file"
+        # -i.suffix (attached) is the one in-place form both GNU and BSD sed accept
+        sed -i.trip-bak "/$MARKER/,/^$/d" "$file"
+        rm -f "$file.trip-bak"
     fi
 }
 
