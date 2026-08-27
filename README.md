@@ -59,6 +59,25 @@ trip enter
 
 That's it. If a session exists for this workspace, you're attached. If not, one is created. Close the terminal whenever you want — the session survives. Run `trip enter` again to pick up where you left off.
 
+## Detaching
+
+Closing the terminal is the usual way out. To detach without closing the
+window, press **Ctrl-\\** — the same key dtach and abduco use. The session
+keeps running; the client exits and your shell comes back.
+
+Pasted text is never misread as the key: input inside a bracketed paste is
+forwarded untouched.
+
+To change or disable the key, set `TRIP_DETACH_KEY`:
+
+```
+TRIP_DETACH_KEY='^z'    # detach on Ctrl-Z instead
+TRIP_DETACH_KEY=none    # no detach key; close the terminal to detach
+```
+
+Whatever key you pick stops reaching programs inside the session — the
+default Ctrl-\ sacrifices only SIGQUIT, which almost nothing wants.
+
 ## Commands
 
 ### Sessions
