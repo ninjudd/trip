@@ -151,6 +151,200 @@ impl DetachScanner {
     }
 }
 
+/// Rewrites OSC title sequences on their way to the terminal so every title
+/// starts with the workspace.
+///
+/// trip sets the terminal title once at attach, but anything running in the session
+/// (Claude Code, an editor, a long build) sets its own afterwards and the
+/// workspace is gone. Those titles are worth keeping — they say what the
+/// session is *doing* — so prefix them rather than suppress them.
+///
+/// Sequences arrive split across reads, so the parser is a state machine that
+/// holds a partial sequence between chunks. See `title_prefix` for configuration.
+struct TitlePrefixer {
+    prefix: Option<String>,
+    state: TitleState,
+    /// The `ESC ] n ;` seen so far, replayed verbatim if this turns out not to
+    /// be a title sequence after all.
+    pending: Vec<u8>,
+    title: Vec<u8>,
+}
+
+#[derive(PartialEq)]
+enum TitleState {
+    Normal,
+    Esc,
+    /// After `ESC ]`, reading the numeric parameter.
+    Osc,
+    /// Inside the title text of an OSC 0/1/2.
+    Title,
+    /// Saw ESC inside the title — either the ST terminator or a stray escape.
+    TitleEsc,
+}
+
+/// Titles longer than this are passed through untouched; a runaway sequence
+/// should not buffer without bound.
+const MAX_TITLE: usize = 512;
+
+impl TitlePrefixer {
+    fn new(prefix: Option<String>) -> Self {
+        TitlePrefixer {
+            prefix,
+            state: TitleState::Normal,
+            pending: Vec::new(),
+            title: Vec::new(),
+        }
+    }
+
+    fn decorate(&self, title: &[u8], out: &mut Vec<u8>) {
+        let prefix = match &self.prefix {
+            Some(p) => p,
+            None => {
+                out.extend_from_slice(title);
+                return;
+            }
+        };
+        let text = String::from_utf8_lossy(title);
+        // Leave a title that already opens with the workspace alone, so
+        // reattaching or a second client cannot stack prefixes.
+        if text.starts_with(prefix.as_str()) {
+            out.extend_from_slice(title);
+        } else {
+            // The prefix is complete, separator included, so concatenate.
+            out.extend_from_slice(prefix.as_bytes());
+            out.extend_from_slice(title);
+        }
+    }
+
+    fn process(&mut self, data: &[u8]) -> Vec<u8> {
+        if self.prefix.is_none() {
+            return data.to_vec();
+        }
+        let mut out = Vec::with_capacity(data.len() + 32);
+        for &b in data {
+            match self.state {
+                TitleState::Normal => {
+                    if b == 0x1b {
+                        self.state = TitleState::Esc;
+                        self.pending.clear();
+                        self.pending.push(b);
+                    } else {
+                        out.push(b);
+                    }
+                }
+                TitleState::Esc => {
+                    self.pending.push(b);
+                    if b == b']' {
+                        self.state = TitleState::Osc;
+                    } else {
+                        out.extend_from_slice(&self.pending);
+                        self.pending.clear();
+                        self.state = TitleState::Normal;
+                    }
+                }
+                TitleState::Osc => {
+                    self.pending.push(b);
+                    // Only 0 (icon+window), 1 (icon) and 2 (window) are titles.
+                    let head = &self.pending[2..];
+                    if b == b';' {
+                        if matches!(head, b"0;" | b"1;" | b"2;") {
+                            self.state = TitleState::Title;
+                            self.title.clear();
+                        } else {
+                            out.extend_from_slice(&self.pending);
+                            self.pending.clear();
+                            self.state = TitleState::Normal;
+                        }
+                    } else if !b.is_ascii_digit() || head.len() > 2 {
+                        out.extend_from_slice(&self.pending);
+                        self.pending.clear();
+                        self.state = TitleState::Normal;
+                    }
+                }
+                TitleState::Title => {
+                    if b == 0x07 {
+                        out.extend_from_slice(&self.pending);
+                        let title = std::mem::take(&mut self.title);
+                        self.decorate(&title, &mut out);
+                        out.push(0x07);
+                        self.pending.clear();
+                        self.state = TitleState::Normal;
+                    } else if b == 0x1b {
+                        self.state = TitleState::TitleEsc;
+                    } else if self.title.len() >= MAX_TITLE {
+                        out.extend_from_slice(&self.pending);
+                        out.extend_from_slice(&self.title);
+                        out.push(b);
+                        self.pending.clear();
+                        self.title.clear();
+                        self.state = TitleState::Normal;
+                    } else {
+                        self.title.push(b);
+                    }
+                }
+                TitleState::TitleEsc => {
+                    if b == b'\\' {
+                        out.extend_from_slice(&self.pending);
+                        let title = std::mem::take(&mut self.title);
+                        self.decorate(&title, &mut out);
+                        out.extend_from_slice(b"\x1b\\");
+                        self.pending.clear();
+                        self.state = TitleState::Normal;
+                    } else {
+                        // Not a terminator; the ESC was part of the title.
+                        self.title.push(0x1b);
+                        self.title.push(b);
+                        self.state = TitleState::Title;
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// The prefix every title gets, from `TRIP_TITLE_PREFIX`.
+///
+/// The value is a shell string, expanded once at attach with `TRIP_WORKSPACE`
+/// and `TRIP_SESSION` in the environment — so the whole of shell parameter
+/// expansion is available and there is nothing new to learn:
+///
+///   `$TRIP_WORKSPACE - `           acme/webapp - Deliberating
+///   `${TRIP_WORKSPACE##*/} \u{b7} `        webapp \u{b7} Deliberating
+///   `\u{2601} ${TRIP_WORKSPACE##*/} \u{b7} `      \u{2601} webapp \u{b7} Deliberating
+///
+/// It is the *complete* prefix: trip adds no separator of its own, so the
+/// trailing space and any divider are part of the value. Empty leaves titles
+/// untouched. Expansion happens once per attach, not per title, so command
+/// substitution is evaluated then rather than continuously.
+fn title_prefix(session: &str) -> Option<String> {
+    const DEFAULT: &str = "${TRIP_WORKSPACE##*/} \u{b7} ";
+    let template = std::env::var("TRIP_TITLE_PREFIX").unwrap_or_else(|_| DEFAULT.to_string());
+    if template.is_empty() {
+        return None;
+    }
+    let workspace = super::session_base(session);
+
+    let expanded = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(r#"eval "printf %s \"$TRIP_TITLE_PREFIX\"""#)
+        .env("TRIP_TITLE_PREFIX", &template)
+        .env("TRIP_WORKSPACE", workspace)
+        .env("TRIP_SESSION", session)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        // A broken template should not leave the title unset.
+        .unwrap_or_else(|| format!("{} \u{b7} ", workspace));
+
+    if expanded.is_empty() {
+        None
+    } else {
+        Some(expanded)
+    }
+}
+
 fn terminal_size() -> (u16, u16) {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
     let fd = std::io::stdout().as_raw_fd();
@@ -199,8 +393,16 @@ pub async fn attach(name: String) -> Result<()> {
         eprintln!("[read-only]");
     }
 
-    // Set tab title to session name
-    print!("\x1b]1;{}\x07", name);
+    // Push the terminal's current title so detaching can put it back. The
+    // XTerm title stack (CSI 22/23 t) is what iTerm and friends implement;
+    // terminals without it ignore both halves harmlessly.
+    print!("\x1b[22;0t");
+
+    // Set the title to the same prefix the rewriter applies, so it reads
+    // consistently from the moment of attach rather than showing the raw session
+    // name until something in the session happens to set a title.
+    let initial = title_prefix(&name).unwrap_or_else(|| name.clone());
+    print!("\x1b]1;{}\x07", initial.trim_end());
     std::io::Write::flush(&mut std::io::stdout()).ok();
 
     let _guard = RawModeGuard::enter();
@@ -228,6 +430,7 @@ pub async fn attach(name: String) -> Result<()> {
 
     let mut stdout = std::io::stdout();
     let mut scanner = DetachScanner::new(detach_key_from_env());
+    let mut titles = TitlePrefixer::new(title_prefix(&name));
     let mut detached = false;
 
     loop {
@@ -235,14 +438,18 @@ pub async fn attach(name: String) -> Result<()> {
             frame = read_frame(&mut reader) => {
                 match frame? {
                     Some(Frame::Data(data)) => {
-                        stdout.write_all(&data)?;
+                        stdout.write_all(&titles.process(&data))?;
                         stdout.flush()?;
                     }
                     Some(Frame::Control(payload)) => {
                         if let Ok(response) = serde_json::from_slice::<Response>(&payload) {
                             match response {
                                 Response::SessionName { name } => {
-                                    let title = format!("\x1b]1;{}\x07", name);
+                                    // Renaming moves the workspace too.
+                                    let prefix = title_prefix(&name);
+                                    let shown = prefix.clone().unwrap_or_else(|| name.clone());
+                                    titles = TitlePrefixer::new(prefix);
+                                    let title = format!("\x1b]1;{}\x07", shown.trim_end());
                                     stdout.write_all(title.as_bytes())?;
                                     stdout.flush()?;
                                 }
@@ -296,6 +503,8 @@ pub async fn attach(name: String) -> Result<()> {
     // Reset terminal modes that the session's app may have enabled
     // (mouse tracking, alternate screen buffer, bracketed paste)
     stdout.write_all(super::TERMINAL_RESET).ok();
+    // Put back the title the terminal had before we attached.
+    stdout.write_all(b"\x1b[23;0t").ok();
     stdout.flush().ok();
 
     // Restore original terminal settings
@@ -366,6 +575,85 @@ mod tests {
     fn abandoned_marker_prefix_still_detaches() {
         let mut s = DetachScanner::new(Some(0x1c));
         assert_eq!(scan_all(&mut s, &[b"\x1b[2x\x1c"]), Some((0, 4)));
+    }
+
+    fn prefixed(chunks: &[&[u8]]) -> String {
+        let mut p = TitlePrefixer::new(Some("proj \u{b7} ".into()));
+        let mut out = Vec::new();
+        for c in chunks {
+            out.extend(p.process(c));
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    #[test]
+    fn prefixes_bel_terminated_title() {
+        assert_eq!(prefixed(&[b"\x1b]0;editing\x07"]), "\u{1b}]0;proj · editing\u{7}");
+    }
+
+    #[test]
+    fn prefixes_st_terminated_title() {
+        assert_eq!(
+            prefixed(&[b"\x1b]2;build\x1b\\"]),
+            "\u{1b}]2;proj · build\u{1b}\\"
+        );
+    }
+
+    #[test]
+    fn passes_surrounding_output_through() {
+        assert_eq!(
+            prefixed(&[b"before\x1b]1;x\x07after"]),
+            "before\u{1b}]1;proj · x\u{7}after"
+        );
+    }
+
+    #[test]
+    fn does_not_stack_prefixes() {
+        assert_eq!(
+            prefixed(&[b"\x1b]0;proj \xc2\xb7 already\x07"]),
+            "\u{1b}]0;proj · already\u{7}"
+        );
+    }
+
+    #[test]
+    fn handles_sequence_split_across_chunks() {
+        assert_eq!(
+            prefixed(&[b"\x1b]0", b";edi", b"ting\x07rest"]),
+            "\u{1b}]0;proj · editing\u{7}rest"
+        );
+    }
+
+    #[test]
+    fn leaves_non_title_osc_alone() {
+        // OSC 6 is the tab color; it must not be rewritten.
+        let s = prefixed(&[b"\x1b]6;1;bg;red;brightness;40\x07"]);
+        assert_eq!(s, "\u{1b}]6;1;bg;red;brightness;40\u{7}");
+    }
+
+    #[test]
+    fn leaves_plain_escapes_alone() {
+        assert_eq!(prefixed(&[b"\x1b[31mred\x1b[0m"]), "\u{1b}[31mred\u{1b}[0m");
+    }
+
+    #[test]
+    fn empty_title_becomes_the_prefix() {
+        assert_eq!(prefixed(&[b"\x1b]0;\x07"]), "\u{1b}]0;proj \u{b7} \u{7}");
+    }
+
+    #[test]
+    fn prefix_is_concatenated_verbatim() {
+        // trip adds no separator of its own — the prefix carries it, so a
+        // prefix ending in a space or an arrow lands exactly as written.
+        let mut p = TitlePrefixer::new(Some("~ ".into()));
+        let out = p.process(b"\x1b]0;build\x07");
+        assert_eq!(String::from_utf8_lossy(&out), "\u{1b}]0;~ build\u{7}");
+    }
+
+    #[test]
+    fn disabled_passes_everything_through() {
+        let mut p = TitlePrefixer::new(None);
+        let out = p.process(b"\x1b]0;editing\x07");
+        assert_eq!(String::from_utf8_lossy(&out), "\u{1b}]0;editing\u{7}");
     }
 
     #[test]

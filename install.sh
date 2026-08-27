@@ -10,7 +10,13 @@ else
     echo "Building trip..."
     cargo build --release
     echo "Installing to /usr/local/bin/trip..."
-    sudo cp target/release/trip /usr/local/bin/trip
+    # Copying onto the destination fails with ETXTBSY while a daemon or client
+    # is executing it, and follows a --dev symlink back into target/ if one is
+    # there. Write alongside and rename: rename is atomic, replaces a symlink
+    # with a real file, and leaves running processes on the old inode.
+    sudo cp target/release/trip /usr/local/bin/.trip.new
+    sudo chmod 755 /usr/local/bin/.trip.new
+    sudo mv -f /usr/local/bin/.trip.new /usr/local/bin/trip
 fi
 
 HOOK='# trip shell hook

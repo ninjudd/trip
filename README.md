@@ -79,6 +79,38 @@ TRIP_DETACH_KEY=none    # no detach key; close the terminal to detach
 Whatever key you pick stops reaching programs inside the session — the
 default Ctrl-\ sacrifices only SIGQUIT, which almost nothing wants.
 
+## Titles
+
+Every title a session emits is prefixed with the workspace, so it reads
+`~webapp Deliberating` rather than losing the workspace the moment a program
+sets its own title. Programs keep saying what they are doing; you keep knowing
+where. Numbered sessions share their workspace's prefix, and a title that
+already starts with it is left alone, so prefixes never stack.
+
+`TRIP_TITLE_PREFIX` is the whole prefix — a shell string, expanded once when you
+attach with `TRIP_WORKSPACE` and `TRIP_SESSION` in the environment. There is no
+template language to learn; parameter expansion does the work:
+
+```
+TRIP_TITLE_PREFIX='${TRIP_WORKSPACE##*/} '        webapp Deliberating            (the default)
+TRIP_TITLE_PREFIX='~${TRIP_WORKSPACE##*/} '       ~webapp Deliberating
+TRIP_TITLE_PREFIX='@${TRIP_WORKSPACE##*/} '       @webapp Deliberating           (on a remote box)
+TRIP_TITLE_PREFIX='$TRIP_WORKSPACE - '            acme/webapp - Deliberating
+TRIP_TITLE_PREFIX='$TRIP_SESSION | '              acme/webapp.2 | Deliberating
+TRIP_TITLE_PREFIX=''                              Deliberating
+```
+
+Note `##*/` strips up to the last slash (`webapp`) while `%%/*` strips from
+the first (`acme`).
+
+It is the *complete* prefix: trip adds no separator of its own, so the divider
+and trailing space are yours to set. Expansion happens once per attach rather
+than per title, so a command substitution is evaluated then, not continuously.
+
+The title the terminal had before you attached is pushed onto the XTerm title
+stack and restored when you detach, so it goes back to whatever it said before
+rather than keeping the session's last title.
+
 ## Commands
 
 ### Sessions
