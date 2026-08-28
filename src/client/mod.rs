@@ -350,7 +350,7 @@ pub async fn enter(name: Option<String>, command: Option<Vec<String>>) -> Result
             println!("already in session '{}'", name);
             return Ok(());
         }
-        // Set tab title before switching
+        // Set the terminal title before switching
         print!("\x1b]1;{}\x07", name);
         std::io::Write::flush(&mut std::io::stdout()).ok();
 
