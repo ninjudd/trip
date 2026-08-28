@@ -366,7 +366,9 @@ const TITLE_MARK: &str = "\u{1}TRIP_TITLE\u{1}";
 ///
 /// `TRIP_TITLE` is a shell string, expanded with `TRIP_WORKSPACE`,
 /// `TRIP_SESSION` and `TITLE` in the environment, so the whole of shell
-/// parameter expansion is available and there is nothing new to learn:
+/// parameter expansion is available and there is nothing new to learn.
+/// `$TITLE` is the one placeholder — named rather than positional, to match
+/// its neighbours in the same string:
 ///
 ///   `${TRIP_WORKSPACE##*/} $TITLE`     webapp Deliberating   (the default)
 ///   `$TITLE @${TRIP_WORKSPACE##*/}`    Deliberating @webapp
@@ -406,9 +408,6 @@ fn expand_title(template: &str, session: &str) -> Vec<String> {
         .env("TRIP_WORKSPACE", workspace)
         .env("TRIP_SESSION", session)
         .env("TITLE", TITLE_MARK)
-        // Also as $1, the idiom for handing a value to an `sh -c` snippet.
-        .arg("trip-title")
-        .arg(TITLE_MARK)
         .output()
         .ok()
         .filter(|o| o.status.success())
@@ -804,14 +803,6 @@ mod tests {
         assert_eq!(
             expand_title("$TITLE @${TRIP_WORKSPACE##*/}", "acme/webapp"),
             vec![String::new(), " @webapp".to_string()]
-        );
-    }
-
-    #[test]
-    fn expansion_accepts_positional_one() {
-        assert_eq!(
-            expand_title("$1 @${TRIP_WORKSPACE##*/}", "acme/webapp"),
-            expand_title("$TITLE @${TRIP_WORKSPACE##*/}", "acme/webapp")
         );
     }
 

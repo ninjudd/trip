@@ -106,8 +106,7 @@ TRIP_TITLE=''                                  Deliberating              (left a
 disappear — and that is usually the part naming the workspace.
 
 Note `##*/` strips up to the last slash (`webapp`) while `%%/*` strips from the
-first (`acme`). The title is also available as `$1`, the usual way to hand a
-value to an `sh -c` snippet, if you prefer it.
+first (`acme`).
 
 Everything around `$TITLE` is literal, so spacing and any divider are part of
 the value. Omit `$TITLE` and the session title is replaced outright; set
