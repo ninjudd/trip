@@ -82,36 +82,42 @@ default Ctrl-\ sacrifices only SIGQUIT, which almost nothing wants.
 ## Titles
 
 Every title a session emits is wrapped with the workspace, so it reads
-`webapp Deliberating` (or `Deliberating @webapp`) rather than losing the
-workspace the moment a program sets its own title. Programs keep saying what
-they are doing; you keep knowing where. Numbered sessions share their
-workspace's affixes, and a title already carrying them is left alone, so they
-never stack.
+`webapp Deliberating` rather than losing the workspace the moment a program sets
+its own title. Programs keep saying what they are doing; you keep knowing where.
+Numbered sessions share their workspace's wrapping, and a title already carrying
+it is left alone, so it never nests.
 
-`TRIP_TITLE_PREFIX` goes before the title and `TRIP_TITLE_SUFFIX` after it.
-Both are shell strings, expanded once when you attach with `TRIP_WORKSPACE` and
-`TRIP_SESSION` in the environment. There is no template language to learn;
+`TRIP_TITLE` is the whole thing — a shell string, expanded once when you attach
+with `TRIP_WORKSPACE`, `TRIP_SESSION` and `TITLE` in the environment. `$TITLE`
+is where the session's own title goes. There is no template language to learn;
 parameter expansion does the work:
 
 ```
-TRIP_TITLE_PREFIX='${TRIP_WORKSPACE##*/} '        webapp Deliberating          (the default)
-TRIP_TITLE_PREFIX='@${TRIP_WORKSPACE##*/} '       @webapp Deliberating
-TRIP_TITLE_SUFFIX=' @${TRIP_WORKSPACE##*/}'       Deliberating @webapp
-TRIP_TITLE_PREFIX='$TRIP_WORKSPACE - '            acme/webapp - Deliberating
-TRIP_TITLE_SUFFIX=' [$TRIP_SESSION]'              Deliberating [acme/webapp.2]
+TRIP_TITLE='${TRIP_WORKSPACE##*/} $TITLE'      webapp Deliberating       (the default)
+TRIP_TITLE='$TITLE @${TRIP_WORKSPACE##*/}'     Deliberating @webapp
+TRIP_TITLE='[$TITLE] ~${TRIP_WORKSPACE##*/}'   [Deliberating] ~webapp
+TRIP_TITLE='$TITLE - $TRIP_SESSION'            Deliberating - acme/webapp.2
+TRIP_TITLE='${TRIP_WORKSPACE##*/}'             webapp                    (title dropped)
+TRIP_TITLE=''                                  Deliberating              (left alone)
 ```
 
-**Prefer the suffix if your terminal truncates from the left.** iTerm keeps the
-*end* of a long title, so a prefix is the first thing to disappear — exactly the
-part naming the workspace. A suffix survives.
+**Put `$TITLE` first if your terminal truncates from the left.** iTerm keeps the
+*end* of a long title, so whatever precedes `$TITLE` is the first thing to
+disappear — and that is usually the part naming the workspace.
 
 Note `##*/` strips up to the last slash (`webapp`) while `%%/*` strips from the
-first (`acme`).
+first (`acme`). The title is also available as `$1`, the usual way to hand a
+value to an `sh -c` snippet, if you prefer it.
 
-Each is the *complete* affix: trip adds no separator of its own, so spacing and
-any divider are part of the value. Set both empty to leave titles alone.
-Expansion happens once per attach rather than per title, so a command
-substitution is evaluated then, not continuously.
+Everything around `$TITLE` is literal, so spacing and any divider are part of
+the value. Omit `$TITLE` and the session title is replaced outright; set
+`TRIP_TITLE=''` and titles pass through untouched.
+
+Expansion happens once per attach rather than per title — a title changes far
+too often to fork a shell for each one. The consequence is that `$TITLE` is
+substituted positionally: a bare `$TITLE` works, but a construct that
+*transforms* it, like `${TITLE:-idle}`, sees a placeholder rather than the real
+title.
 
 The title the terminal had before you attached is pushed onto the XTerm title
 stack and restored when you detach — on error exits too — so it goes back to
