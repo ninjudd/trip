@@ -11,13 +11,13 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Enter { name, command } => {
+        Command::Enter { name, all, command } => {
             let cmd = if command.is_empty() {
                 None
             } else {
                 Some(command)
             };
-            client::enter(name, cmd).await?;
+            client::enter(name, all, cmd).await?;
         }
         Command::New { name, command } => {
             let cmd = if command.is_empty() {
