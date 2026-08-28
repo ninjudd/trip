@@ -16,6 +16,10 @@ pub enum Command {
         /// Session name (derived from workspace if omitted)
         name: Option<String>,
 
+        /// Choose from every workspace's sessions, not just this one
+        #[arg(short, long, conflicts_with = "name")]
+        all: bool,
+
         /// Command to run if creating (defaults to $SHELL)
         #[arg(last = true)]
         command: Vec<String>,

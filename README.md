@@ -128,6 +128,8 @@ whatever it said before rather than keeping the session's last title.
 
 **`trip enter [name]`** — Enter a workspace session. Creates it if missing, attaches if it exists. Derives the session name from your git repo root when no name is given. When the workspace has extra numbered sessions (from `trip new`), shows a picker — arrow keys (or j/k) move, 1-9 jump, Enter selects, and q/Esc cancels. Plain Enter takes the canonical session, so the default flow is unchanged. If someone else is attached, prompts to take over.
 
+**`trip enter -a`** — Pick from every workspace's sessions rather than just this one, the same widening `ls -a` does. Always shows the picker, since choosing is the point; grouped by workspace and ordered like `ls`. Takes no name — the flag is how you say "I don't know which one yet".
+
 **`trip return`** — Return to the previous session. Opposite of `trip enter`.
 
 **`trip new [name]`** — Open a fresh durable terminal for the current workspace. Auto-numbered (`.1`, `.2`, `.3`). Kept alive in the background; cleaned up when the shell exits.
