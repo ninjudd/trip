@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::Result;
 use tokio::net::UnixStream;
 
-use crate::common::{socket_path, trip_dir};
+use crate::common::{daemon_log_path, socket_path, trip_dir};
 
 pub async fn try_connect() -> Result<UnixStream> {
     let stream = UnixStream::connect(socket_path()).await?;
@@ -33,12 +33,20 @@ fn start_daemon() -> Result<()> {
     let dir = trip_dir();
     std::fs::create_dir_all(&dir)?;
 
+    // The daemon has no terminal, so this file is the only place its
+    // panics and errors can surface. Discarding them means a dead daemon
+    // (and every session with it) leaves no trace of why.
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(daemon_log_path())?;
+
     let exe = std::env::current_exe()?;
     Command::new(exe)
         .arg("daemon")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log))
         .spawn()?;
 
     Ok(())

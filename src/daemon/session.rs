@@ -166,6 +166,13 @@ impl Session {
                 std::fs::create_dir_all(&session_dir).ok();
                 let log_path = crate::common::log_path(&name);
 
+                crate::common::write_session_meta(&crate::common::SessionMeta {
+                    name: name.clone(),
+                    command: command.clone(),
+                    cwd: cwd.clone(),
+                    created_at,
+                });
+
                 // Spawn the PTY I/O task
                 let output_tx_clone = output_tx.clone();
                 let parser_clone = parser.clone();

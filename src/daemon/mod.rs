@@ -103,12 +103,41 @@ fn format_events(events: &[RecordEvent], raw: bool, verbose: bool) -> String {
 
 type Sessions = Arc<Mutex<HashMap<String, Session>>>;
 
-pub async fn run() -> Result<()> {
-    // Detach from controlling terminal so closing a tab doesn't kill us
-    nix::unistd::setsid().ok();
+/// Append a timestamped line to ~/.trip/daemon.log. The daemon's stderr is
+/// only captured when a client spawned it, so anything worth keeping goes
+/// through here to reach the file no matter how the daemon was started.
+pub fn dlog(msg: &str) {
+    use std::io::Write;
+    let ts = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(crate::common::daemon_log_path())
+    {
+        let _ = writeln!(f, "[{}] {}", ts, msg);
+    }
+}
 
+pub async fn run() -> Result<()> {
     let dir = trip_dir();
     std::fs::create_dir_all(&dir)?;
+
+    // Every session dies with this process, so a silent death is a real
+    // loss — record panics even from tasks that don't take the daemon down.
+    std::panic::set_hook(Box::new(|info| {
+        dlog(&format!("panic: {}", info));
+        eprintln!("panic: {}", info);
+    }));
+
+    // Detach from controlling terminal so closing a tab doesn't kill us.
+    // Fails when we are already a process group leader (started by hand
+    // from a shell) — that daemon stays tied to its terminal's lifetime.
+    if let Err(e) = nix::unistd::setsid() {
+        dlog(&format!(
+            "setsid failed ({}); daemon still tied to the terminal that started it",
+            e
+        ));
+    }
 
     let lock_file = std::fs::File::create(lock_path())?;
     let ret = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
@@ -120,6 +149,12 @@ pub async fn run() -> Result<()> {
     let _ = std::fs::remove_file(&sock_path);
     let listener = UnixListener::bind(&sock_path)?;
 
+    dlog(&format!(
+        "daemon started (pid {}, version {})",
+        std::process::id(),
+        env!("CARGO_PKG_VERSION")
+    ));
+
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
 
     let sessions_reaper = sessions.clone();
@@ -128,11 +163,20 @@ pub async fn run() -> Result<()> {
     });
 
     loop {
-        let (stream, _) = listener.accept().await?;
+        // One failed accept (fd exhaustion, an aborted connection) must not
+        // take down the daemon: it would kill every session with it.
+        let (stream, _) = match listener.accept().await {
+            Ok(pair) => pair,
+            Err(e) => {
+                dlog(&format!("accept error: {}", e));
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                continue;
+            }
+        };
         let sessions = sessions.clone();
         tokio::spawn(async move {
             if let Err(e) = handle_client(stream, sessions).await {
-                eprintln!("client error: {}", e);
+                dlog(&format!("client error: {}", e));
             }
         });
     }
@@ -151,10 +195,12 @@ async fn reap_children(sessions: Sessions) {
                 match waitpid(session.pid, Some(WaitPidFlag::WNOHANG)) {
                     Ok(WaitStatus::Exited(_, code)) => {
                         session.state = SessionState::Exited(code);
+                        crate::common::remove_session_meta(&session.name);
                         session.detach_notify.notify_waiters();
                     }
                     Ok(WaitStatus::Signaled(_, _, _)) => {
                         session.state = SessionState::Exited(-1);
+                        crate::common::remove_session_meta(&session.name);
                         session.detach_notify.notify_waiters();
                     }
                     _ => {}
@@ -167,6 +213,7 @@ async fn reap_children(sessions: Sessions) {
             .retain(|_, s| !(matches!(s.state, SessionState::Exited(_)) && s.client_count == 0));
 
         if sessions.is_empty() {
+            dlog("last session exited; daemon exiting");
             let _ = std::fs::remove_file(socket_path());
             std::process::exit(0);
         }
@@ -578,10 +625,14 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             if let Some(session) = sessions.get(&name) {
                 let pid = session.pid;
                 nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGHUP).ok();
+                // The reaper never sees this session (it's out of the map
+                // before the SIGCHLD lands), so clean up its meta here.
+                crate::common::remove_session_meta(&name);
                 sessions.remove(&name);
 
                 if sessions.is_empty() {
                     drop(sessions);
+                    dlog("last session killed; daemon exiting");
                     let _ = std::fs::remove_file(socket_path());
                     write_control(&mut writer, &Response::Ok).await?;
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -602,8 +653,13 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
 
         Request::Shutdown => {
             let mut sessions = sessions.lock().await;
+            dlog(&format!(
+                "shutdown requested; killing {} session(s)",
+                sessions.len()
+            ));
             for session in sessions.values() {
                 nix::sys::signal::kill(session.pid, nix::sys::signal::Signal::SIGHUP).ok();
+                crate::common::remove_session_meta(&session.name);
             }
             sessions.clear();
             drop(sessions);
@@ -907,7 +963,7 @@ async fn stream_session(
                         write_frame(&mut writer, FRAME_DATA, &data).await?;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        eprintln!("client lagged by {} messages", n);
+                        dlog(&format!("client lagged by {} messages", n));
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         write_frame(&mut writer, FRAME_DATA, b"\r\n[session ended]\r\n").await?;
