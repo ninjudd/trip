@@ -791,6 +791,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                     if should_exit {
                         sessions.clear();
                         drop(sessions);
+                        dlog("last client detached from exited session(s); daemon exiting");
                         let _ = std::fs::remove_file(socket_path());
                         std::process::exit(0);
                     }
