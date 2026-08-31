@@ -438,7 +438,7 @@ pub async fn enter(name: Option<String>, all: bool, command: Option<Vec<String>>
 
     match session.map(|s| s.attached) {
         None => {
-            create_session(name.clone(), command).await?;
+            create_session(name.clone(), command.clone()).await?;
         }
         Some(true) => {
             eprint!("session '{}' is in use. take over? [y/n] ", name);
@@ -451,8 +451,23 @@ pub async fn enter(name: Option<String>, all: bool, command: Option<Vec<String>>
         Some(false) => {}
     }
 
-    attach::attach(name).await?;
-    Ok(())
+    // The list above came from an earlier round trip, so the session can be
+    // gone by the time we attach: it exited on its own, or the daemon
+    // restarted under us. `enter` is documented as create-or-attach, and the
+    // SwitchSession path already spawns a missing target, so do the same here
+    // rather than failing with "not found".
+    //
+    // Matched by message because the daemon reports errors as strings; keep in
+    // step with the Attach handler in daemon/mod.rs. A drift in wording costs
+    // us this retry, not a misfire.
+    let missing = format!("session '{}' not found", name);
+    match attach::attach(name.clone()).await {
+        Err(e) if e.to_string() == missing => {
+            create_session(name.clone(), command).await?;
+            attach::attach(name).await
+        }
+        other => other,
+    }
 }
 
 pub async fn new_session(name: Option<String>, command: Option<Vec<String>>) -> Result<()> {
