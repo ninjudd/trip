@@ -436,7 +436,10 @@ pub async fn enter(name: Option<String>, all: bool, command: Option<Vec<String>>
     let sessions = get_session_list().await?;
     let session = sessions.iter().find(|s| s.name == name);
 
-    match session.map(|s| s.attached) {
+    let attached = session.map(|s| s.attached);
+    let existed = attached.is_some();
+
+    match attached {
         None => {
             create_session(name.clone(), command.clone()).await?;
         }
@@ -451,19 +454,32 @@ pub async fn enter(name: Option<String>, all: bool, command: Option<Vec<String>>
         Some(false) => {}
     }
 
-    // The list above came from an earlier round trip, so the session can be
-    // gone by the time we attach: it exited on its own, or the daemon
-    // restarted under us. `enter` is documented as create-or-attach, and the
-    // SwitchSession path already spawns a missing target, so do the same here
-    // rather than failing with "not found".
+    // The list above came from an earlier round trip, so a session that was
+    // there can be gone by the time we attach: it exited on its own, or the
+    // daemon restarted under us. `enter` is documented as create-or-attach,
+    // and the SwitchSession path already spawns a missing target, so do the
+    // same here rather than failing with "not found".
+    //
+    // Only when it existed. In the arm above we created it ourselves, and
+    // creating a second time is not a recovery: a session that died that fast
+    // dies again, and `command` may be caller-supplied and side-effecting, so
+    // it would run twice to reach the same error.
     //
     // Matched by message because the daemon reports errors as strings; keep in
     // step with the Attach handler in daemon/mod.rs. A drift in wording costs
     // us this retry, not a misfire.
     let missing = format!("session '{}' not found", name);
     match attach::attach(name.clone()).await {
-        Err(e) if e.to_string() == missing => {
-            create_session(name.clone(), command).await?;
+        Err(e) if existed && e.to_string() == missing => {
+            // It can equally come back between that failed attach and this
+            // create, and then the daemon rejects the duplicate. Attaching is
+            // what we wanted, so treat that rejection as success.
+            let exists = format!("session '{}' already exists", name);
+            match create_session(name.clone(), command).await {
+                Ok(()) => {}
+                Err(e) if e.to_string() == exists => {}
+                Err(e) => return Err(e),
+            }
             attach::attach(name).await
         }
         other => other,
