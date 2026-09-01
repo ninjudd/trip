@@ -248,8 +248,20 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             env,
         } => {
             let mut sessions = sessions.lock().await;
-            // A clientless corpse is not a reason to refuse the name.
-            try_gc_session(&mut sessions, &name);
+            // A clientless corpse is not a reason to refuse the name. An
+            // exited session stays observable while something holds it and is
+            // swept by the next SIGCHLD once nothing does — but a create can
+            // land in the gap before that sweep, and "already exists" from a
+            // session whose command has exited wedges every reconnect flow
+            // built on create-then-enter. Re-using the name is the one act
+            // that cannot coexist with keeping the corpse, so fresh wins.
+            // Deliberate corpse-viewing — attach, the chooser — is untouched.
+            let corpse = sessions
+                .get(&name)
+                .is_some_and(|s| s.client_count() == 0 && matches!(s.state, SessionState::Exited(_)));
+            if corpse {
+                sessions.remove(&name);
+            }
             if sessions.contains_key(&name) {
                 write_control(
                     &mut writer,
@@ -490,9 +502,6 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
         } => {
             let mut sessions = sessions.lock().await;
 
-            // Switching onto a clientless corpse should mean a fresh session,
-            // not a dead screen.
-            try_gc_session(&mut sessions, &to);
             if !sessions.contains_key(&to) {
                 match Session::spawn(to.clone(), command, cwd, 80, 24, env.clone()) {
                     Ok(session) => {
@@ -687,13 +696,9 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                     switch_target,
                     readonly,
                     readonly_flag,
+                    was_running,
                 ) = {
                     let mut sessions = sessions.lock().await;
-                    // Attaching to a clientless corpse would replay its final
-                    // screen and stream nothing ever again. Report it absent
-                    // instead: enter's create-or-attach then builds a fresh
-                    // session where a plain attach correctly fails.
-                    try_gc_session(&mut sessions, &current_name);
                     let session = match sessions.get_mut(&current_name) {
                         Some(s) => s,
                         None => {
@@ -735,6 +740,11 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                         sw_target,
                         readonly_flag.load(std::sync::atomic::Ordering::Relaxed),
                         readonly_flag,
+                        // Read under the same lock the reaper marks under, so
+                        // stream_session can tell a death it might have missed
+                        // the notify for from a deliberate attach to an
+                        // already-exited session.
+                        matches!(session.state, SessionState::Running),
                     )
                 };
 
@@ -758,6 +768,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                     &switch_notify,
                     &switch_target,
                     &readonly_flag,
+                    was_running,
                     sessions.clone(),
                     current_name.clone(),
                     client_id,
@@ -797,12 +808,10 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
 
                     try_gc_session(&mut sessions, &current_name);
 
-                    // try_gc_session can empty the map outright now; a map
-                    // holding nothing and a map holding only clientless
-                    // corpses both mean nothing is running any more.
-                    let should_exit = sessions.values().all(|s| {
-                        matches!(s.state, SessionState::Exited(_)) && s.client_count() == 0
-                    });
+                    let should_exit = !sessions.is_empty()
+                        && sessions.values().all(|s| {
+                            matches!(s.state, SessionState::Exited(_)) && s.client_count() == 0
+                        });
                     if should_exit {
                         sessions.clear();
                         drop(sessions);
@@ -906,17 +915,20 @@ fn shell_escape(s: &str) -> String {
     }
 }
 
-/// Drop a session that is over in every sense: its command has exited and no
-/// client is looking at it. The reaper removes exactly this class on the next
-/// SIGCHLD, but the next SIGCHLD can be arbitrarily far away — until it comes,
-/// the corpse answers "already exists" to create and hands attach a dead
-/// screen. So callers also run this wherever a corpse could otherwise be
-/// observed: when a client detaches, and before create, attach, and switch
-/// look a name up.
+fn is_numbered_session(name: &str) -> bool {
+    // One rule for `.N`, owned by the client's name helpers. This used to be
+    // a third copy, and it disagreed with the others: an empty suffix is
+    // vacuously all-digits, so `trip.` was GC-eligible as a numbered session
+    // while being its own workspace everywhere else.
+    crate::client::session_base(name) != name
+}
+
 fn try_gc_session(sessions: &mut HashMap<String, Session>, name: &str) {
-    let should_kill = sessions
-        .get(name)
-        .is_some_and(|s| s.client_count() == 0 && matches!(s.state, SessionState::Exited(_)));
+    let should_kill = sessions.get(name).is_some_and(|s| {
+        is_numbered_session(name)
+            && s.client_count() == 0
+            && matches!(s.state, SessionState::Exited(_))
+    });
     if should_kill {
         sessions.remove(name);
     }
@@ -1000,6 +1012,7 @@ async fn stream_session(
     switch_notify: &tokio::sync::Notify,
     switch_target: &Arc<std::sync::Mutex<Option<String>>>,
     readonly_flag: &Arc<std::sync::atomic::AtomicBool>,
+    was_running: bool,
     sessions: Sessions,
     session_name: String,
     client_id: u64,
@@ -1027,7 +1040,12 @@ async fn stream_session(
     // A notify these futures can catch may still have fired before they
     // existed — the session can exit while the client is attaching, between
     // the map lookup and here. The state answers where the notify cannot.
-    {
+    // Scoped to sessions that were running when this client registered: a
+    // client that knowingly attached to an already-exited session is viewing
+    // its final screen — no notify is coming, and none is owed — and it
+    // leaves through its own input, the way the chooser's corpse rows rely
+    // on.
+    if was_running {
         let sessions = sessions.lock().await;
         let dead = sessions
             .get(&session_name)
