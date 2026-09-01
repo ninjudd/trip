@@ -226,8 +226,20 @@ program exits, no shell hooks run (so `trip on` re-registration depends
 entirely on the agent-side hook), and it diverges from how programs are
 actually run in trip. Revisit only if input races show up in practice.
 
-The `Chooser` needs one addition for §3.5: a discard key, which is an
+The `Chooser` needs one addition for §3.5: a discard key, an
 `Outcome::Discard(usize)` variant beside `Pick`/`Cancel`/`Detach`.
+
+This reopens something the session-switcher plan parked. Its §7 asks "should
+the chooser be able to kill a session (`x`)?" and defers it — "it wants a
+confirmation and a redraw path, and neither belongs in the first version" —
+which is why its `Outcome` carries no mutation variant. Half of that deferral
+does not apply here: discarding a dead row retires the *offer* to resurrect a
+session that is already gone, and keeps its `log.jsonl`, so there is no running
+process to lose and no confirmation to write. The other half applies in full —
+removing a row mid-session means re-rendering a list whose length changed,
+under the viewport arithmetic that plan works out in its §3.6. That redraw path
+is the real cost, and whoever picks up step 5 is answering a question the other
+plan deliberately left open rather than adding a routine variant.
 
 ### 3.4 Stop the replay at re-registration, not only before create
 
@@ -333,7 +345,10 @@ Reproduce the incident in an isolated `HOME` and verify:
    from hook stdin, env, and transcript paths, and for a mid-file tail.
 4. Candidate scan + expiry, surfaced first in `trip ls` (a plain listing needs
    no chooser and makes 1–3 testable end to end).
-5. Dead rows in the chooser, resurrect-on-pick, and `Outcome::Discard`.
+5. Dead rows in the chooser, resurrect-on-pick, and `Outcome::Discard`. This
+   both *inherits* `Chooser` and *extends* it, which the dependency note below
+   does not otherwise convey — the discard key needs the redraw path the
+   session-switcher plan deferred (§3.3).
 6. README: dead rows, `TRIP_RESUME_TTL`, hook note.
 
 Steps 1–4 carry the substance and are shippable without any chooser work. Only
