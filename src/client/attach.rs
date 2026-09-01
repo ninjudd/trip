@@ -2,7 +2,6 @@ use std::io::Write;
 use std::os::fd::{AsRawFd, BorrowedFd};
 
 use anyhow::Result;
-use nix::libc;
 use nix::sys::termios::{self, ControlFlags, InputFlags, LocalFlags, OutputFlags, SetArg};
 use tokio::io::{BufReader, BufWriter};
 use tokio::signal::unix::{signal, SignalKind};
@@ -12,6 +11,7 @@ use crate::daemon::protocol::{
 };
 
 use super::launch;
+use super::terminal_size;
 
 struct RawModeGuard {
     original: termios::Termios,
@@ -421,17 +421,6 @@ fn expand_title(template: &str, session: &str) -> Vec<String> {
         });
 
     expanded.split(TITLE_MARK).map(|p| p.to_string()).collect()
-}
-
-fn terminal_size() -> (u16, u16) {
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    let fd = std::io::stdout().as_raw_fd();
-    unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) };
-    if ws.ws_col == 0 {
-        (80, 24)
-    } else {
-        (ws.ws_col, ws.ws_row)
-    }
 }
 
 pub async fn attach(name: String) -> Result<()> {

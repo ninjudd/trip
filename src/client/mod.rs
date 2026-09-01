@@ -1,4 +1,5 @@
 pub mod attach;
+pub mod chooser;
 pub mod launch;
 pub mod wrap;
 
@@ -136,65 +137,16 @@ pub fn next_available_name(
     }
 }
 
-enum Key {
-    Up,
-    Down,
-    Enter,
-    Cancel,
-    Digit(usize),
-    Other,
-}
-
-/// Read one keypress from a raw-mode terminal, byte by byte so that several
-/// keys arriving in one burst (held arrows, paste) parse individually.
-fn read_key(fd: std::os::fd::BorrowedFd) -> Key {
+/// Drive a [`Chooser`] from this process's own stdin, for the callers that
+/// have a terminal to themselves. An attached client cannot use this — a
+/// thread there already owns the fd — and feeds the chooser from its channel
+/// instead.
+///
+/// Renders to stderr, so a chooser can run while stdout is a pipe.
+fn run_chooser(chooser: &mut chooser::Chooser) -> Option<chooser::Outcome> {
     use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
-
-    fn read_byte(fd: std::os::fd::BorrowedFd) -> Option<u8> {
-        use std::os::fd::AsRawFd;
-        let mut b = [0u8; 1];
-        match nix::unistd::read(fd.as_raw_fd(), &mut b) {
-            Ok(1) => Some(b[0]),
-            _ => None,
-        }
-    }
-
-    let Some(b) = read_byte(fd) else {
-        return Key::Cancel;
-    };
-    match b {
-        b'\r' | b'\n' => Key::Enter,
-        0x03 | b'q' => Key::Cancel,
-        b'k' => Key::Up,
-        b'j' => Key::Down,
-        d @ b'1'..=b'9' => Key::Digit((d - b'0') as usize),
-        0x1b => {
-            // Arrow keys arrive as ESC [ A/B (or ESC O A/B); a lone ESC is a
-            // cancel. The terminal writes a whole arrow sequence at once, so
-            // a short poll tells them apart.
-            let mut fds = [PollFd::new(fd, PollFlags::POLLIN)];
-            let pending = matches!(poll(&mut fds, PollTimeout::from(25u16)), Ok(n) if n > 0);
-            if !pending {
-                return Key::Cancel;
-            }
-            if !matches!(read_byte(fd), Some(b'[') | Some(b'O')) {
-                return Key::Other;
-            }
-            match read_byte(fd) {
-                Some(b'A') => Key::Up,
-                Some(b'B') => Key::Down,
-                _ => Key::Other,
-            }
-        }
-        _ => Key::Other,
-    }
-}
-
-/// Interactive list selector: ↑/↓ (or j/k) move the highlight, Enter
-/// confirms, 1-9 jump directly, and q/Esc/Ctrl-C cancel. Renders to stderr,
-/// redrawing the list in place. Returns the chosen index, or None on cancel.
-fn select_choice(rows: &[String]) -> Option<usize> {
     use nix::sys::termios::{self, LocalFlags, SetArg};
+    use std::io::Write;
     use std::os::fd::{AsRawFd, BorrowedFd};
 
     let fd = std::io::stdin().as_raw_fd();
@@ -209,42 +161,33 @@ fn select_choice(rows: &[String]) -> Option<usize> {
     }
     eprint!("\x1b[?25l");
 
-    let render = |selected: usize, redraw: bool| {
-        let mut out = String::new();
-        if redraw {
-            out.push_str(&format!("\r\x1b[{}A", rows.len()));
-        }
-        for (i, row) in rows.iter().enumerate() {
-            if i == selected {
-                out.push_str(&format!("\x1b[2K> \x1b[7m{}\x1b[0m\n", row));
-            } else {
-                out.push_str(&format!("\x1b[2K  {}\n", row));
-            }
-        }
-        eprint!("{}", out);
-    };
-
-    let mut selected = 0usize;
-    render(selected, false);
-
     let result = loop {
-        match read_key(borrowed) {
-            Key::Enter => break Some(selected),
-            Key::Cancel => break None,
-            Key::Up => {
-                selected = if selected == 0 {
-                    rows.len() - 1
-                } else {
-                    selected - 1
-                };
+        let painted = chooser.render();
+        let mut err = std::io::stderr();
+        err.write_all(&painted).ok();
+        err.flush().ok();
+
+        // A half-read escape is only resolved by what follows it, or by the
+        // silence after it. Same 25ms the byte-at-a-time reader used to give.
+        if chooser.pending_escape() {
+            let mut fds = [PollFd::new(borrowed, PollFlags::POLLIN)];
+            if !matches!(poll(&mut fds, PollTimeout::from(25u16)), Ok(n) if n > 0) {
+                match chooser.tick() {
+                    Some(outcome) => break Some(outcome),
+                    None => continue,
+                }
             }
-            Key::Down => {
-                selected = (selected + 1) % rows.len();
-            }
-            Key::Digit(n) if n <= rows.len() => break Some(n - 1),
-            _ => continue,
         }
-        render(selected, true);
+
+        let mut buf = [0u8; 64];
+        match nix::unistd::read(fd, &mut buf) {
+            Ok(0) | Err(_) => break None,
+            Ok(n) => {
+                if let Some(outcome) = chooser.feed(&buf[..n]) {
+                    break Some(outcome);
+                }
+            }
+        }
     };
 
     eprint!("\x1b[?25h");
@@ -253,6 +196,27 @@ fn select_choice(rows: &[String]) -> Option<usize> {
     }
     result
 }
+
+/// How many rows the chooser may paint: the window, less the hint line, the
+/// two truncation markers, and one spare so the list never scrolls the
+/// terminal.
+pub(crate) fn chooser_viewport() -> usize {
+    (terminal_size().1 as usize).saturating_sub(4).max(3)
+}
+
+pub(crate) fn terminal_size() -> (u16, u16) {
+    use nix::libc;
+    use std::os::fd::AsRawFd;
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    let fd = std::io::stdout().as_raw_fd();
+    unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) };
+    if ws.ws_col == 0 {
+        (80, 24)
+    } else {
+        (ws.ws_col, ws.ws_row)
+    }
+}
+
 
 /// Build the picker rows: (session name, what it is running, status tag).
 ///
@@ -348,6 +312,22 @@ async fn pick_session(scope: Option<&str>) -> Result<Option<String>> {
         None => eprintln!("all sessions:  \x1b[2m↑/↓ + enter · 1-9 · q cancels\x1b[0m"),
     }
 
+    let mut chooser = chooser::Chooser::new(chooser_rows(&choices), 0, chooser_viewport(), None);
+    match run_chooser(&mut chooser) {
+        Some(chooser::Outcome::Pick(i)) => Ok(Some(choices[i].0.clone())),
+        // No detach key is supplied here, so `Detach` cannot arrive; a
+        // standalone chooser has no session to detach from.
+        _ => {
+            eprintln!("cancelled");
+            Ok(None)
+        }
+    }
+}
+
+/// Lay the choices out in columns. The row carries no number: the chooser
+/// numbers what it paints, which is the only numbering a digit can honour once
+/// the list scrolls.
+pub(crate) fn chooser_rows(choices: &[(String, String, String)]) -> Vec<String> {
     let nw = choices
         .iter()
         .map(|(name, _, _)| name.len())
@@ -358,23 +338,14 @@ async fn pick_session(scope: Option<&str>) -> Result<Option<String>> {
         .map(|(_, cmd, _)| cmd.len())
         .max()
         .unwrap_or(0);
-    let rows: Vec<String> = choices
+    choices
         .iter()
-        .enumerate()
-        .map(|(i, (name, cmd, tag))| {
-            format!("{}) {:<nw$}  {:<cw$}  {}", i + 1, name, cmd, tag)
+        .map(|(name, cmd, tag)| {
+            format!("{:<nw$}  {:<cw$}  {}", name, cmd, tag)
                 .trim_end()
                 .to_string()
         })
-        .collect();
-
-    match select_choice(&rows) {
-        Some(i) => Ok(Some(choices[i].0.clone())),
-        None => {
-            eprintln!("cancelled");
-            Ok(None)
-        }
-    }
+        .collect()
 }
 
 pub async fn enter(name: Option<String>, all: bool, command: Option<Vec<String>>) -> Result<()> {
