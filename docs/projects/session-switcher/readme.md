@@ -152,10 +152,30 @@ own socket:
 - `stream_session` currently treats any inbound control frame as a hangup
   (`mod.rs:988`). Parse the payload as a `Request` instead: `SwitchTo` creates
   the target if missing, pushes the current session onto the target's
-  `return_stack` — provisionally, see §6 and §8: the history belongs to the
-  client, but keeping it where it is preserves `trip return` unchanged — and
+  `return_stack` **unless `to` is the session the client is already on**, and
   returns `StreamExit::SwitchTo(to)`; anything else keeps today's
   `Disconnected`.
+
+  The condition is not incidental. §3.2 routes both Cancel and a same-session
+  `Pick` through `SwitchTo { to: current }`, and an unconditional push would
+  put a session onto *its own* `return_stack` — an entry today's flow cannot
+  produce, since `SwitchSession`'s push is `target.return_stack.push(from)`
+  (`mod.rs:511`) and `enter` returns early rather than switching a session to
+  itself. `ReturnSession` pops the topmost entry that still exists
+  (`mod.rs:536-548`); a self-entry passes that check, so `trip return` would
+  switch the session to itself, consuming one entry per cancel and leaving the
+  real target underneath:
+
+  ```
+  key-switch a -> b        b.return_stack = [a]
+  open chooser, Esc        b.return_stack = [a, b]      (without the condition)
+  trip return              -> b, a no-op
+  trip return              -> a
+  ```
+
+  The push is provisional in a second sense too — see §6 and §8, where the
+  history moves to the client. The condition survives that move: a history
+  cursor does not want a self-entry either.
 - No `Notify`, no shared `Option`, no race, and the enclosing attach loop
   (:786) already handles the variant.
 
@@ -305,6 +325,11 @@ Interactive, in a terminal:
   work, and a paste is still bracketed.
 - After a key-switch from `a` to `b`, `trip return` inside `b` goes back to
   `a`.
+- Cancelling the chooser leaves `trip return` going to the session you
+  key-switched from, however many times the chooser has been opened and
+  dismissed: switch `a` → `b`, then open and Esc out of the chooser three
+  times, and one `trip return` still lands on `a`. The same holds for picking
+  the session you are already on rather than cancelling.
 - A chooser over more sessions than the terminal has rows scrolls instead of
   corrupting the screen; the truncation marker appears; digits select the row
   they label.
@@ -397,9 +422,14 @@ and can land separately from the keystroke.
   `current_name` (`mod.rs:641`), so a client's history is a `Vec<String>`
   local in that same scope — simpler than reaching into the target session,
   and per-client by construction. v1 does not move it (§8): the key-switch
-  keeps pushing to the session stack so `trip return` behaves exactly as it
-  does today, which is correct for the single-client case that is nearly all
-  of them.
+  keeps pushing to the session stack, which is correct for the single-client
+  case that is nearly all of them. That leaves `trip return` behaving as it
+  does today only because §3.3 skips the push when `to` is the session the
+  client is already on — without that condition the chooser's own Cancel would
+  put a self-entry on the stack, which is a corruption today's flow cannot
+  produce, and the deferral would be resting on it. The condition is not
+  blocked on the client-addressing problem that defers the rest of §8: it
+  holds wherever the history lives.
 - **`SwitchSession` is left alone.** Per-client targeting is impossible for a
   command typed into a shell that every attached terminal shares (§3.3).
 
