@@ -253,18 +253,15 @@ pub(crate) fn session_choices(
         .iter()
         .filter(|s| scope == Scope::All || session_base(&s.name) == workspace)
         .collect();
-    // The current workspace leads, then the rest alphabetically, numbered
-    // sessions after their canonical one. Your own sessions are where your
-    // eyes already are, and they take the low digits.
+    // Most recently opened first — recency of *entering*, not of output, so
+    // the list works like a task switcher: the sessions you are bouncing
+    // between hold the low digits, wherever their workspaces are. Ties (from
+    // daemons predating the stamp) fall back to workspace order.
     group.sort_by(|a, b| {
-        let key = |name: &str| {
-            (
-                session_base(name) != workspace,
-                session_base(name).to_string(),
-                group_order(name),
-            )
-        };
-        key(&a.name).cmp(&key(&b.name))
+        b.last_opened.cmp(&a.last_opened).then_with(|| {
+            (session_base(&a.name), group_order(&a.name))
+                .cmp(&(session_base(&b.name), group_order(&b.name)))
+        })
     });
 
     let mut choices: Vec<(String, String, String)> = Vec::new();
@@ -298,11 +295,10 @@ pub(crate) fn session_choices(
         choices.push((s.name.clone(), cmd.to_string(), tag.to_string()));
     }
 
-    // The canonical session, failing that the workspace's first surviving one,
-    // failing that the create row. The middle clause is `trip` killed while
-    // `trip.1` lives: there is nothing canonical to select and the workspace
-    // is not empty either. Landing on row 2 there is what keeps the create row
-    // directly above the selection in every state.
+    // The canonical session, failing that the workspace's most recently
+    // opened one, failing that the create row. The middle clause is `trip`
+    // killed while `trip.1` lives: nothing canonical to select, and the
+    // workspace not empty either.
     let preselected = group
         .iter()
         .position(|s| s.name == workspace)
@@ -1122,11 +1118,17 @@ mod tests {
     use crate::daemon::protocol::{SessionInfo, SessionState};
 
     fn session(name: &str, attached: bool) -> SessionInfo {
+        opened(name, attached, 0)
+    }
+
+    /// A session last opened at monotonic stamp `at` — bigger is newer.
+    fn opened(name: &str, attached: bool, at: u64) -> SessionInfo {
         SessionInfo {
             name: name.to_string(),
             command: "bash".to_string(),
             pid: 1,
             created_at: 0,
+            last_opened: at,
             state: SessionState::Running,
             attached,
             cwd: None,
@@ -1175,28 +1177,44 @@ mod tests {
     }
 
     #[test]
-    fn all_choices_put_the_current_workspace_first() {
-        // Rewritten: the wide list used to be strictly alphabetical. It leads
-        // with the workspace you launched from, so Enter lands where it landed
-        // before there was a wide list at all.
+    fn all_choices_are_ordered_by_when_they_were_last_opened() {
+        // Rewritten twice: alphabetical, then current-workspace-first, now
+        // recency of *entering* — the list works like a task switcher, so the
+        // sessions you are bouncing between hold the low digits, wherever
+        // their workspaces live. Not recency of output: a chatty background
+        // build must not shuffle the list.
         let sessions = vec![
-            session("other/api.2", false),
-            session("acme/webapp.10", false),
-            session("other/api", false),
-            session("acme/webapp", false),
-            session("acme/webapp.2", false),
+            opened("other/api.2", false, 3),
+            opened("acme/webapp.10", false, 9),
+            opened("other/api", false, 5),
+            opened("acme/webapp", false, 1),
         ];
         let (c, _) = session_choices(&sessions, "other/api", Scope::All, None);
         assert_eq!(
             names(&c),
             vec![
-                "other/api.1",
+                "other/api.1", // the create row
+                "acme/webapp.10",
                 "other/api",
                 "other/api.2",
                 "acme/webapp",
-                "acme/webapp.2",
-                "acme/webapp.10",
             ]
+        );
+    }
+
+    #[test]
+    fn sessions_a_daemon_never_stamped_keep_workspace_order() {
+        // last_opened defaults to 0 against an older daemon; the tie falls
+        // back to grouping instead of shuffling arbitrarily.
+        let sessions = vec![
+            session("other/api", false),
+            session("acme/webapp.2", false),
+            session("acme/webapp", false),
+        ];
+        let (c, _) = session_choices(&sessions, "acme/webapp", Scope::All, None);
+        assert_eq!(
+            names(&c),
+            vec!["acme/webapp.1", "acme/webapp", "acme/webapp.2", "other/api"]
         );
     }
 
@@ -1224,45 +1242,45 @@ mod tests {
     }
 
     #[test]
-    fn the_canonical_session_is_preselected() {
+    fn the_canonical_session_is_preselected_wherever_recency_put_it() {
         let sessions = vec![
-            session("acme/webapp", false),
-            session("acme/webapp.1", false),
+            opened("acme/webapp", false, 1),
+            opened("acme/webapp.1", false, 7),
         ];
         let (c, pre) = session_choices(&sessions, "acme/webapp", Scope::All, None);
         assert_eq!(c[pre].0, "acme/webapp");
-        assert_eq!(pre, 1, "directly below the create row");
+        assert_eq!(pre, 2, "the fresher numbered session outranks it");
     }
 
     #[test]
-    fn a_workspace_whose_canonical_session_died_preselects_the_survivor() {
+    fn a_workspace_whose_canonical_session_died_preselects_its_freshest() {
         // `trip kill trip` with `trip.1` still alive. Nothing canonical to
         // select, and the workspace is not empty either.
         let sessions = vec![
-            session("acme/webapp.1", false),
-            session("acme/webapp.2", false),
+            opened("acme/webapp.1", false, 2),
+            opened("acme/webapp.2", false, 8),
+            opened("other/api", false, 9),
         ];
         let (c, pre) = session_choices(&sessions, "acme/webapp", Scope::All, None);
-        assert_eq!(c[0].0, "acme/webapp", "row 1 offers the canonical back");
-        assert_eq!(c[pre].0, "acme/webapp.1");
-        assert_eq!(pre, 1, "still directly below the create row");
+        assert_eq!(c[0].0, "acme/webapp", "the create row offers the canonical back");
+        assert_eq!(c[pre].0, "acme/webapp.2", "the workspace's most recent");
     }
 
     #[test]
-    fn the_create_row_always_sits_directly_above_the_selection() {
-        // The invariant the Up-then-Enter gesture rests on, in every state a
-        // workspace can be in.
+    fn the_create_row_is_always_row_zero() {
+        // Recency reorders everything below it; the create row is an action
+        // and holds position (and the digit 0) in every state.
         let states: Vec<Vec<SessionInfo>> = vec![
             vec![],
-            vec![session("w", false)],
-            vec![session("w", false), session("w.1", false)],
-            vec![session("w.1", false), session("w.2", false)],
-            vec![session("other", false)],
+            vec![opened("w", false, 5)],
+            vec![opened("w", false, 1), opened("w.1", false, 9)],
+            vec![opened("w.1", false, 4), opened("w.2", false, 2)],
+            vec![opened("other", false, 3)],
         ];
         for sessions in states {
             let (c, pre) = session_choices(&sessions, "w", Scope::All, None);
             assert_eq!(c[0].2, "(new session)");
-            assert!(pre == 0 || pre == 1, "selection at {} for {:?}", pre, names(&c));
+            assert!(pre < c.len(), "selection in range for {:?}", names(&c));
         }
     }
 
@@ -1277,8 +1295,9 @@ mod tests {
     fn tags_mark_current_and_attached() {
         let sessions = vec![session("acme/webapp", true), session("other/api", false)];
         let (c, _) = session_choices(&sessions, "other/api", Scope::All, Some("other/api"));
-        assert_eq!(c[1].2, "(current)");
-        assert_eq!(c[2].2, "(attached)");
+        let tag = |name: &str| c.iter().find(|(n, _, _)| n == name).unwrap().2.clone();
+        assert_eq!(tag("other/api"), "(current)");
+        assert_eq!(tag("acme/webapp"), "(attached)");
     }
 
     #[test]
