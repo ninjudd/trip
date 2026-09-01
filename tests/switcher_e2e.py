@@ -436,6 +436,18 @@ def main():
         check("and the session still exists", "dead" in trip("ls").stdout, trip("ls").stdout)
         t.close()
 
+        # ---- create over an unheld corpse frees the name ----
+        # The remote-shell flow is create-then-enter: after the command logs
+        # out, the next connect's create must not be refused by the corpse
+        # ("already exists"). Re-using the name is the one act that cannot
+        # coexist with keeping it, so the create replaces the corpse — no ls
+        # first, because the point is the create itself, not a SIGCHLD sweep.
+        time.sleep(0.8)  # let the daemon finish this client's detach bookkeeping
+        r = trip("create", "dead", "--", "/bin/sleep", "30")
+        check("create over an exited corpse frees the name",
+              "created" in r.stdout, (r.stdout + r.stderr).strip())
+        trip("kill", "dead")
+
         # ---- esc still works while the session floods output ----
         # The escape timeout is a deadline; a timer restarted per dropped
         # frame never fires under continuous output.

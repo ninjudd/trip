@@ -248,6 +248,20 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             env,
         } => {
             let mut sessions = sessions.lock().await;
+            // A clientless corpse is not a reason to refuse the name. An
+            // exited session stays observable while something holds it and is
+            // swept by the next SIGCHLD once nothing does — but a create can
+            // land in the gap before that sweep, and "already exists" from a
+            // session whose command has exited wedges every reconnect flow
+            // built on create-then-enter. Re-using the name is the one act
+            // that cannot coexist with keeping the corpse, so fresh wins.
+            // Deliberate corpse-viewing — attach, the chooser — is untouched.
+            let corpse = sessions
+                .get(&name)
+                .is_some_and(|s| s.client_count() == 0 && matches!(s.state, SessionState::Exited(_)));
+            if corpse {
+                sessions.remove(&name);
+            }
             if sessions.contains_key(&name) {
                 write_control(
                     &mut writer,
@@ -609,7 +623,15 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                 let pid = session.pid;
                 nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGHUP).ok();
                 // The reaper never sees this session (it's out of the map
-                // before the SIGCHLD lands), so clean up its meta here.
+                // before the SIGCHLD lands), so clean up its meta here — and
+                // collect the child ourselves, or every kill leaves a zombie
+                // parked on the daemon until the daemon itself exits. The
+                // wait blocks until the command dies, which for one that
+                // ignores SIGHUP is however long it runs; that costs a parked
+                // thread, not a stuck runtime.
+                tokio::task::spawn_blocking(move || {
+                    let _ = waitpid(pid, None);
+                });
                 crate::common::remove_session_meta(&name);
                 sessions.remove(&name);
 
@@ -674,6 +696,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                     switch_target,
                     readonly,
                     readonly_flag,
+                    was_running,
                 ) = {
                     let mut sessions = sessions.lock().await;
                     let session = match sessions.get_mut(&current_name) {
@@ -717,6 +740,11 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                         sw_target,
                         readonly_flag.load(std::sync::atomic::Ordering::Relaxed),
                         readonly_flag,
+                        // Read under the same lock the reaper marks under, so
+                        // stream_session can tell a death it might have missed
+                        // the notify for from a deliberate attach to an
+                        // already-exited session.
+                        matches!(session.state, SessionState::Running),
                     )
                 };
 
@@ -740,6 +768,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                     &switch_notify,
                     &switch_target,
                     &readonly_flag,
+                    was_running,
                     sessions.clone(),
                     current_name.clone(),
                     client_id,
@@ -983,6 +1012,7 @@ async fn stream_session(
     switch_notify: &tokio::sync::Notify,
     switch_target: &Arc<std::sync::Mutex<Option<String>>>,
     readonly_flag: &Arc<std::sync::atomic::AtomicBool>,
+    was_running: bool,
     sessions: Sessions,
     session_name: String,
     client_id: u64,
@@ -991,6 +1021,40 @@ async fn stream_session(
 ) -> Result<(StreamExit, SocketReader, SocketWriter)> {
     let mut was_readonly = readonly_flag.load(std::sync::atomic::Ordering::Relaxed);
     let mut client_size: Option<(u16, u16)> = Some((initial_cols, initial_rows));
+
+    // notify_waiters() wakes only futures already registered, so a notified()
+    // created fresh inside the select loop misses any notify that fires while
+    // this task is off doing something else. That is not a corner case: the
+    // session command's exit produces its final output and the SIGCHLD that
+    // triggers the reaper's notify at the same instant, so this task is
+    // mid-write on the "logout" bytes exactly when the wake-up arrives — and
+    // then parks on a future the notify predates, holding the client attached
+    // to a dead session forever. Register interest once, up front; enable()
+    // registers without having to poll.
+    let detached = detach_notify.notified();
+    let switched = switch_notify.notified();
+    tokio::pin!(detached, switched);
+    detached.as_mut().enable();
+    switched.as_mut().enable();
+
+    // A notify these futures can catch may still have fired before they
+    // existed — the session can exit while the client is attaching, between
+    // the map lookup and here. The state answers where the notify cannot.
+    // Scoped to sessions that were running when this client registered: a
+    // client that knowingly attached to an already-exited session is viewing
+    // its final screen — no notify is coming, and none is owed — and it
+    // leaves through its own input, the way the chooser's corpse rows rely
+    // on.
+    if was_running {
+        let sessions = sessions.lock().await;
+        let dead = sessions
+            .get(&session_name)
+            .is_none_or(|s| matches!(s.state, SessionState::Exited(_)));
+        if dead {
+            return Ok((StreamExit::Disconnected, reader, writer));
+        }
+    }
+
     loop {
         let readonly = readonly_flag.load(std::sync::atomic::Ordering::Relaxed);
         if readonly && !was_readonly {
@@ -1016,14 +1080,17 @@ async fn stream_session(
         }
         was_readonly = readonly;
         tokio::select! {
-            _ = detach_notify.notified() => {
+            _ = &mut detached => {
                 return Ok((StreamExit::Disconnected, reader, writer));
             }
-            _ = switch_notify.notified() => {
+            _ = &mut switched => {
                 let target = switch_target.lock().unwrap().take();
                 if let Some(target) = target {
                     return Ok((StreamExit::SwitchTo(target), reader, writer));
                 }
+                // A completed future is spent; re-arm for the next switch.
+                switched.set(switch_notify.notified());
+                switched.as_mut().enable();
             }
             data = output_rx.recv() => {
                 match data {
