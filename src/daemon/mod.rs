@@ -287,6 +287,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                         command: s.command.clone(),
                         pid: s.pid.as_raw() as u32,
                         created_at: s.created_at,
+                        last_opened: s.last_opened,
                         state: s.state.clone(),
                         attached: s.client_count() > 0,
                         cwd: cwd.map(|p| p.to_string_lossy().into_owned()),

@@ -82,11 +82,15 @@ used to do.
 Only the terminal you pressed it in moves. Other terminals attached to the
 same session keep streaming.
 
-Row `0` is always a session that does not exist yet, so **Up, Enter** — or just
-**0**, which works even when the list has scrolled past it — makes one:
-the canonical session for the workspace while it is missing, otherwise the
-next number, the way `trip new` would. It lands in the same directory as the
-session you opened the chooser from.
+Row `0` is always a session that does not exist yet, and pressing **0** makes
+it — from anywhere in the list, even scrolled past the row: the canonical
+session for the workspace while it is missing, otherwise the next number, the
+way `trip new` would. It lands in the same directory as the session you
+opened the chooser from.
+
+Below it, sessions are ordered by when you last entered them, newest first —
+recency of *opening*, not of output, so a chatty background build never
+shuffles the list. The sessions you are bouncing between hold the low digits.
 
 Pasted text is never misread as the key: input inside a bracketed paste is
 forwarded untouched. And the key survives programs that switch the terminal
@@ -154,7 +158,7 @@ whatever it said before rather than keeping the session's last title.
 
 ### Sessions
 
-**`trip enter`** — Choose a session from every workspace and enter it. Arrow keys (or j/k) move, 1-9 jump to a visible row, 0 creates the next session in your workspace (that is row 0 of the list), Enter selects, q/Esc cancels. Your own workspace leads the list with its canonical session already highlighted, so plain Enter still takes you where it always did. With stdin redirected there is nothing to choose with, so it takes the canonical session.
+**`trip enter`** — Choose a session from every workspace and enter it, ordered by when you last opened each, newest first. Arrow keys (or j/k) move, 1-9 jump to a visible row, 0 creates the next session in your workspace (row 0 of the list), Enter selects, q/Esc cancels. Your workspace's canonical session starts highlighted, so plain Enter still takes you where it always did. With stdin redirected there is nothing to choose with, so it takes the canonical session.
 
 **`trip enter <name>`** — Enter that session directly, no chooser. Creates it if missing, attaches if it exists.
 

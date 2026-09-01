@@ -36,6 +36,9 @@ pub struct Session {
     pub pid: Pid,
     pub master_fd: i32,
     pub created_at: u64,
+    /// Monotonic stamp of the last time a client attached or switched in.
+    /// Creation counts as the first opening; the chooser sorts by this.
+    pub last_opened: u64,
     pub state: SessionState,
     pub output_tx: broadcast::Sender<Vec<u8>>,
     pub input_tx: mpsc::Sender<SessionCommand>,
@@ -63,12 +66,22 @@ fn input_modes(screen: &vt100::Screen) -> Vec<u8> {
     screen.input_mode_diff(pristine.screen())
 }
 
+/// One counter for the whole daemon: whoever was opened last sorts first.
+fn next_open_stamp() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static OPEN_SEQ: AtomicU64 = AtomicU64::new(1);
+    OPEN_SEQ.fetch_add(1, Ordering::Relaxed)
+}
+
 impl Session {
     /// Register a newly attached client's geometry and return its id.
     pub fn add_client(&mut self, cols: u16, rows: u16) -> u64 {
         let id = self.next_client_id;
         self.next_client_id += 1;
         self.client_sizes.insert(id, (cols, rows));
+        // Attaching and switching in both land here; the cancel repaint,
+        // deliberately, does not.
+        self.last_opened = next_open_stamp();
         id
     }
 
@@ -270,6 +283,7 @@ impl Session {
                     pid: child,
                     master_fd: raw_fd,
                     created_at,
+                    last_opened: next_open_stamp(),
                     state: SessionState::Running,
                     output_tx,
                     input_tx,
