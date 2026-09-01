@@ -109,9 +109,23 @@ Per selected candidate:
 1. If `meta.cwd` no longer exists, warn and skip (a recreated shell would
    silently land in the daemon's cwd — `session.rs` uses
    `set_current_dir(&cwd).ok()`).
-2. Delete the stale `agent.json` **before** creating the session. Otherwise
-   the daemon's agent watcher sees it, tails the *old* transcript from offset
-   0, and re-emits the entire prior conversation into `log.jsonl`.
+2. Read `agent.json` into memory, then delete it **before** creating the
+   session. Otherwise the daemon's agent watcher sees it, tails the *old*
+   transcript from offset 0, and re-emits the entire prior conversation into
+   `log.jsonl`.
+
+   The read is not only for the command line the client has to build anyway
+   (`kind`, `resume_id`, `argv`). Step 3 can fail — `CreateSession` rejects a
+   name claimed since the scan (`daemon/mod.rs:251`, the same list staleness
+   #11 dealt with), and `Session::spawn` can fail on `openpty` or `fork` — and
+   a deleted `agent.json` is unrecoverable, dropping the session out of the
+   candidate set as an agent session for good. So write it back if the create
+   fails.
+
+   Deleting *after* a successful create is the obvious alternative and is
+   worse: the daemon polls for `agent.json` every 2s (`session.rs:256`) and
+   would likely see the stale file first, which is the race step 2 exists to
+   avoid.
 3. `CreateSession` with the same name and `meta.cwd`. Reusing the name means
    `log.jsonl` continues in the same file — history stays contiguous — and
    `Session::spawn` overwrites `meta.json` with fresh metadata.
