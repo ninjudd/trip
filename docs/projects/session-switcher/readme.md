@@ -37,7 +37,7 @@ session (`trip enter` from a session shell).
   containing the byte is forwarded untouched. `Scan::Detach(at)` is returned
   to the attach loop (:564), which flushes, breaks, and exits.
 - **Terminal restoration** (`src/client/attach.rs`): `RawModeGuard` (:16) and
-  `TerminalCleanup` (:69) already put the terminal back on every exit path,
+  `TerminalCleanup` (:66) already put the terminal back on every exit path,
   including the error paths, and balance the XTerm title push from :477.
 - **Daemon-side switching** (`src/daemon/mod.rs`): `Request::SwitchSession`
   (:481) creates the target if missing, pushes `from` onto the target's
@@ -84,7 +84,7 @@ to stdout alongside session data, and the standalone caller keep writing to
 stderr as it does today.
 
 `read_key` disambiguates a lone ESC from an arrow prefix by polling the fd for
-25ms (:170). A feedable machine cannot poll, so a pending ESC becomes state:
+25ms (:176). A feedable machine cannot poll, so a pending ESC becomes state:
 resolved by the next byte, or by `tick()` when the caller sees ~25ms of
 silence. Standalone uses `poll` for that; attached uses
 `tokio::time::timeout` on the stdin channel.
