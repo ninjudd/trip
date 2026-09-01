@@ -169,9 +169,7 @@ environment can say which terminal you typed into. Left as an open question
 - `--pwd` narrows to the current workspace: the existing
   `session_base(&s.name) == derive_session_name()?` filter, unchanged in
   substance and only inverted in default.
-- `-a` / `--all` is kept as an accepted no-op. It is the documented flag today
-  and lives in muscle memory and scripts; silently doing what it always did
-  costs one line.
+- `-a` / `--all` is removed outright, not kept as an accepted no-op.
 - `--attached` stops implying `--all` (`mod.rs:540`) and becomes a plain
   filter that composes with `--pwd`.
 - Grouping follows the scope as it does now: headers when listing more than
@@ -187,8 +185,8 @@ environment can say which terminal you typed into. Left as an open question
   session (`pick_session`, `mod.rs:333`). Skipping the chooser is the point of
   the flag.
 - `trip enter <name>` — unchanged, direct.
-- `-a` / `--all` accepted as a no-op, as in `ls`. It no longer conflicts with
-  `name`, since it no longer means anything.
+- `-a` / `--all` is removed here too, which takes its `conflicts_with =
+  "name"` (`cli.rs:20`) with it.
 - Not a tty: fall back to the canonical session, as `pick_session` does today
   (:319). The `--all needs a terminal to choose with` bail disappears with the
   flag's meaning.
@@ -324,7 +322,7 @@ Interactive, in a terminal:
 Non-interactive:
 
 - `trip ls` lists every workspace grouped; `trip ls --pwd` lists only this
-  one; `trip ls -a` matches `trip ls`; `trip ls --attached --pwd` filters on
+  one; `trip ls -a` is a clap unrecognized-argument error; `trip ls --attached --pwd` filters on
   both.
 - The two `session_choices` tests named in §3.5 are rewritten to the new
   contract, not deleted.
@@ -348,7 +346,7 @@ Non-interactive:
 5. `session_choices` gains wide-view ordering, the `(new session)` row, and
    the preselect index.
 6. `trip ls` default-all + `--pwd`; `trip enter` default-chooser + `--pwd`;
-   `-a` kept as a no-op in both.
+   `-a` dropped from both.
 7. README: `Detaching` gains the chooser, `Commands` updates `ls` and `enter`.
 
 Steps 1–3 are independently useful; 4 is the feature; 5–6 are the CLI surface
@@ -386,8 +384,9 @@ and can land separately from the keystroke.
   default-all; filtering is not, and it needs the `j`/`k` bindings settled
   first (probably `/` to enter filter mode). Revisit once the wide list has
   been lived with.
-- **`-a` survives as a no-op** in both commands. It is documented, it is in
-  muscle memory, and honouring it is one line.
+- **`-a` is deleted rather than kept as a no-op.** It is documented and it
+  would cost one line to honour, but nobody uses it, and a flag that silently
+  does nothing is worse to meet than one that errors.
 - **`SwitchSession` is left alone.** Per-client targeting is impossible for a
   command typed into a shell that every attached terminal shares (§3.3).
 
