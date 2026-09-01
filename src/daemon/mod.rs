@@ -645,8 +645,8 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             env: client_env,
         } => {
             let mut current_name = name;
-            let current_cols = cols;
-            let current_rows = rows;
+            let mut current_cols = cols;
+            let mut current_rows = rows;
             let mut first = true;
             let mut client_id: u64;
 
@@ -743,6 +743,15 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                 {
                     let mut sessions = sessions.lock().await;
                     if let Some(session) = sessions.get_mut(&current_name) {
+                        // Carry this client's *live* geometry forward. On a
+                        // switch the next iteration re-registers it, and the
+                        // attach-time size is stale by then -- which, now that
+                        // the map feeds a shared minimum, would hold an
+                        // unrelated client at a size neither terminal has.
+                        if let Some(&(c, r)) = session.client_sizes.get(&client_id) {
+                            current_cols = c;
+                            current_rows = r;
+                        }
                         session.remove_client(client_id);
                         // A big terminal leaving should give the remaining
                         // clients their room back.
