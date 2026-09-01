@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: completed
 priority: now
 ---
 
@@ -562,3 +562,36 @@ choice ordering and preselection, and the input-mode rebuild.
 Two things are not covered end to end: mouse reporting across a cancel, which
 is unit-tested alongside bracketed paste and shares its code path, and the
 `(exited)` tag, which no criterion asks for.
+
+## 10. Outcome
+
+Shipped, as §1 described it. The detach key's first press opens the chooser,
+`trip ls` and `trip enter` default to every workspace with `--pwd` to narrow,
+and the same component serves all three ways in.
+
+Every §4 criterion has evidence. The interactive ones are covered by
+`tests/switcher_e2e.py`, which drives a real PTY in a throwaway `HOME` (30
+checks); the pure ones by `cargo test` (94 tests, 37 of them new). Two
+criteria are proven by unit test rather than end to end, and deliberately:
+
+- **Mouse reporting surviving a cancel** shares `input_modes` with bracketed
+  paste, which *is* covered end to end. Driving a mouse-tracking app through a
+  PTY would test the app.
+- **Preselecting the survivor when the canonical session is gone** is decided
+  entirely by `session_choices`, which is tested directly across all five
+  workspace states, including the invariant that the create row sits above
+  the selection in each.
+
+Three things changed shape during implementation, all recorded in §9: the
+stale-number retry became an allocation under the daemon's lock (§9.2),
+because the error it retried on never arrives; `Response::SessionName` turned
+out to be dead code that §2 claimed was live (§9.1); and the attached
+chooser's workspace comes from the session rather than the client's cwd
+(§9.4).
+
+§7's first open question is still open and still not blocking: `trip enter
+<name>` from a multi-writer session, and `trip return` with it, remain as racy
+as they were before this project. Nothing here made them worse — the keystroke
+path deliberately routes around the mechanism they use — and answering them
+means deciding how a command names a client, which is §8's work. The other two
+questions were answered as written. §8's follow-ups are untouched by design.
