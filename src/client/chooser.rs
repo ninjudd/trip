@@ -292,7 +292,7 @@ impl Chooser {
         if lines < self.drawn {
             let surplus = self.drawn - lines;
             for _ in 0..surplus {
-                out.extend_from_slice(b"\x1b[2K\n");
+                out.extend_from_slice(b"\x1b[2K\r\n");
             }
             out.extend_from_slice(format!("\x1b[{}A", surplus).as_bytes());
         }
@@ -305,7 +305,10 @@ impl Chooser {
 fn line(out: &mut Vec<u8>, text: &str) {
     out.extend_from_slice(b"\x1b[2K");
     out.extend_from_slice(text.as_bytes());
-    out.push(b'\n');
+    // CRLF, not LF: the attached client's terminal is fully raw, with OPOST
+    // off, so a bare newline moves down without returning the carriage and
+    // the list stair-steps across the screen. Harmless where OPOST is on.
+    out.extend_from_slice(b"\r\n");
 }
 
 #[cfg(test)]
@@ -603,5 +606,21 @@ mod tests {
         let rows = vec!["⋯".repeat(60)];
         let mut c = Chooser::new(rows, 0, (10, 40), None);
         assert!(String::from_utf8(c.render()).is_ok());
+    }
+
+    #[test]
+    fn every_painted_line_returns_the_carriage() {
+        // The attached client is fully raw (OPOST off): a bare \n moves down
+        // without returning to column 0 and the list stair-steps.
+        let mut c = chooser(10, 4);
+        for _ in 0..5 {
+            c.feed(b"j");
+        }
+        for painted in [c.render(), c.render()] {
+            let s = String::from_utf8(painted).unwrap();
+            for (i, _) in s.match_indices('\n') {
+                assert_eq!(&s[i - 1..i], "\r", "bare LF at byte {} in {:?}", i, s);
+            }
+        }
     }
 }

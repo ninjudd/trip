@@ -116,6 +116,16 @@ def plain(s):
 def setup():
     if not os.path.exists(TRIP):
         sys.exit(f"build it first: cargo build  (no {TRIP})")
+    # cargo test does not rebuild the plain binary; a suite driving a stale
+    # build reports on code that is not there. Refuse rather than mislead.
+    newest = max(
+        os.path.getmtime(os.path.join(root, f))
+        for root, _, files in os.walk(os.path.join(REPO, "src"))
+        for f in files
+        if f.endswith(".rs")
+    )
+    if os.path.getmtime(TRIP) < newest:
+        sys.exit("stale build: src/ is newer than the binary — run cargo build first")
     for name in ("proj", "other", "only", "fresh"):
         os.makedirs(f"{HOME}/ws/{name}")
         subprocess.run(["git", "init", "-q"], cwd=f"{HOME}/ws/{name}", capture_output=True)
@@ -155,6 +165,16 @@ def main():
         check("chooser lists other workspaces", OTHER in screen, screen[-400:])
         check("current session is marked", "(current)" in screen, screen[-400:])
         check("row 1 offers a new session", "(new session)" in screen, screen[-400:])
+
+        # The attached client is fully raw (OPOST off): a renderer emitting
+        # bare LF stair-steps the list across the screen. Check the raw bytes
+        # of the paint, from the chooser's clear-screen onward.
+        raw = t.buf
+        paint = raw[raw.rindex("\x1b[2J\x1b[H"):]
+        bare = [i for i, _ in enumerate(paint)
+                if paint[i] == "\n" and (i == 0 or paint[i - 1] != "\r")]
+        check("chooser lines all return the carriage", not bare,
+              f"bare LF at {bare[:3]} in {paint[:200]!r}")
 
         # ---- esc goes back ----
         t.clear()
