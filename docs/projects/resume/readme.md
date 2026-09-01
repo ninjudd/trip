@@ -76,15 +76,45 @@ pub struct SessionMeta {
     pub created_at: u64,
     pub fg_argv: Option<Vec<String>>,   // as currently running
     pub fg_cwd: Option<String>,
-    pub updated_at: u64,
+    pub updated_at: u64,        // when fg_argv last changed
 }
 ```
 
-The session's existing 2s poll loop (`session.rs:253-256`) samples the
-foreground process group and rewrites `meta.json` when `fg_argv` changes.
-Requires `procinfo::get_argv(pid)` (macOS: `sysctl KERN_PROCARGS2`; linux:
-`/proc/<pid>/cmdline` — `procinfo.rs` already has the cfg split). New fields
-are `#[serde(default)]`, so a `meta.json` written by PR #10 still parses.
+`updated_at` is a job-transition timestamp and nothing reads it as liveness:
+because the rewrite is change-triggered, a session given one long-running job
+on Monday and still alive on Friday carries Monday's `updated_at`. "Last
+active" comes from `log.jsonl`'s mtime instead, which the pty loop appends to
+on every chunk of output (`session.rs:445`) and which therefore keeps moving
+for the life of the session.
+
+A sampler in its own `tokio::spawn`, beside the agent watcher, reads the
+foreground process group every 2s and rewrites `meta.json` when `fg_argv`
+changes. Requires `procinfo::get_argv(pid)` (macOS: `sysctl KERN_PROCARGS2`;
+linux: `/proc/<pid>/cmdline` — `procinfo.rs` already has the cfg split). New
+fields are `#[serde(default)]`, so a `meta.json` written by PR #10 still
+parses.
+
+**Not the agent watcher's loop**, though it is the obvious place to hang this
+and it looks like a 2s tick:
+
+```rust
+loop {
+    if read_agent_config(&name).is_some() {
+        tail_agent_log(name.clone()).await;   // returns only when agent.json goes
+    }
+    sleep(2s).await;
+}
+```
+
+`tail_agent_log` runs its own 300ms loop and breaks only when `agent.json` is
+removed or its `log_path` changes (`agent.rs:278-284`), so the outer 2s sleep
+happens only while **no** agent is registered. Sharing it would sample a plain
+shell every 2s and then stop the moment `trip on` fires — and since the
+SessionStart hook runs immediately after the pgid becomes claude, the sample
+would usually never see claude at all, leaving `fg_argv` holding the shell for
+the whole session. The flags this project exists to preserve would be missing
+exactly when an agent is involved, degrading silently to the bare
+`claude --resume <id>` fallback.
 
 This is what makes resume general. A session running `vim`, `psql`, a dev
 server or an agent all come back the same way, with no cooperation from the
@@ -141,7 +171,12 @@ Resume command construction, per kind:
 Candidate scan (client-side): walk `~/.trip/sessions/*/*` (and legacy unscoped
 dirs) for dirs holding a `meta.json`, minus the names the daemon reports live.
 Each becomes a chooser row below the live ones, showing name, cwd, what it will
-relaunch (from `fg_argv`), and how long ago it died (`meta.updated_at`).
+relaunch (from `fg_argv`), and when it was last active (`log.jsonl` mtime).
+
+"Last active" rather than "died" is not just honesty about the timestamp: every
+session in one crash died at the same instant, so time-of-death cannot tell two
+rows apart, while last-active is exactly the signal for deciding which ones are
+worth bringing back.
 
 Selecting a dead row:
 
@@ -228,10 +263,18 @@ none of which is a chore the user has to remember:
   `agent.json`, keep `log.jsonl`. This is the deliberate "no, that one is
   finished" gesture, and it is the answer to a lingering `agent.json` from an
   agent that had already exited (§7).
-- **Age.** A dead session not wanted back within `TRIP_RESUME_TTL` (default 7
-  days, measured from `meta.updated_at`) stops being offered, and its
-  `meta.json` is removed on the next scan. `log.jsonl` is never touched by
-  expiry; the history outlives the offer to resume.
+- **Age.** A dead session not active within `TRIP_RESUME_TTL` (default 7 days,
+  measured from `log.jsonl`'s mtime) stops being offered.
+
+  Expiry **hides; it never deletes.** An earlier draft had it remove
+  `meta.json` on the next scan, and §3.3 puts that scan on the path that draws
+  the chooser — so merely opening `trip enter` to switch sessions would
+  permanently retire a resurrectable session, irreversibly and silently, as a
+  side effect of a read. Nothing that destroys resume state should be triggered
+  by looking. The files are a few hundred bytes beside a `log.jsonl` that is
+  kept anyway; only the *list* needs pruning, and hiding prunes it. Deletion
+  happens on exactly two deliberate acts: discard, and a successful resurrect
+  (which overwrites `meta.json` because the session is live again).
 
 Lazy resurrection is what makes this affordable: after a reboot the user
 revives the two sessions they need rather than all eight, and the rest age out
@@ -268,8 +311,12 @@ Reproduce the incident in an isolated `HOME` and verify:
   involved.
 - A candidate whose cwd was deleted is reported, not created in the wrong
   directory.
-- A candidate older than `TRIP_RESUME_TTL` is not offered and its `meta.json`
-  is gone after the scan, while its `log.jsonl` survives.
+- A candidate whose `log.jsonl` has not moved within `TRIP_RESUME_TTL` is not
+  offered, and drawing the chooser deletes nothing — its `meta.json` and
+  `log.jsonl` both survive. Only discard removes `meta.json`.
+- An agent session running for hours has `fg_argv` holding the agent, not the
+  shell — the regression the sampler's own task exists to prevent. Assert it
+  with `agent.json` present, since that is when the shared-loop version broke.
 - `cargo test` covers: resume-argv construction for both kinds (including
   stripping a pre-existing `--resume`), candidate scanning (meta present /
   absent / live / expired), a tail that starts mid-file, and `SessionMeta` /
@@ -278,8 +325,8 @@ Reproduce the incident in an isolated `HOME` and verify:
 ## 5. Implementation sequence
 
 1. `procinfo::get_argv(pid)` (both platforms).
-2. `SessionMeta` gains `fg_argv` / `fg_cwd` / `updated_at`; the 2s poll loop
-   refreshes them on change. Useful on its own — `trip ls` can show the running
+2. `SessionMeta` gains `fg_argv` / `fg_cwd` / `updated_at`, refreshed on change
+   by a sampler in its own task (§3.1 — *not* the agent watcher's loop). Useful on its own — `trip ls` can show the running
    job rather than just the process name.
 3. `AgentConfig` gains `resume_id` + `log_offset`; `trip on` populates them;
    `tail_agent_log` seeks to `log_offset` (§3.4). Unit tests for id derivation
@@ -342,8 +389,8 @@ porting `select_choice` a second time.
 - **Lingering `agent.json` after a clean agent exit**: if the agent exits and
   the daemon dies before the user's next prompt (which is what deletes
   `agent.json`), the row will offer to relaunch a conversation the user had
-  finished. Deliberately deferred: the row shows how long ago it died and the
-  discard key covers it. If it bites in practice, teach the scan to peek at the
+  finished. Deliberately deferred: the row shows when it was last active and
+  the discard key covers it. If it bites in practice, teach the scan to peek at the
   transcript tail for a terminal event.
 - **Waiting for shell readiness before `SendInput`**: kernel PTY buffering
   should make an immediate send safe; if startup banners interleave badly, add
