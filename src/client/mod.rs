@@ -436,13 +436,23 @@ pub async fn enter(name: Option<String>, all: bool, command: Option<Vec<String>>
     let sessions = get_session_list().await?;
     let session = sessions.iter().find(|s| s.name == name);
 
+    let missing = format!("session '{}' not found", name);
+
     // The list answers one question only: is someone else holding this
     // session. Whether it needs creating is left to the attach below, which
     // is the one observation that cannot be stale.
     if session.map(|s| s.attached) == Some(true) {
         eprint!("session '{}' is in use. take over? [y/n] ", name);
         if read_yn() {
-            take_over(name.clone()).await?;
+            // This prompt waits on a human, so the session can be long gone by
+            // the time we act on the answer — a far wider window than the
+            // millisecond ones elsewhere here. Nothing to take over is not a
+            // failure: fall through and let the attach below create it.
+            match take_over(name.clone()).await {
+                Ok(()) => {}
+                Err(e) if e.to_string() == missing => {}
+                Err(e) => return Err(e),
+            }
         } else {
             eprintln!();
         }
@@ -457,7 +467,6 @@ pub async fn enter(name: Option<String>, all: bool, command: Option<Vec<String>>
     // Matched by message because the daemon reports errors as strings; keep in
     // step with the Attach handler in daemon/mod.rs. A drift in wording gives
     // back the old error rather than misfiring.
-    let missing = format!("session '{}' not found", name);
     match attach::attach(name.clone()).await {
         Err(e) if e.to_string() == missing => {
             // It can equally appear between that failed attach and this
