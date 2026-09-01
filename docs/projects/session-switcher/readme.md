@@ -608,7 +608,7 @@ every interactive criterion in §4: the chooser opening, Esc returning, the key
 twice detaching, per-terminal switching with a second terminal attached, the
 PTY refitting to whoever is left, `trip return` surviving three cancels, cwd
 inheritance, two terminals racing to the same displayed number, the viewport
-and its marker, and bracketed paste surviving a cancel into a live app. 35
+and its marker, and bracketed paste surviving a cancel into a live app. 36
 checks — including Esc on an exited session, Esc under continuous output, a
 mouse click while the chooser is up, and two clients racing one displayed
 number. `cargo test` covers the parser (mouse reports, paste regions, split
@@ -626,7 +626,7 @@ Shipped, as §1 described it. The detach key's first press opens the chooser,
 and the same component serves all three ways in.
 
 Every §4 criterion has evidence. The interactive ones are covered by
-`tests/switcher_e2e.py`, which drives a real PTY in a throwaway `HOME` (35
+`tests/switcher_e2e.py`, which drives a real PTY in a throwaway `HOME` (36
 checks); the pure ones by `cargo test` (99 tests, 42 of them new). Two
 criteria are proven by unit test rather than end to end, and deliberately:
 
