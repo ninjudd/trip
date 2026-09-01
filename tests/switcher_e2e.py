@@ -231,6 +231,28 @@ def main():
         ls = trip("ls").stdout
         check("up+enter created the next numbered session", f"{PROJ}.2" in ls, ls)
 
+        # ---- the key still works under an enhanced keyboard protocol ----
+        # Claude Code switches the terminal into kitty CSI-u / modifyOtherKeys
+        # at startup, after which the detach key arrives as an escape sequence
+        # rather than a byte. Synthesize what the terminal would send: the
+        # default key is ^\ (0x1c), whose CSI-u spelling is 92;5u.
+        t.send(b"\x1b[92;5u")
+        screen = plain(t.read(1.5))
+        check("a CSI-u encoded detach key opens the chooser",
+              "esc back" in screen, screen[-300:])
+        t.clear()
+        t.send(b"\x1b[27u")   # Esc, as the kitty protocol spells it
+        t.read(1.5)
+        check("a CSI-u encoded Esc cancels", t.proc.poll() is None)
+        # And the modifyOtherKeys spelling opens it too.
+        t.send(b"\x1b[27;5;92~")
+        screen2 = plain(t.read(1.5))
+        check("a modifyOtherKeys encoded detach key opens the chooser",
+              "esc back" in screen2[len(screen):] or "esc back" in screen2,
+              screen2[-300:])
+        t.send(b"\x1b")
+        t.read(1.0)
+
         # ---- digit 0 creates from anywhere ----
         before0 = set(re.findall(rf"{re.escape(PROJ)}\.\d+", trip("ls").stdout))
         t.send(DETACH)

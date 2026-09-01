@@ -89,7 +89,12 @@ next number, the way `trip new` would. It lands in the same directory as the
 session you opened the chooser from.
 
 Pasted text is never misread as the key: input inside a bracketed paste is
-forwarded untouched.
+forwarded untouched. And the key survives programs that switch the terminal
+into an enhanced keyboard protocol — Claude Code enables kitty CSI-u and
+xterm modifyOtherKeys at startup, after which the terminal sends the
+keystroke as an escape sequence rather than a byte; trip recognizes those
+spellings of the configured key too, so it keeps working whatever is in the
+foreground.
 
 To change or disable the key, set `TRIP_DETACH_KEY`:
 

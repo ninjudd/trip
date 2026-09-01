@@ -6,6 +6,83 @@
 //! where a thread already holds stdin and forwards into a channel. Two readers
 //! of one fd is not a fixable arrangement, so the chooser stops being a reader.
 
+/// A key event carried in an escape sequence rather than a byte.
+///
+/// Programs inside a session can ask the terminal for an enhanced keyboard
+/// protocol — Claude Code sends `CSI > 5 u` (kitty: disambiguate +
+/// report-alternates) and `CSI > 4;2 m` (xterm modifyOtherKeys) at startup —
+/// and the terminal then encodes keys as sequences instead of bytes: Ctrl+_
+/// arrives as `CSI 95;5 u`, Esc as `CSI 27 u`. Anything reading raw bytes
+/// goes deaf to exactly the keys it cares about, for exactly as long as such
+/// a program is in the foreground.
+pub(crate) struct KeyEvent {
+    /// The unshifted Unicode key code.
+    pub code: u32,
+    /// The shifted alternate, when the terminal reports one (kitty's
+    /// `code:shifted` form): Ctrl+Shift+`-` may arrive as `45:95`.
+    pub shifted: Option<u32>,
+    pub ctrl: bool,
+    /// False for a release event; repeats count as presses.
+    pub press: bool,
+}
+
+/// Parse the body of a CSI sequence as a key event. `final_byte` is the
+/// sequence's final; `params` the bytes between `ESC [` and it. Understands
+/// the kitty form `code[:shifted[:base]] ; mods[:event] u` and the xterm
+/// modifyOtherKeys form `27 ; mods ; code ~`.
+pub(crate) fn parse_key_event(final_byte: u8, params: &[u8]) -> Option<KeyEvent> {
+    let text = std::str::from_utf8(params).ok()?;
+    let fields: Vec<&str> = text.split(';').collect();
+    let (code_field, mods_field) = match final_byte {
+        b'u' => (*fields.first()?, fields.get(1).copied().unwrap_or("1")),
+        b'~' if fields.first() == Some(&"27") && fields.len() >= 3 => (fields[2], fields[1]),
+        _ => return None,
+    };
+
+    let mut codes = code_field.split(':');
+    let code: u32 = codes.next()?.parse().ok()?;
+    let shifted: Option<u32> = codes.next().and_then(|s| s.parse().ok());
+
+    let mut mods = mods_field.split(':');
+    let modifier: u32 = mods.next().unwrap_or("1").parse().ok()?;
+    let event: u32 = mods.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+
+    Some(KeyEvent {
+        code,
+        shifted,
+        ctrl: modifier.saturating_sub(1) & 4 != 0,
+        press: event != 3,
+    })
+}
+
+/// Whether this event is the enhanced-protocol spelling of the given control
+/// byte — the same keystroke the legacy encoding would have delivered as one
+/// byte.
+pub(crate) fn encodes_control(event: &KeyEvent, key: u8) -> bool {
+    if !event.ctrl || !event.press {
+        return false;
+    }
+    let candidates: &[u32] = match key {
+        // Ctrl+letter: the terminal reports the unshifted letter.
+        0x01..=0x1a => {
+            let lower = (key as u32) + 96;
+            let upper = (key as u32) + 64;
+            return event.code == lower
+                || event.code == upper
+                || event.shifted == Some(upper);
+        }
+        0x00 => &[64, 32],      // ^@: Ctrl+@ or Ctrl+Space
+        0x1b => &[91],          // ^[: Ctrl+[
+        0x1c => &[92],          // ^\: Ctrl+backslash
+        0x1d => &[93],          // ^]
+        0x1e => &[94, 54],      // ^^: Ctrl+^ or Ctrl+6
+        0x1f => &[95, 45, 47],  // ^_: Ctrl+_, Ctrl+-, Ctrl+/
+        0x7f => &[127],         // ^?
+        _ => return false,
+    };
+    candidates.contains(&event.code) || event.shifted.is_some_and(|s| candidates.contains(&s))
+}
+
 /// What the user decided. Anything else is still in progress.
 pub enum Outcome {
     Pick(usize),
@@ -162,6 +239,17 @@ impl Chooser {
                         ([], b'B') if !self.in_paste => self.down(),
                         (b"200", b'~') => self.in_paste = true,
                         (b"201", b'~') => self.in_paste = false,
+                        // A program in the session may have asked the
+                        // terminal for an enhanced keyboard protocol, and the
+                        // terminal keeps using it while the chooser is up:
+                        // Esc arrives as `CSI 27 u`, not 0x1b. Without this,
+                        // exactly the keys the hint advertises go dead
+                        // whenever such a program is what you detached from.
+                        _ if !self.in_paste => {
+                            if let Some(event) = parse_key_event(b, &buf) {
+                                return self.key_event(event);
+                            }
+                        }
                         _ => {}
                     }
                 } else if buf.len() < 24 {
@@ -222,6 +310,35 @@ impl Chooser {
                 }
                 _ => None,
             },
+        }
+    }
+
+    /// An enhanced-protocol key event, mapped onto the same actions the
+    /// legacy bytes drive. A CSI-u Esc is unambiguous — that is the protocol's
+    /// point — so it cancels immediately, with no idle timeout to wait out.
+    fn key_event(&mut self, event: KeyEvent) -> Option<Outcome> {
+        if let Some(key) = self.detach_key {
+            if encodes_control(&event, key) {
+                return Some(Outcome::Detach);
+            }
+        }
+        if !event.press || event.ctrl {
+            return None;
+        }
+        match event.code {
+            27 => Some(Outcome::Cancel),
+            13 => (!self.rows.is_empty()).then_some(Outcome::Pick(self.selected)),
+            113 => Some(Outcome::Cancel),
+            106 => {
+                self.down();
+                None
+            }
+            107 => {
+                self.up();
+                None
+            }
+            d @ 48..=57 => self.feed(&[d as u8]),
+            _ => None,
         }
     }
 
@@ -704,5 +821,40 @@ mod tests {
     fn digit_zero_without_a_zero_row_does_nothing() {
         let mut c = chooser(3, 10);
         assert!(c.feed(b"0").is_none());
+    }
+
+    #[test]
+    fn a_csiu_escape_cancels_without_waiting_for_the_tick() {
+        // Under the kitty protocol Esc arrives as CSI 27 u — unambiguous, so
+        // no idle timeout is needed to tell it from an arrow prefix.
+        let mut c = chooser(3, 10);
+        assert!(matches!(c.feed(b"\x1b[27u"), Some(Outcome::Cancel)));
+    }
+
+    #[test]
+    fn a_csiu_enter_picks() {
+        let mut c = chooser(3, 10);
+        c.feed(b"j");
+        assert_eq!(pick(c.feed(b"\x1b[13u")), Some(1));
+    }
+
+    #[test]
+    fn a_csiu_digit_still_jumps() {
+        let mut c = zero_chooser(4, 10);
+        assert_eq!(pick(c.feed(b"\x1b[49;1u")), Some(1), "digit 1");
+        let mut c = zero_chooser(4, 10);
+        assert_eq!(pick(c.feed(b"\x1b[48u")), Some(0), "digit 0 is the create row");
+    }
+
+    #[test]
+    fn a_csiu_detach_key_detaches_from_the_chooser() {
+        let mut c = chooser(3, 10);
+        assert!(matches!(c.feed(b"\x1b[92;5u"), Some(Outcome::Detach)));
+    }
+
+    #[test]
+    fn a_csiu_release_does_nothing() {
+        let mut c = chooser(3, 10);
+        assert!(c.feed(b"\x1b[27;1:3u").is_none());
     }
 }

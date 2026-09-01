@@ -132,8 +132,12 @@ struct DetachScanner {
 enum Scan {
     /// Forward the whole chunk.
     Forward,
-    /// Forward only the bytes before the detach key, then detach.
-    Detach(usize),
+    /// The detach key. Forward the bytes before `forward`, drop the key's own
+    /// encoding, and hand everything from `resume` on to whatever comes next.
+    /// The two are distinct because the key is no longer always one byte: a
+    /// program in the session can ask the terminal for an enhanced keyboard
+    /// protocol, and then the same keystroke arrives as `CSI 95;5 u`.
+    Detach { forward: usize, resume: usize },
 }
 
 impl DetachScanner {
@@ -167,12 +171,55 @@ impl DetachScanner {
                 _ if b == MARKER[0] => 1,
                 _ => 0,
             };
-            if !self.in_paste && b == key {
-                return Scan::Detach(i);
+            if self.in_paste {
+                continue;
+            }
+            if b == key {
+                return Scan::Detach {
+                    forward: i,
+                    resume: i + 1,
+                };
+            }
+            // The same keystroke under an enhanced keyboard protocol (kitty
+            // CSI-u, xterm modifyOtherKeys), which programs like Claude Code
+            // switch the terminal into: the byte above never arrives, and
+            // the key would go dead exactly while such a program runs. The
+            // lookahead is bounded and in-chunk only — the terminal writes a
+            // sequence atomically, so a split one is not worth buffering for.
+            if b == 0x1b {
+                if let Some(end) = csi_end(&data[i..]) {
+                    let (params, final_byte) = (&data[i + 2..i + end - 1], data[i + end - 1]);
+                    if let Some(event) = super::chooser::parse_key_event(final_byte, params) {
+                        if super::chooser::encodes_control(&event, key) {
+                            return Scan::Detach {
+                                forward: i,
+                                resume: i + end,
+                            };
+                        }
+                    }
+                }
             }
         }
         Scan::Forward
     }
+}
+
+/// The length of a complete CSI sequence starting at `data[0]` (`ESC [` ...
+/// final byte), or None if `data` does not begin one, it exceeds a sane key
+/// event's size, or it is cut off by the end of the chunk.
+fn csi_end(data: &[u8]) -> Option<usize> {
+    if data.len() < 3 || data[1] != b'[' {
+        return None;
+    }
+    for (j, &b) in data.iter().enumerate().skip(2).take(24) {
+        if (0x40..=0x7e).contains(&b) {
+            return Some(j + 1);
+        }
+        if !(0x20..=0x3f).contains(&b) {
+            return None;
+        }
+    }
+    None
 }
 
 /// Rewrites OSC title sequences on their way to the terminal so every title
@@ -790,9 +837,9 @@ pub async fn attach(name: String) -> Result<()> {
                             Scan::Forward => {
                                 write_frame(&mut writer, FRAME_DATA, &data).await?;
                             }
-                            Scan::Detach(at) => {
-                                if at > 0 {
-                                    write_frame(&mut writer, FRAME_DATA, &data[..at]).await?;
+                            Scan::Detach { forward, resume } => {
+                                if forward > 0 {
+                                    write_frame(&mut writer, FRAME_DATA, &data[..forward]).await?;
                                 }
                                 use tokio::io::AsyncWriteExt;
                                 writer.flush().await.ok();
@@ -808,7 +855,7 @@ pub async fn attach(name: String) -> Result<()> {
                                     &mut sigwinch,
                                     &mut current,
                                     detach_key_from_env(),
-                                    &data[at + 1..],
+                                    &data[resume..],
                                 )
                                 .await?
                                 {
@@ -857,8 +904,8 @@ mod tests {
 
     fn scan_all(scanner: &mut DetachScanner, chunks: &[&[u8]]) -> Option<(usize, usize)> {
         for (n, chunk) in chunks.iter().enumerate() {
-            if let Scan::Detach(at) = scanner.scan(chunk) {
-                return Some((n, at));
+            if let Scan::Detach { forward, .. } = scanner.scan(chunk) {
+                return Some((n, forward));
             }
         }
         None
@@ -907,6 +954,70 @@ mod tests {
     fn abandoned_marker_prefix_still_detaches() {
         let mut s = DetachScanner::new(Some(0x1c));
         assert_eq!(scan_all(&mut s, &[b"\x1b[2x\x1c"]), Some((0, 4)));
+    }
+
+    #[test]
+    fn kitty_encoded_key_detaches() {
+        // Claude Code switches the terminal into the kitty protocol
+        // (CSI > 5 u), after which Ctrl+_ arrives as CSI 95;5 u, not 0x1f.
+        let mut s = DetachScanner::new(Some(0x1f));
+        match s.scan(b"ab\x1b[95;5ucd") {
+            Scan::Detach { forward, resume } => {
+                assert_eq!(forward, 2, "forward the bytes before the sequence");
+                assert_eq!(resume, 9, "the tail after it rides along");
+            }
+            _ => panic!("did not detach"),
+        }
+    }
+
+    #[test]
+    fn kitty_shifted_alternate_detaches() {
+        // report-alternates spells Ctrl+Shift+- as 45:95 with shift+ctrl mods.
+        let mut s = DetachScanner::new(Some(0x1f));
+        assert!(matches!(s.scan(b"\x1b[45:95;6u"), Scan::Detach { .. }));
+    }
+
+    #[test]
+    fn modify_other_keys_encoding_detaches() {
+        // xterm's CSI 27;mods;code ~ spelling (CSI > 4;2 m mode).
+        let mut s = DetachScanner::new(Some(0x1f));
+        assert!(matches!(s.scan(b"\x1b[27;5;95~"), Scan::Detach { .. }));
+    }
+
+    #[test]
+    fn a_key_release_event_does_not_detach() {
+        let mut s = DetachScanner::new(Some(0x1f));
+        assert!(matches!(s.scan(b"\x1b[95;5:3u"), Scan::Forward));
+    }
+
+    #[test]
+    fn a_sequence_without_ctrl_does_not_detach() {
+        // A bare underscore under report-all-keys carries no ctrl bit.
+        let mut s = DetachScanner::new(Some(0x1f));
+        assert!(matches!(s.scan(b"\x1b[95;1u"), Scan::Forward));
+    }
+
+    #[test]
+    fn kitty_encoded_ctrl_letter_detaches() {
+        // TRIP_DETACH_KEY='^q' — Ctrl+Q arrives as its letter code.
+        let mut s = DetachScanner::new(Some(0x11));
+        assert!(matches!(s.scan(b"\x1b[113;5u"), Scan::Detach { .. }));
+        let mut s = DetachScanner::new(Some(0x1c));
+        assert!(matches!(s.scan(b"\x1b[92;5u"), Scan::Detach { .. }));
+    }
+
+    #[test]
+    fn an_encoded_key_inside_a_paste_is_forwarded() {
+        let mut s = DetachScanner::new(Some(0x1f));
+        assert!(matches!(s.scan(b"\x1b[200~\x1b[95;5u\x1b[201~"), Scan::Forward));
+        // ...and detaches again once the paste is over.
+        assert!(matches!(s.scan(b"\x1b[95;5u"), Scan::Detach { .. }));
+    }
+
+    #[test]
+    fn an_unrelated_csi_sequence_is_forwarded() {
+        let mut s = DetachScanner::new(Some(0x1f));
+        assert!(matches!(s.scan(b"\x1b[38;5;196m\x1b[A\x1b[27u"), Scan::Forward));
     }
 
     fn prefixed(chunks: &[&[u8]]) -> String {
