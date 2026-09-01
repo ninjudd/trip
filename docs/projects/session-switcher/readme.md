@@ -1,5 +1,5 @@
 ---
-status: ready
+status: completed
 priority: now
 ---
 
@@ -43,8 +43,9 @@ session (`trip enter` from a session shell).
   (:481) creates the target if missing, pushes `from` onto the target's
   `return_stack`, and signals the attached client. The `Attach` handler
   (:641) is a loop: when `stream_session` returns `StreamExit::SwitchTo`
-  (:786) it re-attaches the same socket to the new session, re-renders, and
-  sends `Response::SessionName` so the client retitles.
+  (:786) it re-attaches the same socket to the new session and re-renders.
+  It does *not* send `Response::SessionName`: the client has handled that
+  variant since titles were added, but nothing ever produced it — see §9.1.
 - **Grouped listing** (`src/client/mod.rs:518`): `trip ls -a` already sorts by
   `(session_base, group_order)` and prints workspace headers. The default-all
   view is that renderer with the filter inverted.
@@ -487,3 +488,201 @@ Recorded here rather than built, and not blocking anything in §5.
   that way from the start even though v1 only ever pushes.
 - **`trip return` becomes the command form of ←**, rather than a separate
   mechanism with its own stack.
+
+## 9. What implementation settled
+
+Written while building §5; nothing here changes the outcome in §1.
+
+### 9.1 `Response::SessionName` was dead code
+
+§2 said the daemon sends it after a switch. It never did. Nothing produced
+the variant — `trip enter` prints the title itself, from the client that ran
+the command, so the gap never showed. The key-driven switch has no such
+client, and with an allocated name (§9.2) the client does not even know what
+it switched to, so the daemon now sends it and the client retitles and tracks
+its own name from it. §2 is corrected.
+
+### 9.2 Allocating the new session's number, instead of retrying a stale one
+
+§3.5 handled the displayed number going stale by retrying once on
+`session '<name>' already exists`. That error never arrives: `SwitchTo`
+creates the target only when it is missing, so a name taken between draw and
+Enter means the client silently *joins* the other terminal's session rather
+than failing — and the retry has nothing to trigger it. The acceptance
+criterion that two racing terminals "both end up in a session, on different
+numbers" would have failed quietly.
+
+`SwitchTo` instead carries `allocate`, and the daemon takes the next free name
+while the session table is locked. Race-free rather than retried, and the
+`(new session)` row still shows the concrete name it expects to create. The
+canonical session is still requested by name: joining the one somebody else
+just created is the right answer there.
+
+### 9.3 Digits number only the rows a digit can reach
+
+§3.6 says digits number the rows as rendered. Rows past the ninth visible one
+are left unnumbered rather than carrying a number no key selects — the old
+renderer numbered all of them, including the unreachable ones.
+
+Two Escs in a row now cancel immediately instead of waiting out the idle
+timeout; the old reader swallowed the second one.
+
+### 9.4 The attached chooser's workspace is the session's, not the client's
+
+§3.5 derives the workspace from `derive_session_name`, which reads the
+process's cwd. That is right for `trip enter`, which the user just ran, and
+wrong inside an attached client, whose cwd is wherever its terminal was
+launched — possibly months ago and unrelated to where the session has been
+since. The attached chooser takes the workspace from the session's own name.
+
+### 9.5 Smaller things
+
+- `--pwd` keeps `conflicts_with = "name"` on `enter`, which §3.5 dropped along
+  with `-a`. Naming a session means not choosing one, so narrowing the chooser
+  is meaningless there, and §6's own reasoning says a flag that silently does
+  nothing is worse than one that errors.
+- `--pwd`'s fast path reads the session list rather than the built choices,
+  since the create row means the choices are never bare.
+- §3.7's input modes are rebuilt with vt100's `input_mode_diff` against a
+  pristine screen rather than by hand: it covers exactly the modes the crate
+  tracks, uses the crate's own encoder, and still avoids `state_formatted`'s
+  title.
+
+### 9.6 Review hardening
+
+A review pass over the first pushed head found real failures; the fixes
+changed two §6 decisions and are worth their own record.
+
+- **Cancel no longer round-trips through detach.** §6 chose "cancel is a
+  switch to the current session" so one daemon path served both. The full
+  detach/re-attach turned out to be the heaviest mechanism available for
+  doing nothing: its bookkeeping resizes the shared PTY twice under every
+  other client, and `try_gc_session` runs in a gap where this client is not
+  counted — Esc on an exited session destroyed the session it was declining
+  to leave, and could take the daemon with it. A self-`SwitchTo` is now
+  answered in place: repaint plus `SessionName`, no client removal. The
+  request shape is unchanged; only the daemon's answer is lighter. A failed
+  `Session::spawn` on a real switch gets the same treatment — current screen
+  back, then the error — because the client tore its chooser down when it
+  asked.
+- **The chooser parses whole escape sequences, not just arrows.** The
+  terminal keeps whatever modes the session's app enabled, so a mouse click
+  arrives as `ESC [ < 0 ; 1 2 ; 5 M` — and a parser that only knew arrows
+  read the digit in the middle as a jump and silently created a session. CSI
+  and SS3 sequences are now consumed whole, bracketed paste marks a region
+  whose bytes select nothing, and the chooser turns mouse reporting off and
+  the paste guard on for its own duration (off again on exit — the re-render
+  only ever enables modes).
+- **Frames reach the client through a channel-owning task.** `read_frame` is
+  not cancel-safe; under `select!` a keystroke racing a half-read length
+  prefix desynchronized the stream permanently. The socket's read half now
+  lives in one task and both loops receive from a channel, which also lets
+  the chooser see `SessionName` mid-flight — a daemon-side switch during the
+  chooser no longer leaves `current` stale for the cancel that follows.
+- **The escape timeout is a deadline, not a timer per iteration.** The
+  chooser loop iterates per dropped output frame, and a fresh 25ms sleep per
+  frame never elapsed — Esc went dead exactly when the session was noisiest.
+- **Rows truncate to the terminal width** (a wrapped row breaks the redraw
+  arithmetic), **bytes after the detach key feed the chooser** instead of
+  vanishing, **`terminal_size` falls back to stderr and stdin** when stdout
+  is a pipe, **`TERMINAL_RESET` restores the cursor**, and the standalone
+  create row **creates with recompute-on-collision** in `pick_session`, so
+  the command path stops silently joining a raced number (the keystroke path
+  already allocated; `enter`'s create-or-attach was the remaining gap).
+- **`is_numbered_session` now delegates to the client's name rule.** It was
+  a third copy of the `.N` convention and disagreed with the others: an
+  empty suffix is vacuously all-digits, so `trip.` was GC-eligible as a
+  numbered session while being its own workspace everywhere else.
+
+Two review findings were declined. Preselecting the current session instead
+of the canonical one: the plan chose the canonical deliberately (§3.5, §6) —
+Esc is the documented never-mind gesture, and in the common case the two
+coincide. And `session_base` misreading a workspace literally named `v2.0`:
+that is trip's own documented convention (`ls` groups it the same way), not
+this feature's to relitigate.
+
+### 9.7 The create row is labelled `0`
+
+Changed after first hands-on use, at the user's direction. §3.5 and §6 put
+the create row at row 1, which meant the workspace's canonical session — the
+row Enter lands on — was labelled `2`, and every session's digit shifted down
+one to make room for an action. Now the create row holds `0`, the sessions
+hold 1-9, and `0` works even when the list has scrolled past the row: it is
+an action, not a position, so it has nothing to scroll away. The row itself
+is unchanged — still first, still directly above the preselection, so
+Up-then-Enter still works.
+
+### 9.8 Evidence
+
+`tests/switcher_e2e.py` drives a real PTY in a throwaway `HOME` and covers
+every interactive criterion in §4: the chooser opening, Esc returning, the key
+twice detaching, per-terminal switching with a second terminal attached, the
+PTY refitting to whoever is left, `trip return` surviving three cancels, cwd
+inheritance, two terminals racing to the same displayed number, the viewport
+and its marker, and bracketed paste surviving a cancel into a live app. 41
+checks — including Esc on an exited session, Esc under continuous output, a
+mouse click while the chooser is up, and two clients racing one displayed
+number. `cargo test` covers the parser (mouse reports, paste regions, split
+sequences), the viewport, the renderer and its width truncation, the choice
+ordering and preselection, and the input-mode rebuild.
+
+Two things are not covered end to end: mouse reporting across a cancel, which
+is unit-tested alongside bracketed paste and shares its code path, and the
+`(exited)` tag, which no criterion asks for.
+
+## 10. Outcome
+
+Shipped, as §1 described it. The detach key's first press opens the chooser,
+`trip ls` and `trip enter` default to every workspace with `--pwd` to narrow,
+and the same component serves all three ways in.
+
+Every §4 criterion has evidence. The interactive ones are covered by
+`tests/switcher_e2e.py`, which drives a real PTY in a throwaway `HOME` (41
+checks); the pure ones by `cargo test` (119 tests, 62 of them new). Two
+criteria are proven by unit test rather than end to end, and deliberately:
+
+- **Mouse reporting surviving a cancel** shares `input_modes` with bracketed
+  paste, which *is* covered end to end. Driving a mouse-tracking app through a
+  PTY would test the app.
+- **Preselecting the survivor when the canonical session is gone** is decided
+  entirely by `session_choices`, which is tested directly across all five
+  workspace states, including the invariant that the create row sits above
+  the selection in each.
+
+Three things changed shape during implementation, all recorded in §9: the
+stale-number retry became an allocation under the daemon's lock (§9.2),
+because the error it retried on never arrives; `Response::SessionName` turned
+out to be dead code that §2 claimed was live (§9.1); and the attached
+chooser's workspace comes from the session rather than the client's cwd
+(§9.4).
+
+§7's first open question is still open and still not blocking: `trip enter
+<name>` from a multi-writer session, and `trip return` with it, remain as racy
+as they were before this project. Nothing here made them worse — the keystroke
+path deliberately routes around the mechanism they use — and answering them
+means deciding how a command names a client, which is §8's work. The other two
+questions were answered as written. §8's follow-ups are untouched by design.
+
+### 9.9 The key under enhanced keyboard protocols
+
+Found by the user, first hands-on session: the detach key went dead whenever
+Claude Code was in the foreground. Not the key's fault — measured directly by
+capturing the TUI's startup output on a PTY, Claude Code emits `CSI > 5 u`
+(kitty: disambiguate + report-alternates) and `CSI > 4;2 m` (xterm
+modifyOtherKeys mode 2), after which the terminal re-encodes the keystroke as
+an escape sequence — `CSI 95;5 u` for Ctrl+_ — and a byte-matching scanner
+never sees it. Switching to another control key would not have helped;
+modifyOtherKeys re-encodes them all.
+
+`parse_key_event`/`encodes_control` in `chooser.rs` decode both spellings —
+kitty's `code[:shifted];mods[:event] u` including shifted alternates and
+release events, and xterm's `27;mods;code ~` — and map them back to the
+control byte the legacy encoding would have produced. `DetachScanner` uses
+them with a bounded, in-chunk CSI lookahead (a terminal writes a sequence
+atomically, so cross-chunk buffering would buy latency, not correctness), and
+the chooser's parser accepts the CSI-u spellings of its own keys — Esc as
+`CSI 27 u` cancels immediately, since the encoding is unambiguous by design.
+The chooser deliberately does not toggle the terminal's protocol off and back:
+kitty's stack could be popped safely, but modifyOtherKeys has no stack, and
+guessing the foreground program's prior mode risks breaking its keyboard on
+the way back in.

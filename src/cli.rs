@@ -11,14 +11,14 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Enter a workspace session (create or attach; pick when several exist)
+    /// Enter a session, choosing from every workspace's sessions
     Enter {
-        /// Session name (derived from workspace if omitted)
+        /// Session name (skips the chooser)
         name: Option<String>,
 
-        /// Choose from every workspace's sessions, not just this one
-        #[arg(short, long, conflicts_with = "name")]
-        all: bool,
+        /// Only this workspace's sessions
+        #[arg(long, conflicts_with = "name")]
+        pwd: bool,
 
         /// Command to run if creating (defaults to $SHELL)
         #[arg(last = true)]
@@ -55,13 +55,13 @@ pub enum Command {
         command: Vec<String>,
     },
 
-    /// List sessions for the current workspace
+    /// List sessions, grouped by workspace
     Ls {
-        /// Show sessions for all workspaces, grouped by base name
-        #[arg(short, long)]
-        all: bool,
+        /// Only this workspace's sessions
+        #[arg(long)]
+        pwd: bool,
 
-        /// Show only attached sessions (implies --all)
+        /// Show only attached sessions
         #[arg(long)]
         attached: bool,
     },
