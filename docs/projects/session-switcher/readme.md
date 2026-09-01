@@ -230,6 +230,7 @@ alongside the rows:
    | no sessions | `trip` `(new session)` | row 1 itself | n/a — Enter creates `trip` |
    | `trip` exists | `trip.1` `(new session)` | `trip` | creates `trip.1` |
    | `trip`, `trip.1`, `trip.2` | `trip.3` `(new session)` | `trip` | creates `trip.3` |
+   | `trip.1`, `trip.2`, no `trip` | `trip` `(new session)` | `trip.1` | creates `trip` |
 
    So the row means "the next session in this workspace": the canonical one
    when it is missing, otherwise the next number that `trip new` would take
@@ -241,8 +242,14 @@ alongside the rows:
    row apiece for something nobody scrolls the list to do.
 
 2. **Current workspace first, then other workspaces alphabetically**, with the
-   current workspace's canonical session preselected — or the `(new session)`
-   row when there is nothing else in the workspace. Enter therefore lands where
+   current workspace's canonical session preselected; failing that its first
+   surviving session, and failing that the `(new session)` row. The middle
+   clause is the last row of the table above — `trip` killed while `trip.1`
+   lives, which is ordinary — where there is no canonical session to select
+   and the workspace is not empty either. Preselecting row 2 there is what
+   keeps "the `(new session)` row always sits directly above the preselected
+   row" true in every state, and it reads sensibly: with the canonical session
+   gone, Up + Enter puts it back. Enter therefore lands where
    it lands today, and your own sessions hold the low digits. The cost is that
    row positions depend on where you launched from; see §6.
 
@@ -340,6 +347,10 @@ Interactive, in a terminal:
   `trip.2` do) and attaches to it, in the same cwd as the session the chooser
   was opened from. Two terminals racing on the same displayed number both end
   up in a session, on different numbers.
+- In a workspace where the canonical session is gone but numbered ones
+  survive (kill `trip`, keep `trip.1`), the chooser preselects `trip.1` and
+  row 1 offers to create `trip`, so Up then Enter puts the canonical session
+  back.
 - `trip enter --pwd` in a workspace whose only session is the canonical one
   attaches directly, with no chooser.
 - `trip enter` with stdin redirected attaches to the canonical session without
