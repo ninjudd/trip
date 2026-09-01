@@ -56,6 +56,13 @@ pub enum SessionCommand {
     Resize(u16, u16),
 }
 
+/// The escape sequences that put a fresh terminal into this screen's input
+/// modes. Diffed against a pristine screen so vt100 does the encoding.
+fn input_modes(screen: &vt100::Screen) -> Vec<u8> {
+    let pristine = vt100::Parser::default();
+    screen.input_mode_diff(pristine.screen())
+}
+
 impl Session {
     /// Register a newly attached client's geometry and return its id.
     pub fn add_client(&mut self, cols: u16, rows: u16) -> u64 {
@@ -296,6 +303,22 @@ impl Session {
         output.extend_from_slice(b"\x1b[2J\x1b[H");
         output.extend_from_slice(&screen.contents_formatted());
 
+        // Cells are not the whole screen. `contents_formatted` writes what is
+        // *in* the grid and nothing about the modes the program running inside
+        // turned on -- bracketed paste, application keypad and cursor, mouse
+        // reporting. That was invisible while a re-render only ever happened
+        // on attach, into a terminal that had just been reset anyway. It stops
+        // being invisible the moment a re-render lands on a live app, which is
+        // what cancelling out of the chooser does: vim would come back without
+        // mouse reporting, and a paste into it would no longer be bracketed.
+        //
+        // Diffing against a pristine screen yields exactly the sequences that
+        // turn this screen's modes on, using vt100's own encoder.
+        // `state_formatted()` would cover the modes too, but it also emits a
+        // title, which would race the client's TitlePrefixer and name sessions
+        // that never set one.
+        output.extend_from_slice(&input_modes(screen));
+
         let (row, col) = screen.cursor_position();
         output.extend_from_slice(format!("\x1b[{};{}H", row + 1, col + 1).as_bytes());
 
@@ -511,5 +534,50 @@ async fn pty_io_loop(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::input_modes;
+
+    fn modes(input: &[u8]) -> Vec<u8> {
+        let mut parser = vt100::Parser::default();
+        parser.process(input);
+        input_modes(parser.screen())
+    }
+
+    #[test]
+    fn a_pristine_screen_asks_for_nothing() {
+        assert!(modes(b"hello").is_empty());
+    }
+
+    #[test]
+    fn bracketed_paste_survives_a_re_render() {
+        // The regression this guards: a screen re-rendered into a live app
+        // used to carry cells only, so Esc out of the chooser left the editor
+        // underneath without bracketed paste.
+        let out = modes(b"\x1b[?2004h");
+        assert_eq!(out, b"\x1b[?2004h");
+    }
+
+    #[test]
+    fn mouse_reporting_and_its_encoding_survive() {
+        let out = modes(b"\x1b[?1002h\x1b[?1006h");
+        let out = String::from_utf8_lossy(&out).into_owned();
+        assert!(out.contains("\x1b[?1002h"), "button-motion tracking: {:?}", out);
+        assert!(out.contains("\x1b[?1006h"), "SGR encoding: {:?}", out);
+    }
+
+    #[test]
+    fn application_cursor_and_keypad_survive() {
+        let out = String::from_utf8_lossy(&modes(b"\x1b[?1h\x1b=")).into_owned();
+        assert!(out.contains("\x1b[?1h"), "application cursor: {:?}", out);
+        assert!(out.contains("\x1b="), "application keypad: {:?}", out);
+    }
+
+    #[test]
+    fn a_mode_turned_back_off_is_not_asked_for() {
+        assert!(modes(b"\x1b[?2004h\x1b[?2004l").is_empty());
     }
 }
