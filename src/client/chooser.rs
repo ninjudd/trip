@@ -189,6 +189,14 @@ impl Chooser {
         self.top = self.top.min(max_top);
     }
 
+    /// Refit to a new window height. The caller is repainting from scratch,
+    /// so the in-place redraw offset is dropped with it.
+    pub fn resize(&mut self, viewport: usize) {
+        self.viewport = viewport.max(1);
+        self.drawn = 0;
+        self.scroll_to_selected();
+    }
+
     /// The bytes that paint the list. The first call draws; every later call
     /// redraws in place over what it painted last.
     pub fn render(&mut self) -> Vec<u8> {

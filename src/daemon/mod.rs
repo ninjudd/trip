@@ -806,6 +806,13 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                             try_gc_session(&mut sessions, &old_name);
                         });
                         current_name = target;
+                        write_control(
+                            &mut writer,
+                            &Response::SessionName {
+                                name: current_name.clone(),
+                            },
+                        )
+                        .await?;
                     }
                     StreamExit::Disconnected => break,
                 }
@@ -909,11 +916,20 @@ async fn prepare_switch_target(
     sessions: &Sessions,
     from: &str,
     to: &str,
+    allocate: bool,
     command: Option<Vec<String>>,
     cwd: String,
     env: HashMap<String, String>,
-) -> Result<()> {
+) -> Result<String> {
     let mut sessions = sessions.lock().await;
+
+    // Resolved while the table is locked, so the name cannot be taken between
+    // choosing it and creating it.
+    let to = &if allocate {
+        next_free_name(&sessions, session_base(to))
+    } else {
+        to.to_string()
+    };
 
     if !sessions.contains_key(to) {
         // A session made from the chooser belongs where the session it was
@@ -936,7 +952,26 @@ async fn prepare_switch_target(
             target.return_stack.push(from.to_string());
         }
     }
-    Ok(())
+    Ok(to.to_string())
+}
+
+/// The workspace a session belongs to: its name with any `.N` stripped.
+fn session_base(name: &str) -> &str {
+    match name.rsplit_once('.') {
+        Some((base, suffix))
+            if !base.is_empty() && !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            base
+        }
+        _ => name,
+    }
+}
+
+fn next_free_name(sessions: &HashMap<String, Session>, base: &str) -> String {
+    (1..)
+        .map(|n| format!("{}.{}", base, n))
+        .find(|candidate| !sessions.contains_key(candidate))
+        .expect("an unbounded search always finds a free name")
 }
 
 enum StreamExit {
@@ -1048,25 +1083,32 @@ async fn stream_session(
                         match serde_json::from_slice::<Request>(&payload) {
                             Ok(Request::SwitchTo {
                                 to,
+                                allocate,
                                 command,
                                 cwd,
                                 env,
                             }) => {
-                                if let Err(e) = prepare_switch_target(
+                                match prepare_switch_target(
                                     &sessions,
                                     &session_name,
                                     &to,
+                                    allocate,
                                     command,
                                     cwd,
                                     env,
                                 )
                                 .await
                                 {
-                                    let msg = format!("\r\n[switch failed: {}]\r\n", e);
-                                    write_frame(&mut writer, FRAME_DATA, msg.as_bytes()).await?;
-                                    continue;
+                                    Ok(target) => {
+                                        return Ok((StreamExit::SwitchTo(target), reader, writer))
+                                    }
+                                    Err(e) => {
+                                        let msg = format!("\r\n[switch failed: {}]\r\n", e);
+                                        write_frame(&mut writer, FRAME_DATA, msg.as_bytes())
+                                            .await?;
+                                        continue;
+                                    }
                                 }
-                                return Ok((StreamExit::SwitchTo(to), reader, writer));
                             }
                             _ => return Ok((StreamExit::Disconnected, reader, writer)),
                         }

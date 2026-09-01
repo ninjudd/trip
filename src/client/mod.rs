@@ -234,7 +234,7 @@ pub enum Scope {
 /// terminal. `workspace` is always known and is not the same question as
 /// `scope`: it says which group leads and which one gets the create row, even
 /// when the list spans every workspace.
-fn session_choices(
+pub(crate) fn session_choices(
     sessions: &[crate::daemon::protocol::SessionInfo],
     workspace: &str,
     scope: Scope,

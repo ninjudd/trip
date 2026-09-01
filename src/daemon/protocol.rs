@@ -55,6 +55,13 @@ pub enum Request {
     /// longer names a terminal; this does, because the socket is the terminal.
     SwitchTo {
         to: String,
+        /// Take the next free number under `to`'s workspace instead of `to`
+        /// itself. The chooser paints a name before the user commits to it,
+        /// and another terminal can take it in between; allocating under the
+        /// session lock means two terminals racing on one displayed number
+        /// both get a session rather than colliding in one.
+        #[serde(default)]
+        allocate: bool,
         command: Option<Vec<String>>,
         cwd: String,
         #[serde(default)]

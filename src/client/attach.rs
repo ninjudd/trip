@@ -10,6 +10,7 @@ use crate::daemon::protocol::{
     read_frame, write_control, write_frame, Frame, Request, Response, FRAME_DATA, FRAME_RESIZE,
 };
 
+use super::chooser::{Chooser, Outcome};
 use super::launch;
 use super::terminal_size;
 
@@ -423,6 +424,151 @@ fn expand_title(template: &str, session: &str) -> Vec<String> {
     expanded.split(TITLE_MARK).map(|p| p.to_string()).collect()
 }
 
+/// Caret notation for a control byte, so the hint can name whatever key the
+/// user actually bound.
+fn caret(key: u8) -> String {
+    match key {
+        0x7f => "^?".to_string(),
+        b if b < 0x20 => format!("^{}", (b | 0x40) as char),
+        b => (b as char).to_string(),
+    }
+}
+
+/// How the chooser ended, from the attach loop's point of view.
+enum ChooserExit {
+    /// A switch was requested on the socket; the daemon re-renders next.
+    Switched,
+    /// The detach key again.
+    Detached,
+    /// The daemon went away while the chooser was up.
+    Gone,
+}
+
+/// Run the chooser over an attached session, driven by the client's existing
+/// stdin channel rather than the fd.
+///
+/// Session output keeps arriving while this runs and is dropped on the floor.
+/// The socket still has to be drained or the daemon blocks writing to it, but
+/// nothing it sends is worth keeping: every way out of here ends in a full
+/// re-render.
+async fn run_attached_chooser(
+    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+    writer: &mut BufWriter<tokio::net::unix::OwnedWriteHalf>,
+    stdin_rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>,
+    sigwinch: &mut tokio::signal::unix::Signal,
+    current: &str,
+    detach_key: Option<u8>,
+) -> Result<ChooserExit> {
+    let sessions = super::get_session_list().await?;
+    // The workspace is the session's, not the client's. An attach client's cwd
+    // is wherever its terminal was launched, which says nothing about where
+    // the session has since been.
+    let workspace = super::session_base(current).to_string();
+    let (choices, preselected) =
+        super::session_choices(&sessions, &workspace, super::Scope::All, Some(current));
+
+    let mut chooser = Chooser::new(
+        super::chooser_rows(&choices),
+        preselected,
+        super::chooser_viewport(),
+        detach_key,
+    );
+
+    let hint = match detach_key {
+        Some(key) => format!(
+            "sessions:  \x1b[2m↑/↓ + enter · 1-9 · esc back · {} detach\x1b[0m",
+            caret(key)
+        ),
+        None => "sessions:  \x1b[2m↑/↓ + enter · 1-9 · esc back\x1b[0m".to_string(),
+    };
+
+    let mut stdout = std::io::stdout();
+    let mut repaint = |chooser: &mut Chooser, full: bool| -> Result<()> {
+        if full {
+            stdout.write_all(b"\x1b[?25l\x1b[2J\x1b[H")?;
+            stdout.write_all(hint.as_bytes())?;
+            stdout.write_all(b"\r\n")?;
+        }
+        stdout.write_all(&chooser.render())?;
+        stdout.flush()?;
+        Ok(())
+    };
+    repaint(&mut chooser, true)?;
+
+    let outcome = loop {
+        let decided = tokio::select! {
+            frame = read_frame(reader) => {
+                match frame? {
+                    Some(_) => None,
+                    None => return Ok(ChooserExit::Gone),
+                }
+            }
+
+            data = stdin_rx.recv() => {
+                match data {
+                    Some(data) => chooser.feed(&data),
+                    None => return Ok(ChooserExit::Gone),
+                }
+            }
+
+            _ = sigwinch.recv() => {
+                let (cols, rows) = terminal_size();
+                let mut payload = Vec::with_capacity(4);
+                payload.extend_from_slice(&cols.to_be_bytes());
+                payload.extend_from_slice(&rows.to_be_bytes());
+                write_frame(writer, FRAME_RESIZE, &payload).await?;
+                chooser.resize(super::chooser_viewport());
+                repaint(&mut chooser, true)?;
+                None
+            }
+
+            // A lone Esc is only knowable by the silence after it.
+            _ = tokio::time::sleep(std::time::Duration::from_millis(25)),
+                if chooser.pending_escape() => { chooser.tick() }
+        };
+
+        match decided {
+            Some(outcome) => break outcome,
+            None => repaint(&mut chooser, false)?,
+        }
+    };
+
+    // Give the cursor back before anything repaints over the list.
+    stdout.write_all(b"\x1b[?25h")?;
+    stdout.flush()?;
+
+    let (to, allocate) = match outcome {
+        Outcome::Detach => return Ok(ChooserExit::Detached),
+        // Cancel is a switch to the session we are already on: the daemon's
+        // re-render is exactly the repaint a cancel needs, and it keeps one
+        // code path behind both.
+        Outcome::Cancel => (current.to_string(), false),
+        Outcome::Pick(i) => {
+            // The create row is always row 1. Naming a number the chooser
+            // painted would race another terminal for it, so let the daemon
+            // allocate one; the canonical session is named outright, because
+            // joining the one somebody else just made is the right answer.
+            let allocate = i == 0 && choices[i].0 != workspace;
+            (choices[i].0.clone(), allocate)
+        }
+    };
+
+    write_control(
+        writer,
+        &Request::SwitchTo {
+            to,
+            allocate,
+            command: None,
+            cwd: std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            env: super::terminal_env(),
+        },
+    )
+    .await?;
+    Ok(ChooserExit::Switched)
+}
+
 pub async fn attach(name: String) -> Result<()> {
     let stream = launch::connect().await?;
     let (reader, writer) = stream.into_split();
@@ -506,6 +652,9 @@ pub async fn attach(name: String) -> Result<()> {
     let mut stdout = std::io::stdout();
     let mut scanner = DetachScanner::new(detach_key_from_env());
     let mut detached = false;
+    // The daemon can move this client to another session, so the name it
+    // started with is not the name it has.
+    let mut current = name.clone();
 
     loop {
         tokio::select! {
@@ -519,6 +668,7 @@ pub async fn attach(name: String) -> Result<()> {
                         if let Ok(response) = serde_json::from_slice::<Response>(&payload) {
                             match response {
                                 Response::SessionName { name } => {
+                                    current = name.clone();
                                     // Renaming moves the workspace too.
                                     titles.set_parts(title_parts(&name));
                                     let shown = if titles.enabled() {
@@ -556,8 +706,27 @@ pub async fn attach(name: String) -> Result<()> {
                                 }
                                 use tokio::io::AsyncWriteExt;
                                 writer.flush().await.ok();
-                                detached = true;
-                                break;
+
+                                // The key's first stop is the chooser; the
+                                // second press, from inside it, is the detach
+                                // this used to be.
+                                match run_attached_chooser(
+                                    &mut reader,
+                                    &mut writer,
+                                    &mut stdin_rx,
+                                    &mut sigwinch,
+                                    &current,
+                                    detach_key_from_env(),
+                                )
+                                .await?
+                                {
+                                    ChooserExit::Switched => continue,
+                                    ChooserExit::Detached => {
+                                        detached = true;
+                                        break;
+                                    }
+                                    ChooserExit::Gone => break,
+                                }
                             }
                         }
                     }
@@ -582,7 +751,7 @@ pub async fn attach(name: String) -> Result<()> {
     drop(_guard);
 
     if detached {
-        eprintln!("[detached: {}] — trip enter to resume", name);
+        eprintln!("[detached: {}] — trip enter to resume", current);
     }
 
     // The stdin reader thread may be blocked on read(); exit the process
@@ -850,6 +1019,19 @@ mod tests {
         let mut p = TitlePrefixer::new(Vec::new());
         let out = p.process(b"\x1b]0;editing\x07");
         assert_eq!(String::from_utf8_lossy(&out), "\u{1b}]0;editing\u{7}");
+    }
+
+    #[test]
+    fn caret_notation_round_trips_the_configured_key() {
+        // The hint has to name whatever key the user bound, not a hardcoded
+        // ^\\.
+        assert_eq!(caret(0x1c), "^\\");
+        assert_eq!(caret(0x1f), "^_");
+        assert_eq!(caret(0x1a), "^Z");
+        assert_eq!(caret(0x7f), "^?");
+        for key in [0x1cu8, 0x1f, 0x1a, 0x7f] {
+            assert_eq!(parse_detach_key(&caret(key)), Some(key));
+        }
     }
 
     #[test]
