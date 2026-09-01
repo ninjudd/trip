@@ -132,7 +132,10 @@ def setup():
 
 
 def teardown():
-    subprocess.run([TRIP, "shutdown", "--yes"], env=env(), capture_output=True)
+    try:
+        subprocess.run([TRIP, "shutdown", "--yes"], env=env(), capture_output=True, timeout=15)
+    except subprocess.TimeoutExpired:
+        pass
     shutil.rmtree(HOME, ignore_errors=True)
 
 
@@ -491,6 +494,98 @@ def main():
         tr.send(b"\x1b")
         tr.read(1.0)
         tr.close()
+
+        # ---- a keyboard protocol does not outlive its session ----
+        # The session's program switches the terminal into kitty CSI-u and
+        # modifyOtherKeys (as Claude Code does). Switching away must ground
+        # the real terminal and apply the destination's state, or every ctrl
+        # combo in the next session arrives as `ESC[27;5;100~` garbage.
+        trip("create", "kbd")
+        time.sleep(0.4)
+        trip("send", "kbd", "printf '\\033[>5u\\033[>4;2m'")
+        time.sleep(0.8)
+        tk = Term("attach", "kbd")
+        tk.read(1.2)
+        tk.clear()
+        tk.send(DETACH)
+        tk.read(1.0)
+        tk.send(b"\x1b[B")
+        tk.send(b"\r")
+        raw = tk.read(2.0)
+        check("switching away grounds modifyOtherKeys",
+              "\x1b[>4;0m" in raw, repr(raw[-300:]))
+        check("switching away grounds the kitty flags",
+              "\x1b[=0;1u" in raw, repr(raw[-300:]))
+
+        # ...and switching back re-applies what the session asked for.
+        tk.clear()
+        tk.send(DETACH)
+        tk.read(1.0)
+        tk.send(b"0" if False else b"\x1b[B")  # move to some row
+        raw2 = ""
+        # find and pick the kbd row by name: use digit-agnostic path — cancel
+        # and attach directly instead.
+        tk.send(b"\x1b")
+        tk.read(1.0)
+        tk.close()
+        tk2 = Term("attach", "kbd")
+        raw2 = tk2.read(1.5)
+        check("re-attaching re-applies the session's keyboard protocol",
+              "\x1b[>4;2m" in raw2 and "\x1b[=5;1u" in raw2, repr(raw2[-300:]))
+        tk2.send(DETACH)
+        tk2.read(0.8)
+        tk2.send(DETACH)
+        raw3 = tk2.read(1.5)
+        check("detaching grounds the keyboard protocol",
+              "\x1b[>4;0m" in raw3 and "\x1b[=0;1u" in raw3, repr(raw3[-300:]))
+        tk2.close()
+
+        # ---- the alternate screen does not outlive its session either ----
+        # A session in vim's alt buffer must not strand the next session
+        # there: the alt buffer has no scrollback.
+        trip("create", "altbuf")
+        time.sleep(0.4)
+        trip("send", "altbuf", "printf '\\033[?1049h'")
+        time.sleep(0.8)
+        ta = Term("attach", "altbuf")
+        ta.read(1.2)
+        ta.clear()
+        ta.send(DETACH)
+        ta.read(1.0)
+        ta.send(b"1")   # most recent other session
+        raw = ta.read(2.0)
+        check("switching away leaves the alternate screen",
+              "\x1b[?1049l" in raw, repr(raw[-300:]))
+        ta.close()
+        tb = Term("attach", "altbuf")
+        raw2 = tb.read(1.5)
+        check("re-attaching re-enters the session's alternate screen",
+              "\x1b[?1049h" in raw2.split("\x1b[?1049l")[-1], repr(raw2[-300:]))
+        tb.send(DETACH)
+        tb.read(0.8)
+        tb.send(DETACH)
+        tb.read(1.0)
+        tb.close()
+
+        # ---- keyboard flags land on the screen the session renders into ----
+        # The main and alternate screens keep independent kitty stacks, so
+        # the restore must run after the ?1049h, not before it: flags set on
+        # the main screen never reach the program in the alt buffer, and they
+        # resurface on the shell the moment that program exits.
+        trip("create", "altkbd")
+        time.sleep(0.4)
+        trip("send", "altkbd", "printf '\\033[?1049h\\033[>5u'")
+        time.sleep(0.8)
+        tak = Term("attach", "altkbd")
+        raw = tak.read(1.5)
+        check("keyboard restore lands after the alt-screen switch",
+              "\x1b[?1049h" in raw and "\x1b[=5;1u" in raw.split("\x1b[?1049h")[-1],
+              repr(raw[-300:]))
+        tak.send(DETACH)
+        tak.read(0.8)
+        tak.send(DETACH)
+        tak.read(1.0)
+        tak.close()
 
         # ---- a live app keeps its input modes across a cancel ----
         trip("create", "modes")

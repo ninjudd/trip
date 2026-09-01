@@ -39,6 +39,8 @@ pub struct Session {
     /// Monotonic stamp of the last time a client attached or switched in.
     /// Creation counts as the first opening; the chooser sorts by this.
     pub last_opened: u64,
+    /// The keyboard protocol this session's program asked the terminal for.
+    pub keyboard: std::sync::Arc<std::sync::Mutex<KeyboardState>>,
     pub state: SessionState,
     pub output_tx: broadcast::Sender<Vec<u8>>,
     pub input_tx: mpsc::Sender<SessionCommand>,
@@ -57,6 +59,131 @@ pub struct Session {
 pub enum SessionCommand {
     Input(Vec<u8>),
     Resize(u16, u16),
+}
+
+/// The terminal-wide keyboard protocol a session's program has asked for —
+/// kitty CSI-u flags and xterm modifyOtherKeys — which vt100 neither parses
+/// nor restores. The state is a property of the *real* terminal, so switching
+/// away from a session running Claude Code used to leave the next session's
+/// shell receiving `ESC[27;5;100~` for Ctrl+D: every ctrl combo broken, in
+/// that tab, until a `reset`.
+///
+/// Tracked by watching the session's output; a re-render grounds the real
+/// terminal and re-applies this. Sequences split across reads are held as
+/// parser state, the same way TitlePrefixer holds a half-read title.
+pub struct KeyboardState {
+    /// The kitty protocol's flag stack: `CSI > flags u` pushes, `CSI < n u`
+    /// pops, and popping past the bottom resets to no flags, as the spec says.
+    kitty: Vec<u32>,
+    /// xterm's modifyOtherKeys level, `CSI > 4 ; n m`.
+    modify_other_keys: u32,
+    partial: KeyScan,
+}
+
+enum KeyScan {
+    Idle,
+    /// Saw ESC.
+    Esc,
+    /// Inside `ESC [`, collecting bytes until the final.
+    Csi(Vec<u8>),
+}
+
+impl KeyboardState {
+    pub fn new() -> Self {
+        KeyboardState {
+            kitty: Vec::new(),
+            modify_other_keys: 0,
+            partial: KeyScan::Idle,
+        }
+    }
+
+    /// Watch a chunk of session output for keyboard-protocol changes.
+    pub fn scan(&mut self, data: &[u8]) {
+        for &b in data {
+            self.partial = match std::mem::replace(&mut self.partial, KeyScan::Idle) {
+                KeyScan::Idle if b == 0x1b => KeyScan::Esc,
+                KeyScan::Idle => KeyScan::Idle,
+                KeyScan::Esc if b == b'[' => KeyScan::Csi(Vec::new()),
+                KeyScan::Esc if b == 0x1b => KeyScan::Esc,
+                KeyScan::Esc => KeyScan::Idle,
+                KeyScan::Csi(mut buf) => {
+                    if (0x40..=0x7e).contains(&b) {
+                        self.sequence(&buf, b);
+                        KeyScan::Idle
+                    } else if buf.len() < 16
+                        && (buf.first().is_none_or(|f| matches!(f, b'>' | b'<' | b'=')))
+                    {
+                        buf.push(b);
+                        KeyScan::Csi(buf)
+                    } else {
+                        // Not a keyboard-protocol sequence (or absurdly long);
+                        // params cannot contain ESC, so skipping to idle is
+                        // safe — the next ESC restarts the scan.
+                        KeyScan::Idle
+                    }
+                }
+            };
+        }
+    }
+
+    fn sequence(&mut self, params: &[u8], final_byte: u8) {
+        let text = match std::str::from_utf8(params) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let num = |s: &str, default: u32| s.parse().unwrap_or(default);
+        match (params.first(), final_byte) {
+            (Some(b'>'), b'u') => {
+                if self.kitty.len() < 16 {
+                    self.kitty.push(num(&text[1..], 0));
+                }
+            }
+            (Some(b'<'), b'u') => {
+                let n = num(&text[1..], 1).max(1) as usize;
+                let len = self.kitty.len();
+                self.kitty.truncate(len.saturating_sub(n));
+            }
+            (Some(b'='), b'u') => {
+                let mut parts = text[1..].split(';');
+                let flags = num(parts.next().unwrap_or(""), 0);
+                let mode = num(parts.next().unwrap_or("1"), 1);
+                let top = self.kitty.last().copied().unwrap_or(0);
+                let new = match mode {
+                    2 => top | flags,
+                    3 => top & !flags,
+                    _ => flags,
+                };
+                match self.kitty.last_mut() {
+                    Some(t) => *t = new,
+                    None => self.kitty.push(new),
+                }
+            }
+            (Some(b'>'), b'm') => {
+                // CSI > 4 ; n m sets modifyOtherKeys; CSI > 4 m and the bare
+                // CSI > m reset it.
+                let mut parts = text[1..].split(';');
+                match (parts.next(), parts.next()) {
+                    (Some("4"), Some(n)) => self.modify_other_keys = num(n, 0),
+                    (Some("4") | Some("") | None, None) => self.modify_other_keys = 0,
+                    (Some("0"), None) => self.modify_other_keys = 0,
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The sequences that put a terminal of unknown keyboard state into this
+    /// session's: ground first, then what the session asked for. Terminals
+    /// without the kitty protocol ignore the `u` sequences.
+    pub fn restore(&self) -> Vec<u8> {
+        format!(
+            "\x1b[>4;{}m\x1b[={};1u",
+            self.modify_other_keys,
+            self.kitty.last().copied().unwrap_or(0)
+        )
+        .into_bytes()
+    }
 }
 
 /// The escape sequences that put a fresh terminal into this screen's input
@@ -253,6 +380,8 @@ impl Session {
                 // Spawn the PTY I/O task
                 let output_tx_clone = output_tx.clone();
                 let parser_clone = parser.clone();
+                let keyboard = std::sync::Arc::new(std::sync::Mutex::new(KeyboardState::new()));
+                let keyboard_clone = keyboard.clone();
                 let pty_session_name = name.clone();
                 tokio::spawn(async move {
                     pty_io_loop(
@@ -260,6 +389,7 @@ impl Session {
                         input_rx,
                         output_tx_clone,
                         parser_clone,
+                        keyboard_clone,
                         pty_session_name,
                         log_path,
                     )
@@ -284,6 +414,7 @@ impl Session {
                     master_fd: raw_fd,
                     created_at,
                     last_opened: next_open_stamp(),
+                    keyboard,
                     state: SessionState::Running,
                     output_tx,
                     input_tx,
@@ -313,6 +444,29 @@ impl Session {
         let parser = self.parser.lock().unwrap();
         let screen = parser.screen();
         let mut output = Vec::new();
+
+        // The real terminal arrives here in whatever state the *previous*
+        // session's program left it — mouse reporting, bracketed paste, a
+        // keyboard protocol, the alternate screen. Ground everything first;
+        // what this session wants is re-applied just below, and input_modes
+        // only ever enables.
+        output.extend_from_slice(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1049l");
+        // The main and alternate screens keep independent kitty stacks, so
+        // ground the main screen's here, while it is the active one; the
+        // session's own protocol is re-applied after the buffer switch, on
+        // the screen the session actually renders into. (modifyOtherKeys is
+        // xterm-global rather than per-screen; grounding it on both sides is
+        // harmless.)
+        output.extend_from_slice(b"\x1b[>4;0m\x1b[=0;1u");
+        // A session whose program lives in the alternate buffer renders back
+        // into it, so its frames stay out of the main buffer's scrollback and
+        // its own exit sequence still means something; everyone else gets the
+        // main buffer, and with it their scrollback. One buffered write, so
+        // the grounded main screen is never displayed on its own.
+        if screen.alternate_screen() {
+            output.extend_from_slice(b"\x1b[?1049h");
+        }
+        output.extend_from_slice(&self.keyboard.lock().unwrap().restore());
 
         output.extend_from_slice(b"\x1b[2J\x1b[H");
         output.extend_from_slice(&screen.contents_formatted());
@@ -423,6 +577,7 @@ async fn pty_io_loop(
     mut input_rx: mpsc::Receiver<SessionCommand>,
     output_tx: broadcast::Sender<Vec<u8>>,
     parser: std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
+    keyboard: std::sync::Arc<std::sync::Mutex<KeyboardState>>,
     session_name: String,
     log_path: std::path::PathBuf,
 ) {
@@ -474,6 +629,7 @@ async fn pty_io_loop(
                                     let mut p = parser.lock().unwrap();
                                     p.process(&data);
                                 }
+                                keyboard.lock().unwrap().scan(&data);
 
                                 let agent_active =
                                     super::agent::agent_config_path(&session_name).exists();
@@ -548,6 +704,77 @@ async fn pty_io_loop(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod keyboard_tests {
+    use super::KeyboardState;
+
+    fn state(chunks: &[&[u8]]) -> KeyboardState {
+        let mut k = KeyboardState::new();
+        for chunk in chunks {
+            k.scan(chunk);
+        }
+        k
+    }
+
+    fn restore(chunks: &[&[u8]]) -> String {
+        String::from_utf8(state(chunks).restore()).unwrap()
+    }
+
+    #[test]
+    fn a_quiet_session_grounds_the_terminal() {
+        // The restore is also the ground: a session that asked for nothing
+        // still clears whatever the previous session left behind.
+        assert_eq!(restore(&[b"plain output"]), "\x1b[>4;0m\x1b[=0;1u");
+    }
+
+    #[test]
+    fn claude_codes_startup_is_tracked() {
+        // The exact sequences captured from its TUI: kitty push 5,
+        // modifyOtherKeys mode 2.
+        assert_eq!(restore(&[b"\x1b[>5u\x1b[>4;2m"]), "\x1b[>4;2m\x1b[=5;1u");
+    }
+
+    #[test]
+    fn a_pop_returns_to_the_pushed_state() {
+        assert_eq!(restore(&[b"\x1b[>1u\x1b[>5u\x1b[<u"]), "\x1b[>4;0m\x1b[=1;1u");
+    }
+
+    #[test]
+    fn popping_past_the_bottom_means_no_flags() {
+        assert_eq!(restore(&[b"\x1b[>5u\x1b[<3u"]), "\x1b[>4;0m\x1b[=0;1u");
+    }
+
+    #[test]
+    fn set_and_bitwise_modes_apply() {
+        assert_eq!(restore(&[b"\x1b[=5;1u"]), "\x1b[>4;0m\x1b[=5;1u");
+        assert_eq!(restore(&[b"\x1b[=1;1u\x1b[=4;2u"]), "\x1b[>4;0m\x1b[=5;1u");
+        assert_eq!(restore(&[b"\x1b[=5;1u\x1b[=1;3u"]), "\x1b[>4;0m\x1b[=4;1u");
+    }
+
+    #[test]
+    fn modify_other_keys_resets() {
+        assert_eq!(restore(&[b"\x1b[>4;2m\x1b[>4m"]), "\x1b[>4;0m\x1b[=0;1u");
+        assert_eq!(restore(&[b"\x1b[>4;1m\x1b[>4;0m"]), "\x1b[>4;0m\x1b[=0;1u");
+    }
+
+    #[test]
+    fn a_sequence_split_across_reads_is_still_seen() {
+        // Session output chunks split anywhere.
+        assert_eq!(
+            restore(&[b"\x1b[>", b"4;", b"2m", b"\x1b", b"[>5u"]),
+            "\x1b[>4;2m\x1b[=5;1u"
+        );
+    }
+
+    #[test]
+    fn unrelated_sequences_change_nothing() {
+        assert_eq!(
+            restore(&[b"\x1b[38;5;196mred\x1b[0m\x1b[?2004h\x1b[2J"]),
+            "\x1b[>4;0m\x1b[=0;1u"
+        );
     }
 }
 
