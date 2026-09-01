@@ -344,6 +344,69 @@ def main():
               "fresh" in trip("ls").stdout, trip("ls").stdout)
         t3.close()
 
+        # ---- esc on an exited session must not destroy it ----
+        # Cancel used to run the full detach/re-attach round trip, whose
+        # bookkeeping can GC an exited session in the gap where this client is
+        # not counted -- Esc would destroy the session it was declining to
+        # leave, or take the daemon with it. Constructing the state is fussy:
+        # a session that exits while attached persists as exited, but only
+        # until the daemon next spawns a child (`trip ls` runs git for the
+        # branch column), whose SIGCHLD sweeps exited clientless sessions. So
+        # no ls between the kick and the re-attach.
+        trip("create", "dead", "--", "/bin/sleep", "1")
+        time.sleep(0.3)
+        t = Term("attach", "dead")
+        t.read(1.2)
+        t.proc.wait(timeout=10)  # the session exits and this client is kicked
+
+        t = Term("attach", "dead")
+        t.read(1.2)
+        check("an exited session that died while attached can be re-attached",
+              t.proc.poll() is None)
+        t.send(DETACH)
+        t.read(1.0)
+        t.send(b"\x1b")
+        t.read(1.5)
+        check("esc on an exited session leaves the client running", t.proc.poll() is None)
+        # This client holds it, so the ls-triggered sweep keeps its hands off.
+        check("and the session still exists", "dead" in trip("ls").stdout, trip("ls").stdout)
+        t.close()
+
+        # ---- esc still works while the session floods output ----
+        # The escape timeout is a deadline; a timer restarted per dropped
+        # frame never fires under continuous output.
+        trip("create", "noisy")
+        time.sleep(0.4)
+        trip("send", "noisy", "while :; do echo spam; sleep 0.01; done")
+        time.sleep(0.5)
+        t = Term("attach", "noisy")
+        t.read(1.2)
+        t.send(DETACH)
+        t.read(1.0)
+        t.clear()
+        t.send(b"\x1b")
+        screen = plain(t.read(2.0))
+        check("esc lands while the session floods output",
+              "spam" in screen and t.proc.poll() is None, screen[-200:])
+        t.send(b"\x03")  # stop the flood
+        t.read(0.5)
+        t.close()
+
+        # ---- a mouse click while the chooser is up picks nothing ----
+        t = Term("attach", PROJ)
+        t.read(1.2)
+        t.send(DETACH)
+        t.read(1.0)
+        before_click = set(re.findall(rf"{re.escape(PROJ)}\.\d+", trip("ls").stdout))
+        t.send(b"\x1b[<0;12;5M")   # SGR mouse press, as vim would have enabled
+        t.read(1.0)
+        after_click = set(re.findall(rf"{re.escape(PROJ)}\.\d+", trip("ls").stdout))
+        check("a mouse click in the chooser creates nothing",
+              before_click == after_click, sorted(after_click - before_click))
+        t.send(b"\x1b")
+        t.read(1.0)
+        t.close()
+
         # ---- a live app keeps its input modes across a cancel ----
         trip("create", "modes")
         time.sleep(0.4)

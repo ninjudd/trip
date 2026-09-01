@@ -19,13 +19,20 @@ pub enum Outcome {
 /// Where the escape parser sits between bytes. An arrow arrives as three bytes
 /// that can be split across reads, and a lone Esc is the same first byte, so
 /// the two are told apart by what follows — or by silence, via [`Chooser::tick`].
+///
+/// The parser consumes *whole* sequences, not just the ones it acts on. The
+/// terminal keeps whatever modes the session's program enabled, so a mouse
+/// click can arrive as `ESC [ < 0 ; 1 2 ; 5 M` — and a parser that only knew
+/// arrows would read the `1` in the middle as a jump-to-row.
 #[derive(PartialEq)]
 enum Esc {
     None,
     /// Saw ESC.
     Pending,
-    /// Saw ESC `[` or ESC `O`; the next byte names the arrow.
-    Bracket,
+    /// Inside `ESC [`; bytes accumulate until a final byte (0x40-0x7E).
+    Csi(Vec<u8>),
+    /// Saw `ESC O`; the next byte is the whole sequence (SS3 arrows).
+    Ss3,
 }
 
 pub struct Chooser {
@@ -35,14 +42,26 @@ pub struct Chooser {
     top: usize,
     /// How many rows fit. Markers are painted outside it.
     viewport: usize,
+    /// Columns available. Rows are truncated to fit, because a row the
+    /// terminal auto-wraps occupies two physical lines while the in-place
+    /// redraw counts one, and the cursor arithmetic never recovers.
+    width: usize,
     detach_key: Option<u8>,
     esc: Esc,
+    /// Inside a bracketed paste. Pasted bytes select nothing; a paste is not
+    /// the user answering the chooser.
+    in_paste: bool,
     /// Lines the last render painted, so the next one can redraw in place.
     drawn: usize,
 }
 
 impl Chooser {
-    pub fn new(rows: Vec<String>, selected: usize, viewport: usize, detach_key: Option<u8>) -> Self {
+    pub fn new(
+        rows: Vec<String>,
+        selected: usize,
+        (viewport, width): (usize, usize),
+        detach_key: Option<u8>,
+    ) -> Self {
         let viewport = viewport.max(1);
         let selected = if rows.is_empty() {
             0
@@ -54,8 +73,10 @@ impl Chooser {
             selected,
             top: 0,
             viewport,
+            width: width.max(20),
             detach_key,
             esc: Esc::None,
+            in_paste: false,
             drawn: 0,
         };
         c.scroll_to_selected();
@@ -88,8 +109,8 @@ impl Chooser {
                 self.esc = Esc::None;
                 Some(Outcome::Cancel)
             }
-            // A truncated arrow. Forget it rather than stay wedged.
-            Esc::Bracket => {
+            // A truncated sequence. Forget it rather than stay wedged.
+            Esc::Csi(_) | Esc::Ss3 => {
                 self.esc = Esc::None;
                 None
             }
@@ -99,32 +120,59 @@ impl Chooser {
 
     fn byte(&mut self, b: u8) -> Option<Outcome> {
         // The detach key outranks the parser. It is the way out, and it should
-        // not depend on whether a stray Esc happens to be half-read.
-        if self.detach_key == Some(b) {
+        // not depend on whether a stray Esc happens to be half-read. Not
+        // inside a paste, though: pasted bytes are content, never commands.
+        if self.detach_key == Some(b) && !self.in_paste {
             self.esc = Esc::None;
             return Some(Outcome::Detach);
         }
 
-        match self.esc {
+        match std::mem::replace(&mut self.esc, Esc::None) {
             Esc::Pending => {
-                self.esc = Esc::None;
                 match b {
-                    b'[' | b'O' => self.esc = Esc::Bracket,
+                    b'[' => self.esc = Esc::Csi(Vec::new()),
+                    b'O' => self.esc = Esc::Ss3,
                     // Esc twice: the first one was standalone after all, and
                     // the second says so without waiting for the timeout.
-                    0x1b => return Some(Outcome::Cancel),
+                    0x1b if !self.in_paste => return Some(Outcome::Cancel),
                     // Alt-<key> and anything else: drop both bytes, as the
                     // old reader's `Key::Other` did.
                     _ => {}
                 }
                 None
             }
-            Esc::Bracket => {
-                self.esc = Esc::None;
-                match b {
-                    b'A' => self.up(),
-                    b'B' => self.down(),
-                    _ => {}
+            Esc::Csi(mut buf) => {
+                if (0x40..=0x7e).contains(&b) {
+                    // The final byte. Act on the few sequences that mean
+                    // something here; swallowing the rest whole is the point.
+                    match (buf.as_slice(), b) {
+                        ([], b'A') if !self.in_paste => self.up(),
+                        ([], b'B') if !self.in_paste => self.down(),
+                        (b"200", b'~') => self.in_paste = true,
+                        (b"201", b'~') => self.in_paste = false,
+                        _ => {}
+                    }
+                } else if buf.len() < 24 {
+                    buf.push(b);
+                    self.esc = Esc::Csi(buf);
+                }
+                // Over-long sequences are abandoned rather than accumulated:
+                // nothing this parser acts on is anywhere near that size.
+                None
+            }
+            Esc::Ss3 => {
+                if !self.in_paste {
+                    match b {
+                        b'A' => self.up(),
+                        b'B' => self.down(),
+                        _ => {}
+                    }
+                }
+                None
+            }
+            Esc::None if self.in_paste => {
+                if b == 0x1b {
+                    self.esc = Esc::Pending;
                 }
                 None
             }
@@ -189,10 +237,11 @@ impl Chooser {
         self.top = self.top.min(max_top);
     }
 
-    /// Refit to a new window height. The caller is repainting from scratch,
-    /// so the in-place redraw offset is dropped with it.
-    pub fn resize(&mut self, viewport: usize) {
+    /// Refit to a new window. The caller is repainting from scratch, so the
+    /// in-place redraw offset is dropped with it.
+    pub fn resize(&mut self, (viewport, width): (usize, usize)) {
         self.viewport = viewport.max(1);
+        self.width = width.max(20);
         self.drawn = 0;
         self.scroll_to_selected();
     }
@@ -221,10 +270,14 @@ impl Chooser {
             } else {
                 "   ".to_string()
             };
+            // "> " plus the label is five columns; the last column is left
+            // unused so the terminal never auto-wraps the row.
+            let room = self.width.saturating_sub(6);
+            let row: String = self.rows[i].chars().take(room).collect();
             if i == self.selected {
-                line(&mut out, &format!("> \x1b[7m{}{}\x1b[0m", label, self.rows[i]));
+                line(&mut out, &format!("> \x1b[7m{}{}\x1b[0m", label, row));
             } else {
-                line(&mut out, &format!("  {}{}", label, self.rows[i]));
+                line(&mut out, &format!("  {}{}", label, row));
             }
             lines += 1;
         }
@@ -261,7 +314,7 @@ mod tests {
 
     fn chooser(n: usize, viewport: usize) -> Chooser {
         let rows = (0..n).map(|i| format!("row{}", i)).collect();
-        Chooser::new(rows, 0, viewport, Some(0x1c))
+        Chooser::new(rows, 0, (viewport, 100), Some(0x1c))
     }
 
     fn pick(outcome: Option<Outcome>) -> Option<usize> {
@@ -374,7 +427,7 @@ mod tests {
     #[test]
     fn no_detach_key_means_the_byte_is_ignored() {
         let rows = vec!["a".to_string(), "b".to_string()];
-        let mut c = Chooser::new(rows, 0, 10, None);
+        let mut c = Chooser::new(rows, 0, (10, 100), None);
         assert!(c.feed(b"\x1c").is_none());
     }
 
@@ -445,7 +498,7 @@ mod tests {
     #[test]
     fn an_initial_selection_below_the_fold_scrolls_into_view() {
         let rows: Vec<String> = (0..20).map(|i| format!("row{}", i)).collect();
-        let c = Chooser::new(rows, 15, 5, None);
+        let c = Chooser::new(rows, 15, (5, 100), None);
         assert!(c.top <= 15 && 15 < c.window_end());
     }
 
@@ -499,8 +552,56 @@ mod tests {
 
     #[test]
     fn an_empty_list_cannot_be_picked() {
-        let mut c = Chooser::new(vec![], 0, 10, None);
+        let mut c = Chooser::new(vec![], 0, (10, 100), None);
         assert!(c.feed(b"\r").is_none());
         assert!(matches!(c.feed(b"q"), Some(Outcome::Cancel)));
+    }
+
+    #[test]
+    fn a_mouse_click_selects_nothing() {
+        // The terminal keeps whatever mouse mode the session's app enabled,
+        // and an SGR report carries digits — which used to read as a jump.
+        let mut c = chooser(5, 10);
+        assert!(c.feed(b"\x1b[<0;12;5M").is_none());
+        assert_eq!(pick(c.feed(b"\r")), Some(0), "selection did not move");
+    }
+
+    #[test]
+    fn pasted_text_selects_nothing() {
+        let mut c = chooser(5, 10);
+        assert!(c.feed(b"\x1b[200~q3\r\x1c\x1b[201~").is_none());
+        // The paste ended; the chooser is still live and keys work again.
+        assert_eq!(pick(c.feed(b"3")), Some(2));
+    }
+
+    #[test]
+    fn the_detach_key_inside_a_paste_is_content() {
+        let mut c = chooser(3, 10);
+        c.feed(b"\x1b[200~");
+        assert!(c.feed(b"\x1c").is_none());
+        c.feed(b"\x1b[201~");
+        assert!(matches!(c.feed(b"\x1c"), Some(Outcome::Detach)));
+    }
+
+    #[test]
+    fn rows_are_truncated_to_the_window_width() {
+        let rows = vec!["x".repeat(200)];
+        let mut c = Chooser::new(rows, 0, (10, 40), None);
+        let painted = String::from_utf8(c.render()).unwrap();
+        let body = painted
+            .lines()
+            .next()
+            .unwrap()
+            .trim_end_matches("\x1b[0m");
+        // "\x1b[2K> \x1b[7m1) " + 34 chars of row = 39 columns painted.
+        assert!(body.chars().filter(|c| *c == 'x').count() == 34, "{:?}", body);
+    }
+
+    #[test]
+    fn truncation_counts_characters_not_bytes() {
+        // A multibyte title must not be split mid-character.
+        let rows = vec!["⋯".repeat(60)];
+        let mut c = Chooser::new(rows, 0, (10, 40), None);
+        assert!(String::from_utf8(c.render()).is_ok());
     }
 }

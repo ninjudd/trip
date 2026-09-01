@@ -444,20 +444,40 @@ enum ChooserExit {
     Gone,
 }
 
+/// Restores the cursor however the chooser ends. Error paths propagate with
+/// `?` straight out of `attach`, and `TerminalCleanup` alone used to leave
+/// the shell with an invisible cursor.
+struct CursorGuard;
+
+impl Drop for CursorGuard {
+    fn drop(&mut self) {
+        let mut out = std::io::stdout();
+        let _ = out.write_all(b"\x1b[?25h");
+        let _ = out.flush();
+    }
+}
+
 /// Run the chooser over an attached session, driven by the client's existing
 /// stdin channel rather than the fd.
 ///
 /// Session output keeps arriving while this runs and is dropped on the floor.
-/// The socket still has to be drained or the daemon blocks writing to it, but
-/// nothing it sends is worth keeping: every way out of here ends in a full
-/// re-render.
+/// The frame channel still has to be drained or the daemon blocks writing,
+/// but almost nothing it carries is worth keeping — every way out of here
+/// ends in a full re-render. The exception is `SessionName`: the daemon can
+/// move this client while the chooser is up (a `trip enter` in the shared
+/// shell), and a cancel sent afterwards has to name the session the client is
+/// *now* on, or it would yank the terminal straight back out of it.
+///
+/// `pending` is whatever arrived in the same read as the detach key;
+/// keystrokes are not the user's fault for being fast.
 async fn run_attached_chooser(
-    reader: &mut BufReader<tokio::net::unix::OwnedReadHalf>,
+    frame_rx: &mut tokio::sync::mpsc::Receiver<Frame>,
     writer: &mut BufWriter<tokio::net::unix::OwnedWriteHalf>,
     stdin_rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>,
     sigwinch: &mut tokio::signal::unix::Signal,
-    current: &str,
+    current: &mut String,
     detach_key: Option<u8>,
+    pending: &[u8],
 ) -> Result<ChooserExit> {
     let sessions = super::get_session_list().await?;
     // The workspace is the session's, not the client's. An attach client's cwd
@@ -470,7 +490,7 @@ async fn run_attached_chooser(
     let mut chooser = Chooser::new(
         super::chooser_rows(&choices),
         preselected,
-        super::chooser_viewport(),
+        super::chooser_geometry(),
         detach_key,
     );
 
@@ -482,10 +502,19 @@ async fn run_attached_chooser(
         None => "sessions:  \x1b[2m↑/↓ + enter · 1-9 · esc back\x1b[0m".to_string(),
     };
 
+    let _cursor = CursorGuard;
     let mut stdout = std::io::stdout();
     let mut repaint = |chooser: &mut Chooser, full: bool| -> Result<()> {
         if full {
-            stdout.write_all(b"\x1b[?25l\x1b[2J\x1b[H")?;
+            // The terminal is still in whatever modes the session's program
+            // chose. Mouse reporting off, so a click does not arrive as
+            // bytes; bracketed paste on, so a paste arrives marked and the
+            // chooser can ignore it. The re-render on the way out puts back
+            // exactly the modes the session's screen wants — but it only ever
+            // *enables*, so the paste guard is switched off explicitly below.
+            stdout.write_all(
+                b"\x1b[?25l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004h\x1b[2J\x1b[H",
+            )?;
             stdout.write_all(hint.as_bytes())?;
             stdout.write_all(b"\r\n")?;
         }
@@ -495,10 +524,42 @@ async fn run_attached_chooser(
     };
     repaint(&mut chooser, true)?;
 
+    // The escape timeout is a deadline, not a timer per loop iteration: the
+    // loop iterates for every dropped output frame, and a fresh 25ms sleep
+    // per frame never elapses while the session is busy — Esc would go dead
+    // exactly when the screen behind the chooser is noisiest.
+    let arm = |chooser: &Chooser| {
+        chooser
+            .pending_escape()
+            .then(|| tokio::time::Instant::now() + std::time::Duration::from_millis(25))
+    };
+
+    let mut outcome = if pending.is_empty() {
+        None
+    } else {
+        let outcome = chooser.feed(pending);
+        if outcome.is_none() {
+            repaint(&mut chooser, false)?;
+        }
+        outcome
+    };
+    let mut esc_deadline = arm(&chooser);
+
     let outcome = loop {
+        if let Some(outcome) = outcome.take() {
+            break outcome;
+        }
         let decided = tokio::select! {
-            frame = read_frame(reader) => {
-                match frame? {
+            frame = frame_rx.recv() => {
+                match frame {
+                    Some(Frame::Control(payload)) => {
+                        if let Ok(Response::SessionName { name }) =
+                            serde_json::from_slice::<Response>(&payload)
+                        {
+                            *current = name;
+                        }
+                        continue;
+                    }
                     // Dropped, and deliberately not a repaint: a busy session
                     // delivers frames continuously, and repainting per frame
                     // would write the whole list to the terminal each time
@@ -510,7 +571,11 @@ async fn run_attached_chooser(
 
             data = stdin_rx.recv() => {
                 match data {
-                    Some(data) => chooser.feed(&data),
+                    Some(data) => {
+                        let decided = chooser.feed(&data);
+                        esc_deadline = arm(&chooser);
+                        decided
+                    }
                     None => return Ok(ChooserExit::Gone),
                 }
             }
@@ -521,32 +586,36 @@ async fn run_attached_chooser(
                 payload.extend_from_slice(&cols.to_be_bytes());
                 payload.extend_from_slice(&rows.to_be_bytes());
                 write_frame(writer, FRAME_RESIZE, &payload).await?;
-                chooser.resize(super::chooser_viewport());
+                chooser.resize(super::chooser_geometry());
                 repaint(&mut chooser, true)?;
                 None
             }
 
             // A lone Esc is only knowable by the silence after it.
-            _ = tokio::time::sleep(std::time::Duration::from_millis(25)),
-                if chooser.pending_escape() => { chooser.tick() }
+            _ = tokio::time::sleep_until(
+                esc_deadline.unwrap_or_else(tokio::time::Instant::now)
+            ), if esc_deadline.is_some() => {
+                esc_deadline = None;
+                chooser.tick()
+            }
         };
 
         match decided {
-            Some(outcome) => break outcome,
+            Some(decided) => break decided,
             None => repaint(&mut chooser, false)?,
         }
     };
 
-    // Give the cursor back before anything repaints over the list.
-    stdout.write_all(b"\x1b[?25h")?;
+    // The bracketed-paste guard was ours; the session's own modes come back
+    // with the re-render, which enables but never disables.
+    stdout.write_all(b"\x1b[?2004l\x1b[?25h")?;
     stdout.flush()?;
 
     let (to, allocate) = match outcome {
         Outcome::Detach => return Ok(ChooserExit::Detached),
-        // Cancel is a switch to the session we are already on: the daemon's
-        // re-render is exactly the repaint a cancel needs, and it keeps one
-        // code path behind both.
-        Outcome::Cancel => (current.to_string(), false),
+        // Cancel is a switch to the session we are already on; the daemon
+        // repaints in place.
+        Outcome::Cancel => (current.clone(), false),
         Outcome::Pick(i) => {
             // The create row is always row 1. Naming a number the chooser
             // painted would race another terminal for it, so let the daemon
@@ -632,6 +701,22 @@ pub async fn attach(name: String) -> Result<()> {
     // restored — and runs on the `?` paths out of the loop below.
     let _cleanup = TerminalCleanup;
 
+    // Frames arrive through a task that owns the socket's read half, because
+    // read_frame is not cancel-safe: half a length prefix read when a
+    // `select!` picks another branch is gone, and the stream never realigns —
+    // the remaining bytes parse as a garbage length or an unknown frame type.
+    // A channel recv can be cancelled and retried; a partial read cannot.
+    let (frame_tx, mut frame_rx) = tokio::sync::mpsc::channel::<Frame>(64);
+    tokio::spawn(async move {
+        let mut reader = reader;
+        // EOF and error alike end the loop: dropping the sender is the signal.
+        while let Ok(Some(frame)) = read_frame(&mut reader).await {
+            if frame_tx.send(frame).await.is_err() {
+                break;
+            }
+        }
+    });
+
     let mut sigwinch = signal(SignalKind::window_change())?;
 
     let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
@@ -662,8 +747,8 @@ pub async fn attach(name: String) -> Result<()> {
 
     loop {
         tokio::select! {
-            frame = read_frame(&mut reader) => {
-                match frame? {
+            frame = frame_rx.recv() => {
+                match frame {
                     Some(Frame::Data(data)) => {
                         stdout.write_all(&titles.process(&data))?;
                         stdout.flush()?;
@@ -693,7 +778,7 @@ pub async fn attach(name: String) -> Result<()> {
                     None => {
                         break;
                     }
-                    _ => {}
+                    Some(_) => {}
                 }
             }
 
@@ -713,14 +798,16 @@ pub async fn attach(name: String) -> Result<()> {
 
                                 // The key's first stop is the chooser; the
                                 // second press, from inside it, is the detach
-                                // this used to be.
+                                // this used to be. Whatever arrived in the
+                                // same read after the key rides along.
                                 match run_attached_chooser(
-                                    &mut reader,
+                                    &mut frame_rx,
                                     &mut writer,
                                     &mut stdin_rx,
                                     &mut sigwinch,
-                                    &current,
+                                    &mut current,
                                     detach_key_from_env(),
+                                    &data[at + 1..],
                                 )
                                 .await?
                                 {

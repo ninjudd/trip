@@ -548,7 +548,60 @@ since. The attached chooser takes the workspace from the session's own name.
   tracks, uses the crate's own encoder, and still avoids `state_formatted`'s
   title.
 
-### 9.6 Evidence
+### 9.6 Review hardening
+
+A review pass over the first pushed head found real failures; the fixes
+changed two §6 decisions and are worth their own record.
+
+- **Cancel no longer round-trips through detach.** §6 chose "cancel is a
+  switch to the current session" so one daemon path served both. The full
+  detach/re-attach turned out to be the heaviest mechanism available for
+  doing nothing: its bookkeeping resizes the shared PTY twice under every
+  other client, and `try_gc_session` runs in a gap where this client is not
+  counted — Esc on an exited session destroyed the session it was declining
+  to leave, and could take the daemon with it. A self-`SwitchTo` is now
+  answered in place: repaint plus `SessionName`, no client removal. The
+  request shape is unchanged; only the daemon's answer is lighter. A failed
+  `Session::spawn` on a real switch gets the same treatment — current screen
+  back, then the error — because the client tore its chooser down when it
+  asked.
+- **The chooser parses whole escape sequences, not just arrows.** The
+  terminal keeps whatever modes the session's app enabled, so a mouse click
+  arrives as `ESC [ < 0 ; 1 2 ; 5 M` — and a parser that only knew arrows
+  read the digit in the middle as a jump and silently created a session. CSI
+  and SS3 sequences are now consumed whole, bracketed paste marks a region
+  whose bytes select nothing, and the chooser turns mouse reporting off and
+  the paste guard on for its own duration (off again on exit — the re-render
+  only ever enables modes).
+- **Frames reach the client through a channel-owning task.** `read_frame` is
+  not cancel-safe; under `select!` a keystroke racing a half-read length
+  prefix desynchronized the stream permanently. The socket's read half now
+  lives in one task and both loops receive from a channel, which also lets
+  the chooser see `SessionName` mid-flight — a daemon-side switch during the
+  chooser no longer leaves `current` stale for the cancel that follows.
+- **The escape timeout is a deadline, not a timer per iteration.** The
+  chooser loop iterates per dropped output frame, and a fresh 25ms sleep per
+  frame never elapsed — Esc went dead exactly when the session was noisiest.
+- **Rows truncate to the terminal width** (a wrapped row breaks the redraw
+  arithmetic), **bytes after the detach key feed the chooser** instead of
+  vanishing, **`terminal_size` falls back to stderr and stdin** when stdout
+  is a pipe, **`TERMINAL_RESET` restores the cursor**, and the standalone
+  create row **creates with recompute-on-collision** in `pick_session`, so
+  the command path stops silently joining a raced number (the keystroke path
+  already allocated; `enter`'s create-or-attach was the remaining gap).
+- **`is_numbered_session` now delegates to the client's name rule.** It was
+  a third copy of the `.N` convention and disagreed with the others: an
+  empty suffix is vacuously all-digits, so `trip.` was GC-eligible as a
+  numbered session while being its own workspace everywhere else.
+
+Two review findings were declined. Preselecting the current session instead
+of the canonical one: the plan chose the canonical deliberately (§3.5, §6) —
+Esc is the documented never-mind gesture, and in the common case the two
+coincide. And `session_base` misreading a workspace literally named `v2.0`:
+that is trip's own documented convention (`ls` groups it the same way), not
+this feature's to relitigate.
+
+### 9.7 Evidence
 
 `tests/switcher_e2e.py` drives a real PTY in a throwaway `HOME` and covers
 every interactive criterion in §4: the chooser opening, Esc returning, the key
@@ -556,8 +609,11 @@ twice detaching, per-terminal switching with a second terminal attached, the
 PTY refitting to whoever is left, `trip return` surviving three cancels, cwd
 inheritance, two terminals racing to the same displayed number, the viewport
 and its marker, and bracketed paste surviving a cancel into a live app. 30
-checks. `cargo test` covers the parser, the viewport, the renderer, the
-choice ordering and preselection, and the input-mode rebuild.
+checks — including Esc on an exited session, Esc under continuous output, a
+mouse click while the chooser is up, and two clients racing one displayed
+number. `cargo test` covers the parser (mouse reports, paste regions, split
+sequences), the viewport, the renderer and its width truncation, the choice
+ordering and preselection, and the input-mode rebuild.
 
 Two things are not covered end to end: mouse reporting across a cancel, which
 is unit-tested alongside bracketed paste and shares its code path, and the

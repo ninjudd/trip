@@ -197,24 +197,33 @@ fn run_chooser(chooser: &mut chooser::Chooser) -> Option<chooser::Outcome> {
     result
 }
 
-/// How many rows the chooser may paint: the window, less the hint line, the
-/// two truncation markers, and one spare so the list never scrolls the
-/// terminal.
-pub(crate) fn chooser_viewport() -> usize {
-    (terminal_size().1 as usize).saturating_sub(4).max(3)
+/// The chooser's window: rows it may paint — the terminal, less the hint
+/// line, the two truncation markers, and one spare so the list never scrolls
+/// — and the columns it may fill.
+pub(crate) fn chooser_geometry() -> (usize, usize) {
+    let (cols, rows) = terminal_size();
+    ((rows as usize).saturating_sub(4).max(3), cols as usize)
 }
 
 pub(crate) fn terminal_size() -> (u16, u16) {
     use nix::libc;
     use std::os::fd::AsRawFd;
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    let fd = std::io::stdout().as_raw_fd();
-    unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) };
-    if ws.ws_col == 0 {
-        (80, 24)
-    } else {
-        (ws.ws_col, ws.ws_row)
+    // Whichever standard stream is still a terminal answers. The chooser
+    // renders to stderr precisely so that stdout may be a pipe, and sizing
+    // from the pipe would hand back the fallback on the one path that
+    // advertises working without a tty on stdout.
+    for fd in [
+        std::io::stdout().as_raw_fd(),
+        std::io::stderr().as_raw_fd(),
+        std::io::stdin().as_raw_fd(),
+    ] {
+        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+        unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) };
+        if ws.ws_col != 0 {
+            return (ws.ws_col, ws.ws_row);
+        }
     }
+    (80, 24)
 }
 
 
@@ -310,8 +319,14 @@ pub(crate) fn session_choices(
 
 /// Let the user pick which session to enter.
 ///
-/// Returns None if the user cancels.
-async fn pick_session(scope: Scope) -> Result<Option<String>> {
+/// Returns None if the user cancels. Picking the numbered create row creates
+/// the session *here*, so the returned name always exists: the name was
+/// computed when the list was drawn, and another terminal can take it before
+/// Enter lands — `enter`'s create-or-attach would then silently join that
+/// terminal's session, and "new session" means new. On a collision the number
+/// is recomputed and creation retried, the same shape as the daemon-side
+/// `allocate` that covers the keystroke path.
+async fn pick_session(scope: Scope, command: &Option<Vec<String>>) -> Result<Option<String>> {
     use std::io::IsTerminal;
     let workspace = derive_session_name()?;
 
@@ -350,11 +365,31 @@ async fn pick_session(scope: Scope) -> Result<Option<String>> {
     let mut chooser = chooser::Chooser::new(
         chooser_rows(&choices),
         preselected,
-        chooser_viewport(),
+        chooser_geometry(),
         None,
     );
     match run_chooser(&mut chooser) {
-        Some(chooser::Outcome::Pick(i)) => Ok(Some(choices[i].0.clone())),
+        Some(chooser::Outcome::Pick(i)) => {
+            let mut name = choices[i].0.clone();
+            if i == 0 && name != workspace {
+                // The numbered create row. The canonical one (name ==
+                // workspace) keeps create-or-attach semantics: joining the
+                // session somebody else just made is the right answer there.
+                for _ in 0..5 {
+                    let exists = format!("session '{}' already exists", name);
+                    match create_session(name.clone(), command.clone()).await {
+                        Ok(()) => return Ok(Some(name)),
+                        Err(e) if e.to_string() == exists => {
+                            let sessions = get_session_list().await?;
+                            name = next_available_name(&sessions, &workspace);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                anyhow::bail!("no free session number for '{}'", workspace);
+            }
+            Ok(Some(name))
+        }
         // No detach key is supplied here, so `Detach` cannot arrive; a
         // standalone chooser has no session to detach from.
         _ => {
@@ -396,7 +431,7 @@ pub async fn enter(
     let name = match name {
         Some(n) => n,
         None => {
-            match pick_session(scope).await? {
+            match pick_session(scope, &command).await? {
                 Some(n) => n,
                 None => return Ok(()),
             }
@@ -652,7 +687,7 @@ pub async fn list_sessions(scope: Scope, attached_only: bool) -> Result<()> {
 }
 
 pub const TERMINAL_RESET: &[u8] =
-    b"\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[H\x1b[2J";
+    b"\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[H\x1b[2J";
 
 pub async fn get_screen(name: String, watch: bool) -> Result<()> {
     let stream = launch::connect().await?;

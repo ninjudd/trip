@@ -68,7 +68,7 @@ The key has two stops. The first shows the session chooser:
 
 ```
 sessions:  ↑/↓ + enter · 1-9 · esc back · ^\ detach
-  1) trip.2        zsh          (new session)
+  1) trip.2                     (new session)
 > 2) trip          claude       (current)
   3) trip.1        cargo test
   4) acme/webapp   nvim         (attached)

@@ -886,9 +886,11 @@ fn shell_escape(s: &str) -> String {
 }
 
 fn is_numbered_session(name: &str) -> bool {
-    name.rsplit_once('.')
-        .map(|(_, suffix)| suffix.chars().all(|c| c.is_ascii_digit()))
-        .unwrap_or(false)
+    // One rule for `.N`, owned by the client's name helpers. This used to be
+    // a third copy, and it disagreed with the others: an empty suffix is
+    // vacuously all-digits, so `trip.` was GC-eligible as a numbered session
+    // while being its own workspace everywhere else.
+    crate::client::session_base(name) != name
 }
 
 fn try_gc_session(sessions: &mut HashMap<String, Session>, name: &str) {
@@ -926,7 +928,7 @@ async fn prepare_switch_target(
     // Resolved while the table is locked, so the name cannot be taken between
     // choosing it and creating it.
     let to = &if allocate {
-        next_free_name(&sessions, session_base(to))
+        next_free_name(&sessions, crate::client::session_base(to))
     } else {
         to.to_string()
     };
@@ -953,18 +955,6 @@ async fn prepare_switch_target(
         }
     }
     Ok(to.to_string())
-}
-
-/// The workspace a session belongs to: its name with any `.N` stripped.
-fn session_base(name: &str) -> &str {
-    match name.rsplit_once('.') {
-        Some((base, suffix))
-            if !base.is_empty() && !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()) =>
-        {
-            base
-        }
-        _ => name,
-    }
 }
 
 fn next_free_name(sessions: &HashMap<String, Session>, base: &str) -> String {
@@ -1088,6 +1078,9 @@ async fn stream_session(
                                 cwd,
                                 env,
                             }) => {
+                                let repaint = |sessions: &HashMap<String, Session>| {
+                                    sessions.get(&session_name).map(|s| s.screen_contents())
+                                };
                                 match prepare_switch_target(
                                     &sessions,
                                     &session_name,
@@ -1099,13 +1092,55 @@ async fn stream_session(
                                 )
                                 .await
                                 {
+                                    // A switch to the session the client is
+                                    // already on -- the chooser's Cancel, and
+                                    // picking the row you are on. Repaint in
+                                    // place rather than detaching and
+                                    // re-attaching: the full round trip runs
+                                    // detach bookkeeping, which resizes the
+                                    // shared PTY twice under every other
+                                    // client, and try_gc_session can reap an
+                                    // *exited* session in the gap where this
+                                    // client is not counted -- Esc would
+                                    // destroy the session it was declining to
+                                    // leave.
+                                    Ok(target) if target == session_name => {
+                                        let screen = repaint(&*sessions.lock().await);
+                                        if let Some(data) = screen {
+                                            write_frame(&mut writer, FRAME_DATA, &data).await?;
+                                        }
+                                        write_control(
+                                            &mut writer,
+                                            &Response::SessionName {
+                                                name: session_name.clone(),
+                                            },
+                                        )
+                                        .await?;
+                                        continue;
+                                    }
                                     Ok(target) => {
                                         return Ok((StreamExit::SwitchTo(target), reader, writer))
                                     }
+                                    // The client tore its chooser down when it
+                                    // sent the request and is waiting for a
+                                    // repaint that a bare error line is not.
+                                    // Put the session's screen back, then say
+                                    // what happened on top of it.
                                     Err(e) => {
+                                        let screen = repaint(&*sessions.lock().await);
+                                        if let Some(data) = screen {
+                                            write_frame(&mut writer, FRAME_DATA, &data).await?;
+                                        }
                                         let msg = format!("\r\n[switch failed: {}]\r\n", e);
                                         write_frame(&mut writer, FRAME_DATA, msg.as_bytes())
                                             .await?;
+                                        write_control(
+                                            &mut writer,
+                                            &Response::SessionName {
+                                                name: session_name.clone(),
+                                            },
+                                        )
+                                        .await?;
                                         continue;
                                     }
                                 }
