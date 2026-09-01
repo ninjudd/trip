@@ -527,6 +527,19 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             }
         }
 
+        // Only meaningful inside an attached stream, where the socket
+        // identifies the client. On a fresh connection there is no client to
+        // move.
+        Request::SwitchTo { .. } => {
+            write_control(
+                &mut writer,
+                &Response::Error {
+                    message: "switch_to is only valid on an attached session".to_string(),
+                },
+            )
+            .await?;
+        }
+
         Request::ReturnSession { name } => {
             let mut sessions = sessions.lock().await;
             let stack = sessions
@@ -882,6 +895,50 @@ fn try_gc_session(sessions: &mut HashMap<String, Session>, name: &str) {
     }
 }
 
+/// Create the target if it is missing and record where the client came from,
+/// for a switch that one client asked for on its own socket.
+///
+/// The return stack is not updated when `to` is the session the client is
+/// already on. The chooser routes both Cancel and picking the current session
+/// through a self-switch, and a self-entry is one today's flow cannot produce
+/// -- `SwitchSession` only ever pushes a different `from`, and `enter` returns
+/// early rather than switching a session to itself. `ReturnSession` pops the
+/// topmost entry that still *exists*, so a self-entry would pass that check
+/// and make `trip return` a no-op that quietly consumes one entry per cancel.
+async fn prepare_switch_target(
+    sessions: &Sessions,
+    from: &str,
+    to: &str,
+    command: Option<Vec<String>>,
+    cwd: String,
+    env: HashMap<String, String>,
+) -> Result<()> {
+    let mut sessions = sessions.lock().await;
+
+    if !sessions.contains_key(to) {
+        // A session made from the chooser belongs where the session it was
+        // opened from is standing, the way `trip new` inherits the shell's
+        // directory. The client's own cwd is wherever its terminal was
+        // launched, which may be far staler.
+        let cwd = sessions
+            .get(from)
+            .and_then(|s| procinfo::get_foreground_pid(s.master_fd))
+            .and_then(procinfo::get_cwd)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or(cwd);
+        let session = Session::spawn(to.to_string(), command, cwd, 80, 24, env.clone())?;
+        sessions.insert(to.to_string(), session);
+        write_terminal_env(to, &env);
+    }
+
+    if from != to {
+        if let Some(target) = sessions.get_mut(to) {
+            target.return_stack.push(from.to_string());
+        }
+    }
+    Ok(())
+}
+
 enum StreamExit {
     Disconnected,
     SwitchTo(String),
@@ -985,8 +1042,34 @@ async fn stream_session(
                             let _ = input_tx.send(SessionCommand::Resize(cols, rows)).await;
                         }
                     }
-                    Some(Frame::Control(_)) => {
-                        return Ok((StreamExit::Disconnected, reader, writer));
+                    Some(Frame::Control(payload)) => {
+                        // A client switching itself, rather than a hangup.
+                        // Everything else on this socket still means goodbye.
+                        match serde_json::from_slice::<Request>(&payload) {
+                            Ok(Request::SwitchTo {
+                                to,
+                                command,
+                                cwd,
+                                env,
+                            }) => {
+                                if let Err(e) = prepare_switch_target(
+                                    &sessions,
+                                    &session_name,
+                                    &to,
+                                    command,
+                                    cwd,
+                                    env,
+                                )
+                                .await
+                                {
+                                    let msg = format!("\r\n[switch failed: {}]\r\n", e);
+                                    write_frame(&mut writer, FRAME_DATA, msg.as_bytes()).await?;
+                                    continue;
+                                }
+                                return Ok((StreamExit::SwitchTo(to), reader, writer));
+                            }
+                            _ => return Ok((StreamExit::Disconnected, reader, writer)),
+                        }
                     }
                     None => {
                         return Ok((StreamExit::Disconnected, reader, writer));

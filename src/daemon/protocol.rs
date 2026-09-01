@@ -49,6 +49,17 @@ pub enum Request {
         #[serde(default)]
         env: HashMap<String, String>,
     },
+    /// Move *this* client to another session, sent on the client's own
+    /// attached socket rather than a fresh connection. `SwitchSession` can
+    /// only name a session, and since several terminals can hold one, that no
+    /// longer names a terminal; this does, because the socket is the terminal.
+    SwitchTo {
+        to: String,
+        command: Option<Vec<String>>,
+        cwd: String,
+        #[serde(default)]
+        env: HashMap<String, String>,
+    },
     ReturnSession {
         name: String,
     },
