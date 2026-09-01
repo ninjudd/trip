@@ -137,8 +137,13 @@ impl Session {
                         (cmd, args)
                     }
                     _ => {
+                        // An empty SHELL is as useless as an absent one, and
+                        // execve on "" fails silently: the child exits, the
+                        // daemon reaps the session, and whoever created it is
+                        // left attaching to something that no longer exists.
                         let shell = env
                             .get("SHELL")
+                            .filter(|s| !s.is_empty())
                             .cloned()
                             .unwrap_or_else(|| "/bin/sh".into());
                         let cmd = std::ffi::CString::new(shell.as_str()).unwrap();
@@ -172,7 +177,12 @@ impl Session {
                 let cmd_str = command
                     .as_ref()
                     .map(|c| c.join(" "))
-                    .unwrap_or_else(|| std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()));
+                    .unwrap_or_else(|| {
+                        std::env::var("SHELL")
+                            .ok()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| "/bin/sh".into())
+                    });
 
                 let created_at = recording::now_ts() as u64;
 
