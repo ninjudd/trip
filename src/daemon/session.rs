@@ -447,10 +447,19 @@ impl Session {
 
         // The real terminal arrives here in whatever state the *previous*
         // session's program left it — mouse reporting, bracketed paste, a
-        // keyboard protocol. Ground everything first; what this session wants
-        // is re-applied just below, and input_modes only ever enables.
-        output.extend_from_slice(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l");
+        // keyboard protocol, the alternate screen. Ground everything first;
+        // what this session wants is re-applied just below, and input_modes
+        // only ever enables.
+        output.extend_from_slice(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1049l");
         output.extend_from_slice(&self.keyboard.lock().unwrap().restore());
+        // A session whose program lives in the alternate buffer renders back
+        // into it, so its frames stay out of the main buffer's scrollback and
+        // its own exit sequence still means something; everyone else gets the
+        // main buffer, and with it their scrollback. One buffered write, so
+        // the grounded main screen is never displayed on its own.
+        if screen.alternate_screen() {
+            output.extend_from_slice(b"\x1b[?1049h");
+        }
 
         output.extend_from_slice(b"\x1b[2J\x1b[H");
         output.extend_from_slice(&screen.contents_formatted());

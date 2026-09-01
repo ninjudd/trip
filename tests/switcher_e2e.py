@@ -132,7 +132,10 @@ def setup():
 
 
 def teardown():
-    subprocess.run([TRIP, "shutdown", "--yes"], env=env(), capture_output=True)
+    try:
+        subprocess.run([TRIP, "shutdown", "--yes"], env=env(), capture_output=True, timeout=15)
+    except subprocess.TimeoutExpired:
+        pass
     shutil.rmtree(HOME, ignore_errors=True)
 
 
@@ -536,6 +539,33 @@ def main():
         check("detaching grounds the keyboard protocol",
               "\x1b[>4;0m" in raw3 and "\x1b[=0;1u" in raw3, repr(raw3[-300:]))
         tk2.close()
+
+        # ---- the alternate screen does not outlive its session either ----
+        # A session in vim's alt buffer must not strand the next session
+        # there: the alt buffer has no scrollback.
+        trip("create", "altbuf")
+        time.sleep(0.4)
+        trip("send", "altbuf", "printf '\\033[?1049h'")
+        time.sleep(0.8)
+        ta = Term("attach", "altbuf")
+        ta.read(1.2)
+        ta.clear()
+        ta.send(DETACH)
+        ta.read(1.0)
+        ta.send(b"1")   # most recent other session
+        raw = ta.read(2.0)
+        check("switching away leaves the alternate screen",
+              "\x1b[?1049l" in raw, repr(raw[-300:]))
+        ta.close()
+        tb = Term("attach", "altbuf")
+        raw2 = tb.read(1.5)
+        check("re-attaching re-enters the session's alternate screen",
+              "\x1b[?1049h" in raw2.split("\x1b[?1049l")[-1], repr(raw2[-300:]))
+        tb.send(DETACH)
+        tb.read(0.8)
+        tb.send(DETACH)
+        tb.read(1.0)
+        tb.close()
 
         # ---- a live app keeps its input modes across a cancel ----
         trip("create", "modes")

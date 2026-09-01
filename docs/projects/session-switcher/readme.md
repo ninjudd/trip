@@ -619,7 +619,7 @@ every interactive criterion in §4: the chooser opening, Esc returning, the key
 twice detaching, per-terminal switching with a second terminal attached, the
 PTY refitting to whoever is left, `trip return` surviving three cancels, cwd
 inheritance, two terminals racing to the same displayed number, the viewport
-and its marker, and bracketed paste surviving a cancel into a live app. 46
+and its marker, and bracketed paste surviving a cancel into a live app. 48
 checks — including Esc on an exited session, Esc under continuous output, a
 mouse click while the chooser is up, and two clients racing one displayed
 number. `cargo test` covers the parser (mouse reports, paste regions, split
@@ -637,7 +637,7 @@ Shipped, as §1 described it. The detach key's first press opens the chooser,
 and the same component serves all three ways in.
 
 Every §4 criterion has evidence. The interactive ones are covered by
-`tests/switcher_e2e.py`, which drives a real PTY in a throwaway `HOME` (46
+`tests/switcher_e2e.py`, which drives a real PTY in a throwaway `HOME` (48
 checks); the pure ones by `cargo test` (128 tests, 71 of them new). Two
 criteria are proven by unit test rather than end to end, and deliberately:
 
@@ -720,8 +720,14 @@ Each session now tracks its keyboard-protocol state by watching its own
 output (`KeyboardState` in `session.rs`: the kitty flag stack with push, pop —
 past-the-bottom resets, per spec — and absolute/bitwise sets, plus the
 modifyOtherKeys level), and `screen_contents` grounds the terminal — mouse,
-paste, keyboard protocol — before re-applying exactly what the incoming
-session asked for. The same grounding covers the pre-existing leak of mouse
+paste, keyboard protocol, and the alternate screen — before re-applying
+exactly what the incoming session asked for. The alternate screen needs no
+tracker of its own: vt100 already carries it, so a session whose program
+lives in the alternate buffer renders back into it — its frames stay out of
+the main buffer's scrollback and its exit sequence keeps meaning something —
+while everyone else gets the main buffer and, with it, their scrollback.
+Review raised the flash risk of grounding the buffer; the whole restore is
+one buffered write, so the grounded main screen is never displayed alone. The same grounding covers the pre-existing leak of mouse
 and paste modes across command-driven switches, which `input_mode_diff` could
 never fix because it only enables. `TERMINAL_RESET` grounds the keyboard
 protocol on detach as well.
