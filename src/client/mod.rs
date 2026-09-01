@@ -218,34 +218,59 @@ pub(crate) fn terminal_size() -> (u16, u16) {
 }
 
 
-/// Build the picker rows: (session name, what it is running, status tag).
+/// Which sessions a chooser or listing covers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Scope {
+    /// Only the current workspace. What `--pwd` asks for.
+    Pwd,
+    /// Every workspace. The default.
+    All,
+}
+
+/// Build the chooser rows — (name, what it is running, status tag) — and the
+/// index to start on.
 ///
-/// Pure so the list can be tested without a terminal. `scope` of `Some(base)`
-/// restricts to one workspace and offers the canonical session as a
-/// to-be-created first entry; `None` lists every workspace's sessions, where
-/// there is no single canonical session to offer.
+/// Pure, so the ordering and the preselection can be tested without a
+/// terminal. `workspace` is always known and is not the same question as
+/// `scope`: it says which group leads and which one gets the create row, even
+/// when the list spans every workspace.
 fn session_choices(
     sessions: &[crate::daemon::protocol::SessionInfo],
-    scope: Option<&str>,
+    workspace: &str,
+    scope: Scope,
     current: Option<&str>,
-) -> Vec<(String, String, String)> {
+) -> (Vec<(String, String, String)>, usize) {
     let mut group: Vec<_> = sessions
         .iter()
-        .filter(|s| scope.is_none_or(|base| session_base(&s.name) == base))
+        .filter(|s| scope == Scope::All || session_base(&s.name) == workspace)
         .collect();
-    // Grouped by workspace, then by number within it — the same order `ls`
-    // uses, so the two views agree.
+    // The current workspace leads, then the rest alphabetically, numbered
+    // sessions after their canonical one. Your own sessions are where your
+    // eyes already are, and they take the low digits.
     group.sort_by(|a, b| {
-        (session_base(&a.name), group_order(&a.name))
-            .cmp(&(session_base(&b.name), group_order(&b.name)))
+        let key = |name: &str| {
+            (
+                session_base(name) != workspace,
+                session_base(name).to_string(),
+                group_order(name),
+            )
+        };
+        key(&a.name).cmp(&key(&b.name))
     });
 
     let mut choices: Vec<(String, String, String)> = Vec::new();
-    if let Some(base) = scope {
-        if !group.iter().any(|s| s.name == base) {
-            choices.push((base.to_string(), String::new(), "(new session)".to_string()));
-        }
-    }
+
+    // "The next session in this workspace": the canonical one while it is
+    // missing, otherwise the number `trip new` would take. Always row 1, so
+    // Up-then-Enter is a fixed gesture rather than one that moves with the
+    // contents of the list.
+    let next = if sessions.iter().any(|s| s.name == workspace) {
+        next_available_name(sessions, workspace)
+    } else {
+        workspace.to_string()
+    };
+    choices.push((next, String::new(), "(new session)".to_string()));
+
     for s in &group {
         let cmd = s
             .title
@@ -263,56 +288,71 @@ fn session_choices(
         };
         choices.push((s.name.clone(), cmd.to_string(), tag.to_string()));
     }
-    choices
+
+    // The canonical session, failing that the workspace's first surviving one,
+    // failing that the create row. The middle clause is `trip` killed while
+    // `trip.1` lives: there is nothing canonical to select and the workspace
+    // is not empty either. Landing on row 2 there is what keeps the create row
+    // directly above the selection in every state.
+    let preselected = group
+        .iter()
+        .position(|s| s.name == workspace)
+        .or_else(|| {
+            group
+                .iter()
+                .position(|s| session_base(&s.name) == workspace)
+        })
+        .map(|i| i + 1)
+        .unwrap_or(0);
+
+    (choices, preselected)
 }
 
 /// Let the user pick which session to enter.
 ///
-/// `scope` of `Some(base)` is the default: only this workspace, and only when
-/// it has sessions beyond the canonical one — otherwise plain `trip enter`
-/// keeps its old behaviour of going straight to the canonical session,
-/// creating it if missing. `None` is `--all`: every workspace's sessions, and
-/// always a picker, because choosing is the point of asking.
-///
 /// Returns None if the user cancels.
-async fn pick_session(scope: Option<&str>) -> Result<Option<String>> {
+async fn pick_session(scope: Scope) -> Result<Option<String>> {
     use std::io::IsTerminal;
-    let interactive = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+    let workspace = derive_session_name()?;
 
-    if !interactive {
-        return match scope {
-            // A script running `trip enter` gets the canonical session.
-            Some(base) => Ok(Some(base.to_string())),
-            // ...but `--all` has no sensible default to fall back on.
-            None => anyhow::bail!("trip enter --all needs a terminal to choose with"),
-        };
+    // A script has nothing to choose with, and the answer `enter` gave before
+    // there was a chooser is still the right one.
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return Ok(Some(workspace));
     }
 
     let sessions = get_session_list().await?;
+
+    // Skipping the chooser is the point of `--pwd`: with nothing but the
+    // canonical session in the workspace there is nothing to choose between.
+    if scope == Scope::Pwd {
+        let mine: Vec<_> = sessions
+            .iter()
+            .filter(|s| session_base(&s.name) == workspace)
+            .collect();
+        if mine.is_empty() || (mine.len() == 1 && mine[0].name == workspace) {
+            return Ok(Some(workspace));
+        }
+    }
+
     let current = std::env::var("TRIP_SESSION").ok();
-    let choices = session_choices(&sessions, scope, current.as_deref());
+    let (choices, preselected) =
+        session_choices(&sessions, &workspace, scope, current.as_deref());
 
     match scope {
-        // Nothing extra in this workspace: behave exactly as before the picker.
-        Some(base) if !choices.iter().any(|(name, _, _)| name != base) => {
-            return Ok(Some(base.to_string()));
-        }
-        None if choices.is_empty() => {
-            eprintln!("no sessions");
-            return Ok(None);
-        }
-        _ => {}
-    }
-
-    match scope {
-        Some(base) => eprintln!(
+        Scope::Pwd => eprintln!(
             "sessions for '{}':  \x1b[2m↑/↓ + enter · 1-9 · q cancels\x1b[0m",
-            base
+            workspace
         ),
-        None => eprintln!("all sessions:  \x1b[2m↑/↓ + enter · 1-9 · q cancels\x1b[0m"),
+        Scope::All => eprintln!("sessions:  \x1b[2m↑/↓ + enter · 1-9 · q cancels\x1b[0m"),
     }
 
-    let mut chooser = chooser::Chooser::new(chooser_rows(&choices), 0, chooser_viewport(), None);
+    let mut chooser = chooser::Chooser::new(
+        chooser_rows(&choices),
+        preselected,
+        chooser_viewport(),
+        None,
+    );
     match run_chooser(&mut chooser) {
         Some(chooser::Outcome::Pick(i)) => Ok(Some(choices[i].0.clone())),
         // No detach key is supplied here, so `Detach` cannot arrive; a
@@ -354,12 +394,8 @@ pub async fn enter(name: Option<String>, all: bool, command: Option<Vec<String>>
         None => {
             // --all widens the picker past this workspace; clap already
             // rejects it alongside an explicit name.
-            let base = if all {
-                None
-            } else {
-                Some(derive_session_name()?)
-            };
-            match pick_session(base.as_deref()).await? {
+            let scope = if all { Scope::All } else { Scope::Pwd };
+            match pick_session(scope).await? {
                 Some(n) => n,
                 None => return Ok(()),
             }
@@ -1076,22 +1112,38 @@ mod tests {
             session("acme/webapp.2", false),
             session("other/api", false),
         ];
-        let c = session_choices(&sessions, Some("acme/webapp"), None);
-        assert_eq!(names(&c), vec!["acme/webapp", "acme/webapp.2"]);
+        let (c, _) = session_choices(&sessions, "acme/webapp", Scope::Pwd, None);
+        assert_eq!(
+            names(&c),
+            vec!["acme/webapp.1", "acme/webapp", "acme/webapp.2"]
+        );
     }
 
     #[test]
-    fn scoped_choices_offer_the_canonical_session_when_missing() {
-        // Only a numbered session exists, so entering should still be able to
-        // create the canonical one — it leads the list.
+    fn the_create_row_offers_the_canonical_session_when_it_is_missing() {
         let sessions = vec![session("acme/webapp.2", false)];
-        let c = session_choices(&sessions, Some("acme/webapp"), None);
+        let (c, _) = session_choices(&sessions, "acme/webapp", Scope::Pwd, None);
         assert_eq!(names(&c), vec!["acme/webapp", "acme/webapp.2"]);
         assert_eq!(c[0].2, "(new session)");
     }
 
     #[test]
-    fn all_choices_span_workspaces_grouped_and_ordered() {
+    fn the_create_row_offers_the_next_number_when_the_canonical_exists() {
+        let sessions = vec![
+            session("acme/webapp", false),
+            session("acme/webapp.1", false),
+            session("acme/webapp.2", false),
+        ];
+        let (c, _) = session_choices(&sessions, "acme/webapp", Scope::Pwd, None);
+        assert_eq!(c[0].0, "acme/webapp.3");
+        assert_eq!(c[0].2, "(new session)");
+    }
+
+    #[test]
+    fn all_choices_put_the_current_workspace_first() {
+        // Rewritten: the wide list used to be strictly alphabetical. It leads
+        // with the workspace you launched from, so Enter lands where it landed
+        // before there was a wide list at all.
         let sessions = vec![
             session("other/api.2", false),
             session("acme/webapp.10", false),
@@ -1099,38 +1151,110 @@ mod tests {
             session("acme/webapp", false),
             session("acme/webapp.2", false),
         ];
-        let c = session_choices(&sessions, None, None);
+        let (c, _) = session_choices(&sessions, "other/api", Scope::All, None);
         assert_eq!(
             names(&c),
             vec![
+                "other/api.1",
+                "other/api",
+                "other/api.2",
                 "acme/webapp",
                 "acme/webapp.2",
                 "acme/webapp.10",
-                "other/api",
-                "other/api.2",
             ]
         );
     }
 
     #[test]
-    fn all_choices_never_offer_a_new_session() {
-        // Across workspaces there is no single canonical session to create.
-        let sessions = vec![session("acme/webapp.2", false)];
-        let c = session_choices(&sessions, None, None);
-        assert_eq!(names(&c), vec!["acme/webapp.2"]);
-        assert!(c.iter().all(|(_, _, tag)| tag != "(new session)"));
+    fn all_choices_offer_a_new_session_for_the_current_workspace() {
+        // Rewritten: the wide list used to have no create affordance, on the
+        // grounds that no single workspace owned it. The launch directory
+        // names one, and without the row a first tab in a fresh repo has
+        // nothing to pick.
+        let sessions = vec![session("other/api", false)];
+        let (c, pre) = session_choices(&sessions, "acme/webapp", Scope::All, None);
+        assert_eq!(names(&c), vec!["acme/webapp", "other/api"]);
+        assert_eq!(c[0].2, "(new session)");
+        assert_eq!(pre, 0, "nothing of ours to select, so the create row");
+    }
+
+    #[test]
+    fn only_the_current_workspace_gets_a_create_row() {
+        let sessions = vec![session("acme/webapp", false), session("other/api", false)];
+        let (c, _) = session_choices(&sessions, "acme/webapp", Scope::All, None);
+        assert_eq!(
+            c.iter().filter(|(_, _, tag)| tag == "(new session)").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_canonical_session_is_preselected() {
+        let sessions = vec![
+            session("acme/webapp", false),
+            session("acme/webapp.1", false),
+        ];
+        let (c, pre) = session_choices(&sessions, "acme/webapp", Scope::All, None);
+        assert_eq!(c[pre].0, "acme/webapp");
+        assert_eq!(pre, 1, "directly below the create row");
+    }
+
+    #[test]
+    fn a_workspace_whose_canonical_session_died_preselects_the_survivor() {
+        // `trip kill trip` with `trip.1` still alive. Nothing canonical to
+        // select, and the workspace is not empty either.
+        let sessions = vec![
+            session("acme/webapp.1", false),
+            session("acme/webapp.2", false),
+        ];
+        let (c, pre) = session_choices(&sessions, "acme/webapp", Scope::All, None);
+        assert_eq!(c[0].0, "acme/webapp", "row 1 offers the canonical back");
+        assert_eq!(c[pre].0, "acme/webapp.1");
+        assert_eq!(pre, 1, "still directly below the create row");
+    }
+
+    #[test]
+    fn the_create_row_always_sits_directly_above_the_selection() {
+        // The invariant the Up-then-Enter gesture rests on, in every state a
+        // workspace can be in.
+        let states: Vec<Vec<SessionInfo>> = vec![
+            vec![],
+            vec![session("w", false)],
+            vec![session("w", false), session("w.1", false)],
+            vec![session("w.1", false), session("w.2", false)],
+            vec![session("other", false)],
+        ];
+        for sessions in states {
+            let (c, pre) = session_choices(&sessions, "w", Scope::All, None);
+            assert_eq!(c[0].2, "(new session)");
+            assert!(pre == 0 || pre == 1, "selection at {} for {:?}", pre, names(&c));
+        }
+    }
+
+    #[test]
+    fn an_empty_daemon_still_offers_the_workspace() {
+        let (c, pre) = session_choices(&[], "acme/webapp", Scope::All, None);
+        assert_eq!(names(&c), vec!["acme/webapp"]);
+        assert_eq!(pre, 0);
     }
 
     #[test]
     fn tags_mark_current_and_attached() {
         let sessions = vec![session("acme/webapp", true), session("other/api", false)];
-        let c = session_choices(&sessions, None, Some("other/api"));
-        assert_eq!(c[0].2, "(attached)");
+        let (c, _) = session_choices(&sessions, "other/api", Scope::All, Some("other/api"));
         assert_eq!(c[1].2, "(current)");
+        assert_eq!(c[2].2, "(attached)");
     }
 
     #[test]
-    fn no_sessions_gives_no_choices() {
-        assert!(session_choices(&[], None, None).is_empty());
+    fn rows_are_laid_out_without_their_own_numbering() {
+        // The chooser numbers what it paints; a number baked in here would be
+        // wrong the moment the list scrolls.
+        let rows = chooser_rows(&[
+            ("a".to_string(), "zsh".to_string(), "(current)".to_string()),
+            ("bbb".to_string(), "vim".to_string(), String::new()),
+        ]);
+        assert_eq!(rows[0], "a    zsh  (current)");
+        assert_eq!(rows[1], "bbb  vim");
     }
 }
