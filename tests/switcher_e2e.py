@@ -164,7 +164,7 @@ def main():
         check("hint names the configured key", "^\\ detach" in screen, screen[-400:])
         check("chooser lists other workspaces", OTHER in screen, screen[-400:])
         check("current session is marked", "(current)" in screen, screen[-400:])
-        check("row 1 offers a new session", "(new session)" in screen, screen[-400:])
+        check("row 0 offers a new session", "(new session)" in screen, screen[-400:])
 
         # The attached client is fully raw (OPOST off): a renderer emitting
         # bare LF stair-steps the list across the screen. Check the raw bytes
@@ -230,6 +230,17 @@ def main():
         time.sleep(0.8)
         ls = trip("ls").stdout
         check("up+enter created the next numbered session", f"{PROJ}.2" in ls, ls)
+
+        # ---- digit 0 creates from anywhere ----
+        before0 = set(re.findall(rf"{re.escape(PROJ)}\.\d+", trip("ls").stdout))
+        t.send(DETACH)
+        t.read(1.2)
+        t.send(b"0")
+        t.read(2.0)
+        time.sleep(0.8)
+        after0 = set(re.findall(rf"{re.escape(PROJ)}\.\d+", trip("ls").stdout))
+        check("digit 0 creates the next session", len(after0 - before0) == 1,
+              sorted(after0 - before0))
 
         # ---- the key twice detaches ----
         t.clear()

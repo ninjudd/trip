@@ -48,6 +48,10 @@ pub struct Chooser {
     width: usize,
     detach_key: Option<u8>,
     esc: Esc,
+    /// Row 0 is a create-session action labelled `0`, not a session. The
+    /// digit works from anywhere in the list — an action has no position to
+    /// scroll away — and the real sessions keep 1-9.
+    zero_row: bool,
     /// Inside a bracketed paste. Pasted bytes select nothing; a paste is not
     /// the user answering the chooser.
     in_paste: bool,
@@ -76,11 +80,19 @@ impl Chooser {
             width: width.max(20),
             detach_key,
             esc: Esc::None,
+            zero_row: false,
             in_paste: false,
             drawn: 0,
         };
         c.scroll_to_selected();
         c
+    }
+
+    /// Declare row 0 a create-session action: it is labelled `0`, the digit
+    /// `0` picks it from anywhere, and the rows after it are numbered from 1.
+    pub fn with_zero_row(mut self) -> Self {
+        self.zero_row = !self.rows.is_empty();
+        self
     }
 
     /// True while a half-read escape sequence is outstanding, so the caller
@@ -187,11 +199,21 @@ impl Chooser {
                     self.down();
                     None
                 }
-                d @ b'1'..=b'9' => {
-                    // Numbered as rendered, so the digit means the row the
-                    // user can actually count to.
+                d @ b'0'..=b'9' => {
                     let nth = (d - b'0') as usize;
-                    let index = self.top + nth - 1;
+                    if nth == 0 {
+                        // The create row. An action, not a position: it works
+                        // scrolled out of view too.
+                        return self.zero_row.then_some(Outcome::Pick(0));
+                    }
+                    // Numbered as rendered, so the digit means the row the
+                    // user can actually count to. With the create row on
+                    // screen holding `0`, the sessions after it hold 1-9.
+                    let index = if self.zero_row && self.top == 0 {
+                        nth
+                    } else {
+                        self.top + nth - 1
+                    };
                     (index < self.window_end()).then_some(Outcome::Pick(index))
                 }
                 0x1b => {
@@ -262,10 +284,17 @@ impl Chooser {
             lines += 1;
         }
         for i in start..end {
-            let nth = i - start + 1;
             // Only the reachable rows are numbered; a number that no key
-            // selects is a lie about what the digit does.
-            let label = if nth <= 9 {
+            // selects is a lie about what the digit does. The create row,
+            // when there is one, holds `0` and leaves 1-9 to the sessions.
+            let nth = if self.zero_row && start == 0 {
+                i
+            } else {
+                i - start + 1
+            };
+            let label = if self.zero_row && i == 0 {
+                "0) ".to_string()
+            } else if nth <= 9 {
                 format!("{}) ", nth)
             } else {
                 "   ".to_string()
@@ -622,5 +651,58 @@ mod tests {
                 assert_eq!(&s[i - 1..i], "\r", "bare LF at byte {} in {:?}", i, s);
             }
         }
+    }
+
+    fn zero_chooser(n: usize, viewport: usize) -> Chooser {
+        chooser(n, viewport).with_zero_row()
+    }
+
+    #[test]
+    fn the_zero_row_is_labelled_zero_and_sessions_keep_one_through_nine() {
+        let mut c = zero_chooser(4, 10);
+        let painted = String::from_utf8(c.render()).unwrap();
+        assert!(painted.contains("0) row0"), "{:?}", painted);
+        assert!(painted.contains("1) row1"), "{:?}", painted);
+        assert!(painted.contains("3) row3"), "{:?}", painted);
+    }
+
+    #[test]
+    fn digit_zero_picks_the_create_row() {
+        let mut c = zero_chooser(4, 10);
+        assert_eq!(pick(c.feed(b"0")), Some(0));
+    }
+
+    #[test]
+    fn digit_zero_works_with_the_create_row_scrolled_away() {
+        // An action, not a position.
+        let mut c = zero_chooser(20, 4);
+        for _ in 0..10 {
+            c.feed(b"j");
+        }
+        assert!(c.top > 0);
+        assert_eq!(pick(c.feed(b"0")), Some(0));
+    }
+
+    #[test]
+    fn digit_one_is_the_first_session_not_the_create_row() {
+        let mut c = zero_chooser(4, 10);
+        assert_eq!(pick(c.feed(b"1")), Some(1));
+    }
+
+    #[test]
+    fn scrolled_digits_still_number_the_visible_rows() {
+        let mut c = zero_chooser(20, 5);
+        for _ in 0..9 {
+            c.feed(b"j");
+        }
+        assert!(c.top > 0, "create row off screen");
+        // Labels restart at 1 for the first visible row.
+        assert_eq!(pick(c.feed(b"1")), Some(c.top));
+    }
+
+    #[test]
+    fn digit_zero_without_a_zero_row_does_nothing() {
+        let mut c = chooser(3, 10);
+        assert!(c.feed(b"0").is_none());
     }
 }

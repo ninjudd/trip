@@ -67,11 +67,11 @@ window, press **Ctrl-\\** — the same key dtach and abduco use.
 The key has two stops. The first shows the session chooser:
 
 ```
-sessions:  ↑/↓ + enter · 1-9 · esc back · ^\ detach
-  1) trip.2                     (new session)
-> 2) trip          claude       (current)
-  3) trip.1        cargo test
-  4) acme/webapp   nvim         (attached)
+sessions:  ↑/↓ + enter · 0-9 · esc back · ^\ detach
+  0) trip.2                     (new session)
+> 1) trip          claude       (current)
+  2) trip.1        cargo test
+  3) acme/webapp   nvim         (attached)
 ```
 
 **Enter** moves this terminal to the highlighted session. **Esc** goes back to
@@ -82,7 +82,8 @@ used to do.
 Only the terminal you pressed it in moves. Other terminals attached to the
 same session keep streaming.
 
-Row 1 is always a session that does not exist yet, so **Up, Enter** makes one:
+Row `0` is always a session that does not exist yet, so **Up, Enter** — or just
+**0**, which works even when the list has scrolled past it — makes one:
 the canonical session for the workspace while it is missing, otherwise the
 next number, the way `trip new` would. It lands in the same directory as the
 session you opened the chooser from.
@@ -148,7 +149,7 @@ whatever it said before rather than keeping the session's last title.
 
 ### Sessions
 
-**`trip enter`** — Choose a session from every workspace and enter it. Arrow keys (or j/k) move, 1-9 jump to a visible row, Enter selects, q/Esc cancels. Your own workspace leads the list with its canonical session already highlighted, so plain Enter still takes you where it always did, and row 1 offers to create the next session in that workspace. With stdin redirected there is nothing to choose with, so it takes the canonical session.
+**`trip enter`** — Choose a session from every workspace and enter it. Arrow keys (or j/k) move, 1-9 jump to a visible row, 0 creates the next session in your workspace (that is row 0 of the list), Enter selects, q/Esc cancels. Your own workspace leads the list with its canonical session already highlighted, so plain Enter still takes you where it always did. With stdin redirected there is nothing to choose with, so it takes the canonical session.
 
 **`trip enter <name>`** — Enter that session directly, no chooser. Creates it if missing, attaches if it exists.
 

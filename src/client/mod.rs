@@ -356,10 +356,10 @@ async fn pick_session(scope: Scope, command: &Option<Vec<String>>) -> Result<Opt
 
     match scope {
         Scope::Pwd => eprintln!(
-            "sessions for '{}':  \x1b[2m↑/↓ + enter · 1-9 · q cancels\x1b[0m",
+            "sessions for '{}':  \x1b[2m↑/↓ + enter · 0-9 · q cancels\x1b[0m",
             workspace
         ),
-        Scope::All => eprintln!("sessions:  \x1b[2m↑/↓ + enter · 1-9 · q cancels\x1b[0m"),
+        Scope::All => eprintln!("sessions:  \x1b[2m↑/↓ + enter · 0-9 · q cancels\x1b[0m"),
     }
 
     let mut chooser = chooser::Chooser::new(
@@ -367,7 +367,8 @@ async fn pick_session(scope: Scope, command: &Option<Vec<String>>) -> Result<Opt
         preselected,
         chooser_geometry(),
         None,
-    );
+    )
+    .with_zero_row();
     match run_chooser(&mut chooser) {
         Some(chooser::Outcome::Pick(i)) => {
             let mut name = choices[i].0.clone();

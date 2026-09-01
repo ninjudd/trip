@@ -601,14 +601,25 @@ coincide. And `session_base` misreading a workspace literally named `v2.0`:
 that is trip's own documented convention (`ls` groups it the same way), not
 this feature's to relitigate.
 
-### 9.7 Evidence
+### 9.7 The create row is labelled `0`
+
+Changed after first hands-on use, at the user's direction. §3.5 and §6 put
+the create row at row 1, which meant the workspace's canonical session — the
+row Enter lands on — was labelled `2`, and every session's digit shifted down
+one to make room for an action. Now the create row holds `0`, the sessions
+hold 1-9, and `0` works even when the list has scrolled past the row: it is
+an action, not a position, so it has nothing to scroll away. The row itself
+is unchanged — still first, still directly above the preselection, so
+Up-then-Enter still works.
+
+### 9.8 Evidence
 
 `tests/switcher_e2e.py` drives a real PTY in a throwaway `HOME` and covers
 every interactive criterion in §4: the chooser opening, Esc returning, the key
 twice detaching, per-terminal switching with a second terminal attached, the
 PTY refitting to whoever is left, `trip return` surviving three cancels, cwd
 inheritance, two terminals racing to the same displayed number, the viewport
-and its marker, and bracketed paste surviving a cancel into a live app. 37
+and its marker, and bracketed paste surviving a cancel into a live app. 38
 checks — including Esc on an exited session, Esc under continuous output, a
 mouse click while the chooser is up, and two clients racing one displayed
 number. `cargo test` covers the parser (mouse reports, paste regions, split
@@ -626,8 +637,8 @@ Shipped, as §1 described it. The detach key's first press opens the chooser,
 and the same component serves all three ways in.
 
 Every §4 criterion has evidence. The interactive ones are covered by
-`tests/switcher_e2e.py`, which drives a real PTY in a throwaway `HOME` (37
-checks); the pure ones by `cargo test` (100 tests, 43 of them new). Two
+`tests/switcher_e2e.py`, which drives a real PTY in a throwaway `HOME` (38
+checks); the pure ones by `cargo test` (106 tests, 49 of them new). Two
 criteria are proven by unit test rather than end to end, and deliberately:
 
 - **Mouse reporting surviving a cancel** shares `input_modes` with bracketed

@@ -492,14 +492,15 @@ async fn run_attached_chooser(
         preselected,
         super::chooser_geometry(),
         detach_key,
-    );
+    )
+    .with_zero_row();
 
     let hint = match detach_key {
         Some(key) => format!(
-            "sessions:  \x1b[2m↑/↓ + enter · 1-9 · esc back · {} detach\x1b[0m",
+            "sessions:  \x1b[2m↑/↓ + enter · 0-9 · esc back · {} detach\x1b[0m",
             caret(key)
         ),
-        None => "sessions:  \x1b[2m↑/↓ + enter · 1-9 · esc back\x1b[0m".to_string(),
+        None => "sessions:  \x1b[2m↑/↓ + enter · 0-9 · esc back\x1b[0m".to_string(),
     };
 
     let _cursor = CursorGuard;
