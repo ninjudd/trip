@@ -433,30 +433,10 @@ pub async fn enter(name: Option<String>, all: bool, command: Option<Vec<String>>
         }
     }
 
-    let sessions = get_session_list().await?;
-    let session = sessions.iter().find(|s| s.name == name);
-
+    // No session list is needed here. Whether the session exists is a question
+    // only the attach can answer without being stale, and terminals no longer
+    // contend for one: several can hold the same session at once.
     let missing = format!("session '{}' not found", name);
-
-    // The list answers one question only: is someone else holding this
-    // session. Whether it needs creating is left to the attach below, which
-    // is the one observation that cannot be stale.
-    if session.map(|s| s.attached) == Some(true) {
-        eprint!("session '{}' is in use. take over? [y/n] ", name);
-        if read_yn() {
-            // This prompt waits on a human, so the session can be long gone by
-            // the time we act on the answer — a far wider window than the
-            // millisecond ones elsewhere here. Nothing to take over is not a
-            // failure: fall through and let the attach below create it.
-            match take_over(name.clone()).await {
-                Ok(()) => {}
-                Err(e) if e.to_string() == missing => {}
-                Err(e) => return Err(e),
-            }
-        } else {
-            eprintln!();
-        }
-    }
 
     // A name with no session and a session that went away before we reached it
     // are the same situation here: the attach says it is not there, so create
@@ -799,35 +779,6 @@ pub async fn send_input(name: String, input: String, raw: bool) -> Result<()> {
     Ok(())
 }
 
-async fn take_over(name: String) -> Result<()> {
-    let stream = launch::connect().await?;
-    let (reader, writer) = stream.into_split();
-    let mut reader = BufReader::new(reader);
-    let mut writer = BufWriter::new(writer);
-
-    write_control(
-        &mut writer,
-        &Request::TakeOver {
-            name,
-            env: terminal_env(),
-        },
-    )
-    .await?;
-
-    match read_frame(&mut reader).await? {
-        Some(Frame::Control(payload)) => {
-            let response: Response = serde_json::from_slice(&payload)?;
-            match response {
-                Response::Ok => {}
-                Response::Error { message } => anyhow::bail!("{}", message),
-                _ => anyhow::bail!("unexpected response"),
-            }
-        }
-        _ => anyhow::bail!("unexpected frame"),
-    }
-
-    Ok(())
-}
 
 pub async fn return_session(name: String) -> Result<()> {
     let stream = launch::connect().await?;
