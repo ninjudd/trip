@@ -91,6 +91,9 @@ pub struct SessionInfo {
     pub command: String,
     pub pid: u32,
     pub created_at: u64,
+    /// Monotonic stamp of the last attach or switch-in; bigger is newer.
+    #[serde(default)]
+    pub last_opened: u64,
     pub state: SessionState,
     pub attached: bool,
     pub cwd: Option<String>,

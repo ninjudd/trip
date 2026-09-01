@@ -619,7 +619,7 @@ every interactive criterion in §4: the chooser opening, Esc returning, the key
 twice detaching, per-terminal switching with a second terminal attached, the
 PTY refitting to whoever is left, `trip return` surviving three cancels, cwd
 inheritance, two terminals racing to the same displayed number, the viewport
-and its marker, and bracketed paste surviving a cancel into a live app. 41
+and its marker, and bracketed paste surviving a cancel into a live app. 42
 checks — including Esc on an exited session, Esc under continuous output, a
 mouse click while the chooser is up, and two clients racing one displayed
 number. `cargo test` covers the parser (mouse reports, paste regions, split
@@ -637,8 +637,8 @@ Shipped, as §1 described it. The detach key's first press opens the chooser,
 and the same component serves all three ways in.
 
 Every §4 criterion has evidence. The interactive ones are covered by
-`tests/switcher_e2e.py`, which drives a real PTY in a throwaway `HOME` (41
-checks); the pure ones by `cargo test` (119 tests, 62 of them new). Two
+`tests/switcher_e2e.py`, which drives a real PTY in a throwaway `HOME` (42
+checks); the pure ones by `cargo test` (120 tests, 63 of them new). Two
 criteria are proven by unit test rather than end to end, and deliberately:
 
 - **Mouse reporting surviving a cancel** shares `input_modes` with bracketed
@@ -686,3 +686,23 @@ The chooser deliberately does not toggle the terminal's protocol off and back:
 kitty's stack could be popped safely, but modifyOtherKeys has no stack, and
 guessing the foreground program's prior mode risks breaking its keyboard on
 the way back in.
+
+### 9.10 The list is ordered by recency of opening
+
+Changed at the user's direction after living with the wide list: sessions
+sort by when a client last attached or switched in — a monotonic per-daemon
+stamp, taken in `add_client` and at spawn — newest first, so the chooser
+works like a task switcher and the sessions being bounced between hold the
+low digits. Deliberately not recency of *output*: a chatty background build
+must not shuffle the list. The cancel repaint does not stamp, so opening and
+dismissing the chooser moves nothing.
+
+This supersedes §3.5's current-workspace-first ordering and, with it, the
+Up-then-Enter create gesture, which only survives when the row above the
+selection happens to be the create row. The create row's digit `0` (§9.7) is
+the create gesture; the row stays pinned at the top as the one fixed position.
+Preselection is unchanged in target — the workspace's canonical session,
+failing that its most recently opened survivor, failing that the create row —
+found wherever recency put it. Ties (a daemon predating the stamp) fall back
+to the old workspace grouping rather than shuffling arbitrarily. `trip ls`
+keeps its workspace grouping: it is an inventory, not a switcher.

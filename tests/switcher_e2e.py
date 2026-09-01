@@ -186,11 +186,17 @@ def main():
         check("esc does not exit the client", alive)
 
         # ---- switch to another session ----
+        # The list is recency-ordered, so navigate by digit rather than
+        # position: bump proj.1 to the top of the "others" by opening it, then
+        # 1 names it deterministically (0 is the create row).
+        tb = Term("attach", f"{PROJ}.1")
+        tb.read(1.0)
+        tb.close()
+        time.sleep(0.5)
         t.clear()
         t.send(DETACH)
         before = plain(t.read(1.2))
-        t.send(b"\x1b[B")   # down
-        t.send(b"\r")
+        t.send(b"1")
         after = t.read(2.0)
         time.sleep(0.6)
         ls = trip("ls").stdout
@@ -220,16 +226,17 @@ def main():
         check("one return was enough after three cancels",
               not any(f"{PROJ}.1" in l for l in attached), f"ls=\n{ls}")
 
-        # ---- up+enter creates the next numbered session ----
+        # ---- digit 0 creates the next numbered session ----
+        # Up-then-Enter stopped being a fixed gesture when the list went
+        # recency-ordered; 0 is the create action now, from anywhere.
         t.clear()
         t.send(DETACH)
         t.read(1.2)
-        t.send(b"\x1b[A")   # up, onto row 1
-        t.send(b"\r")
+        t.send(b"0")
         t.read(2.0)
         time.sleep(0.8)
         ls = trip("ls").stdout
-        check("up+enter created the next numbered session", f"{PROJ}.2" in ls, ls)
+        check("digit 0 created the next numbered session", f"{PROJ}.2" in ls, ls)
 
         # ---- the key still works under an enhanced keyboard protocol ----
         # Claude Code switches the terminal into kitty CSI-u / modifyOtherKeys
@@ -253,10 +260,13 @@ def main():
         t.send(b"\x1b")
         t.read(1.0)
 
-        # ---- digit 0 creates from anywhere ----
+        # ---- digit 0 creates even with the create row scrolled away ----
         before0 = set(re.findall(rf"{re.escape(PROJ)}\.\d+", trip("ls").stdout))
         t.send(DETACH)
         t.read(1.2)
+        for _ in range(12):
+            t.send(b"\x1b[B")
+        t.read(0.5)
         t.send(b"0")
         t.read(2.0)
         time.sleep(0.8)
@@ -345,8 +355,7 @@ def main():
         t2.read(1.5)
         t2.send(DETACH)
         t2.read(1.2)
-        t2.send(b"\x1b[A")
-        t2.send(b"\r")
+        t2.send(b"0")
         t2.read(2.0)
         time.sleep(1.0)
         ls = trip("ls").stdout
@@ -376,8 +385,7 @@ def main():
                     r_.read(0.15)
 
         step(DETACH, 1.2)
-        step(b"\x1b[A", 0.6)
-        step(b"\r", 2.5)
+        step(b"0", 2.5)
 
         after = set(re.findall(rf"{re.escape(PROJ)}\.\d+", trip("ls").stdout))
         check("two terminals racing both get a session, on different numbers",
@@ -460,6 +468,30 @@ def main():
         t.read(1.0)
         t.close()
 
+        # ---- the list is ordered by when sessions were opened ----
+        # Recency of entering, not of output. r2 is opened (attached) after
+        # r3 was created, so it outranks r3 despite being created earlier.
+        for n in ("r1", "r2", "r3"):
+            trip("create", n)
+            time.sleep(0.2)
+        tb = Term("attach", "r2")
+        tb.read(1.0)
+        tb.close()
+        time.sleep(0.5)
+        tr = Term("attach", "r1")
+        tr.read(1.2)
+        tr.clear()
+        tr.send(DETACH)
+        screen = plain(tr.read(1.5))
+        order = [m for m in re.findall(r"\br[123]\b", screen)]
+        first = {n: order.index(n) for n in ("r1", "r2", "r3") if n in order}
+        check("chooser orders by last-opened, current first",
+              first.get("r1", 9) < first.get("r2", 9) < first.get("r3", 9),
+              f"order={order} screen={screen[-300:]}")
+        tr.send(b"\x1b")
+        tr.read(1.0)
+        tr.close()
+
         # ---- a live app keeps its input modes across a cancel ----
         trip("create", "modes")
         time.sleep(0.4)
@@ -479,13 +511,18 @@ def main():
         t.close()
 
         # ---- the title follows a switch ----
+        # Recency-ordered list: bump proj.1 so digit 1 names it, then the
+        # title must carry the destination's workspace.
+        tb = Term("attach", f"{PROJ}.1")
+        tb.read(1.0)
+        tb.close()
+        time.sleep(0.5)
         t = Term("attach", PROJ)
         t.read(1.5)
         t.clear()
         t.send(DETACH)
         t.read(1.2)
-        t.send(b"\x1b[B")
-        t.send(b"\r")
+        t.send(b"1")
         raw = t.read(2.0)
         titles = re.findall(r"\x1b\]1;([^\x07]*)\x07", raw)
         check("switching retitles the terminal", any("proj" in x for x in titles), repr(titles))
