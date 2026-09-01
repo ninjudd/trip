@@ -43,8 +43,9 @@ session (`trip enter` from a session shell).
   (:481) creates the target if missing, pushes `from` onto the target's
   `return_stack`, and signals the attached client. The `Attach` handler
   (:641) is a loop: when `stream_session` returns `StreamExit::SwitchTo`
-  (:786) it re-attaches the same socket to the new session, re-renders, and
-  sends `Response::SessionName` so the client retitles.
+  (:786) it re-attaches the same socket to the new session and re-renders.
+  It does *not* send `Response::SessionName`: the client has handled that
+  variant since titles were added, but nothing ever produced it — see §9.1.
 - **Grouped listing** (`src/client/mod.rs:518`): `trip ls -a` already sorts by
   `(session_base, group_order)` and prints workspace headers. The default-all
   view is that renderer with the filter inverted.
@@ -487,3 +488,77 @@ Recorded here rather than built, and not blocking anything in §5.
   that way from the start even though v1 only ever pushes.
 - **`trip return` becomes the command form of ←**, rather than a separate
   mechanism with its own stack.
+
+## 9. What implementation settled
+
+Written while building §5; nothing here changes the outcome in §1.
+
+### 9.1 `Response::SessionName` was dead code
+
+§2 said the daemon sends it after a switch. It never did. Nothing produced
+the variant — `trip enter` prints the title itself, from the client that ran
+the command, so the gap never showed. The key-driven switch has no such
+client, and with an allocated name (§9.2) the client does not even know what
+it switched to, so the daemon now sends it and the client retitles and tracks
+its own name from it. §2 is corrected.
+
+### 9.2 Allocating the new session's number, instead of retrying a stale one
+
+§3.5 handled the displayed number going stale by retrying once on
+`session '<name>' already exists`. That error never arrives: `SwitchTo`
+creates the target only when it is missing, so a name taken between draw and
+Enter means the client silently *joins* the other terminal's session rather
+than failing — and the retry has nothing to trigger it. The acceptance
+criterion that two racing terminals "both end up in a session, on different
+numbers" would have failed quietly.
+
+`SwitchTo` instead carries `allocate`, and the daemon takes the next free name
+while the session table is locked. Race-free rather than retried, and the
+`(new session)` row still shows the concrete name it expects to create. The
+canonical session is still requested by name: joining the one somebody else
+just created is the right answer there.
+
+### 9.3 Digits number only the rows a digit can reach
+
+§3.6 says digits number the rows as rendered. Rows past the ninth visible one
+are left unnumbered rather than carrying a number no key selects — the old
+renderer numbered all of them, including the unreachable ones.
+
+Two Escs in a row now cancel immediately instead of waiting out the idle
+timeout; the old reader swallowed the second one.
+
+### 9.4 The attached chooser's workspace is the session's, not the client's
+
+§3.5 derives the workspace from `derive_session_name`, which reads the
+process's cwd. That is right for `trip enter`, which the user just ran, and
+wrong inside an attached client, whose cwd is wherever its terminal was
+launched — possibly months ago and unrelated to where the session has been
+since. The attached chooser takes the workspace from the session's own name.
+
+### 9.5 Smaller things
+
+- `--pwd` keeps `conflicts_with = "name"` on `enter`, which §3.5 dropped along
+  with `-a`. Naming a session means not choosing one, so narrowing the chooser
+  is meaningless there, and §6's own reasoning says a flag that silently does
+  nothing is worse than one that errors.
+- `--pwd`'s fast path reads the session list rather than the built choices,
+  since the create row means the choices are never bare.
+- §3.7's input modes are rebuilt with vt100's `input_mode_diff` against a
+  pristine screen rather than by hand: it covers exactly the modes the crate
+  tracks, uses the crate's own encoder, and still avoids `state_formatted`'s
+  title.
+
+### 9.6 Evidence
+
+`tests/switcher_e2e.py` drives a real PTY in a throwaway `HOME` and covers
+every interactive criterion in §4: the chooser opening, Esc returning, the key
+twice detaching, per-terminal switching with a second terminal attached, the
+PTY refitting to whoever is left, `trip return` surviving three cancels, cwd
+inheritance, two terminals racing to the same displayed number, the viewport
+and its marker, and bracketed paste surviving a cancel into a live app. 30
+checks. `cargo test` covers the parser, the viewport, the renderer, the
+choice ordering and preselection, and the input-mode rebuild.
+
+Two things are not covered end to end: mouse reporting across a cancel, which
+is unit-tested alongside bracketed paste and shares its code path, and the
+`(exited)` tag, which no criterion asks for.

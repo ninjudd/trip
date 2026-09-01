@@ -59,11 +59,33 @@ trip enter
 
 That's it. If a session exists for this workspace, you're attached. If not, one is created. Close the terminal whenever you want — the session survives. Run `trip enter` again to pick up where you left off.
 
-## Detaching
+## Switching and detaching
 
-Closing the terminal is the usual way out. To detach without closing the
-window, press **Ctrl-\\** — the same key dtach and abduco use. The session
-keeps running; the client exits and your shell comes back.
+Closing the terminal is the usual way out. To leave without closing the
+window, press **Ctrl-\\** — the same key dtach and abduco use.
+
+The key has two stops. The first shows the session chooser:
+
+```
+sessions:  ↑/↓ + enter · 1-9 · esc back · ^\ detach
+  1) trip.2        zsh          (new session)
+> 2) trip          claude       (current)
+  3) trip.1        cargo test
+  4) acme/webapp   nvim         (attached)
+```
+
+**Enter** moves this terminal to the highlighted session. **Esc** goes back to
+where you were. **Ctrl-\ again** detaches for real — the session keeps
+running, the client exits, and your shell comes back, exactly as one press
+used to do.
+
+Only the terminal you pressed it in moves. Other terminals attached to the
+same session keep streaming.
+
+Row 1 is always a session that does not exist yet, so **Up, Enter** makes one:
+the canonical session for the workspace while it is missing, otherwise the
+next number, the way `trip new` would. It lands in the same directory as the
+session you opened the chooser from.
 
 Pasted text is never misread as the key: input inside a bracketed paste is
 forwarded untouched.
@@ -126,17 +148,19 @@ whatever it said before rather than keeping the session's last title.
 
 ### Sessions
 
-**`trip enter [name]`** — Enter a workspace session. Creates it if missing, attaches if it exists. Derives the session name from your git repo root when no name is given. When the workspace has extra numbered sessions (from `trip new`), shows a picker — arrow keys (or j/k) move, 1-9 jump, Enter selects, and q/Esc cancels. Plain Enter takes the canonical session, so the default flow is unchanged. If someone else is attached, prompts to take over.
+**`trip enter`** — Choose a session from every workspace and enter it. Arrow keys (or j/k) move, 1-9 jump to a visible row, Enter selects, q/Esc cancels. Your own workspace leads the list with its canonical session already highlighted, so plain Enter still takes you where it always did, and row 1 offers to create the next session in that workspace. With stdin redirected there is nothing to choose with, so it takes the canonical session.
 
-**`trip enter -a`** — Pick from every workspace's sessions rather than just this one, the same widening `ls -a` does. Always shows the picker, since choosing is the point; grouped by workspace and ordered like `ls`. Takes no name — the flag is how you say "I don't know which one yet".
+**`trip enter <name>`** — Enter that session directly, no chooser. Creates it if missing, attaches if it exists.
 
-**`trip return`** — Return to the previous session. Opposite of `trip enter`.
+**`trip enter --pwd`** — Only this workspace, derived from your git repo root. Skips the chooser entirely when there is nothing to choose between — one canonical session and no numbered ones — which is what the flag is for.
+
+**`trip return`** — Return to the previous session. Opposite of `trip enter`. Cancelling out of the chooser does not count as having gone anywhere, so it still takes you to the session you actually switched from.
 
 **`trip new [name]`** — Open a fresh durable terminal for the current workspace. Auto-numbered (`.1`, `.2`, `.3`). Kept alive in the background; cleaned up when the shell exits.
 
 **`trip create <name> [-- command]`** — Create a session without attaching. For scripting and automation.
 
-**`trip ls`** — List the current workspace's sessions. Shows foreground command, git branch, cwd, and marks the current session with `*`. Use `-a` to show every workspace, grouped by base name, and `--attached` to show only attached sessions across all workspaces.
+**`trip ls`** — List every session, grouped by workspace. Shows foreground command, git branch, cwd, and marks the current session with `*`. Use `--pwd` to narrow to the current workspace, and `--attached` to show only attached sessions; the two compose.
 
 **`trip attach <name>`** — Attach to a specific session by name.
 
@@ -289,6 +313,8 @@ One writer per session. Additional clients attach read-only (monochrome output, 
 ### Session switching
 
 `trip enter` from inside a trip session seamlessly switches to the target session — no nesting, no new processes. Your terminal is rebound to the new session. `trip return` switches back. Enter and return form a stack, so you can nest switches and unwind them.
+
+The detach key switches the same way, but per terminal: it is intercepted by the client before it reaches the session, so the terminal that saw it is the one that moves. A `trip enter` typed into a shell cannot be that precise — with several terminals attached, they all share the one shell, so nothing in it says which terminal you typed into.
 
 ## Design philosophy
 
