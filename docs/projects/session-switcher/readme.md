@@ -152,7 +152,8 @@ own socket:
 - `stream_session` currently treats any inbound control frame as a hangup
   (`mod.rs:988`). Parse the payload as a `Request` instead: `SwitchTo` creates
   the target if missing, pushes the current session onto the target's
-  `return_stack` (so `trip return` still works after a key-switch), and
+  `return_stack` — provisionally, see §6 and §8: the history belongs to the
+  client, but keeping it where it is preserves `trip return` unchanged — and
   returns `StreamExit::SwitchTo(to)`; anything else keeps today's
   `Disconnected`.
 - No `Notify`, no shared `Option`, no race, and the enclosing attach loop
@@ -387,6 +388,18 @@ and can land separately from the keystroke.
 - **`-a` is deleted rather than kept as a no-op.** It is documented and it
   would cost one line to honour, but nobody uses it, and a flag that silently
   does nothing is worse to meet than one that errors.
+- **A client's session history belongs to the client, not to the session.**
+  `return_stack` lives on `Session` (`session.rs:50`), so switching A→B pushes
+  `A` onto *B's* stack. With one terminal per session that reads as "where I
+  came from"; with several it is a shared list of where *anyone* came from,
+  and `trip return` from B pops whichever entry happens to be on top. The
+  daemon's `Attach` handler is already a per-connection loop holding
+  `current_name` (`mod.rs:641`), so a client's history is a `Vec<String>`
+  local in that same scope — simpler than reaching into the target session,
+  and per-client by construction. v1 does not move it (§8): the key-switch
+  keeps pushing to the session stack so `trip return` behaves exactly as it
+  does today, which is correct for the single-client case that is nearly all
+  of them.
 - **`SwitchSession` is left alone.** Per-client targeting is impossible for a
   command typed into a shell that every attached terminal shares (§3.3).
 
@@ -399,6 +412,14 @@ and can land separately from the keystroke.
   blocking: the key path is unaffected, and the current behaviour is no worse
   than before this project. Owner: whoever picks up step 2, who will already
   be in `stream_session`.
+
+  `trip return` is the *same* question, and worth deciding at the same time.
+  It is a command typed into the same shared shell, and it is ambiguous at
+  both ends: `ReturnSession` (`mod.rs:530`) pops from the session's stack and
+  then delivers through the same session-wide `switch_notify`, so with several
+  clients attached it can move an arbitrary terminal to an arbitrary previous
+  session. Whatever addresses a client for `enter` addresses one for
+  `return`.
 - **Does the wide chooser want the workspace headers `ls` prints?** Rejected
   for now — the name column already carries the workspace and headers
   complicate the digit numbering and the viewport arithmetic. Revisit if the
@@ -406,3 +427,22 @@ and can land separately from the keystroke.
 - **Should the chooser be able to kill a session (`x`)?** It is the natural
   place for it and the list is right there. Deferred: it wants a confirmation
   and a redraw path, and neither belongs in the first version.
+
+## 8. Follow-ups
+
+Recorded here rather than built, and not blocking anything in §5.
+
+- **Move the history onto the client** (§6). The `Vec<String>` in the `Attach`
+  loop becomes the source of truth; `SwitchTo` pushes to it instead of to the
+  target session's `return_stack`. The catch is `trip return`, which arrives
+  on a different socket and cannot name a client — the same problem as §7's
+  open question, and it should be solved once for both.
+- **Walk the history with ← and →.** Once the history is the client's, the
+  chooser can navigate it: ← selects the session you were in before this one,
+  → moves forward again, browser-style, so returning through several switches
+  is repeated taps rather than finding each name in the list. This wants the
+  history to be a cursor into a list rather than a stack that pops, since
+  "forward" has nothing to pop from — worth building the client-side history
+  that way from the start even though v1 only ever pushes.
+- **`trip return` becomes the command form of ←**, rather than a separate
+  mechanism with its own stack.
