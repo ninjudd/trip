@@ -499,7 +499,11 @@ async fn run_attached_chooser(
         let decided = tokio::select! {
             frame = read_frame(reader) => {
                 match frame? {
-                    Some(_) => None,
+                    // Dropped, and deliberately not a repaint: a busy session
+                    // delivers frames continuously, and repainting per frame
+                    // would write the whole list to the terminal each time
+                    // for no visual change.
+                    Some(_) => continue,
                     None => return Ok(ChooserExit::Gone),
                 }
             }
