@@ -210,7 +210,7 @@ async fn reap_children(sessions: Sessions) {
 
         // Remove exited sessions with no clients
         sessions
-            .retain(|_, s| !(matches!(s.state, SessionState::Exited(_)) && s.client_count == 0));
+            .retain(|_, s| !(matches!(s.state, SessionState::Exited(_)) && s.client_count() == 0));
 
         if sessions.is_empty() {
             dlog("last session exited; daemon exiting");
@@ -286,7 +286,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                         pid: s.pid.as_raw() as u32,
                         created_at: s.created_at,
                         state: s.state.clone(),
-                        attached: s.client_count > 0,
+                        attached: s.client_count() > 0,
                         cwd: cwd.map(|p| p.to_string_lossy().into_owned()),
                         fg_command,
                         git_branch,
@@ -506,17 +506,6 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                 }
             }
 
-            // Auto-takeover the target if someone else is attached
-            if let Some(target) = sessions.get_mut(&to) {
-                if target.writer_attached {
-                    if let Some(flag) = target.writer_readonly_flag.take() {
-                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                        target.writer_stack.push(flag);
-                    }
-                    target.writer_attached = false;
-                }
-            }
-
             // Push onto target's return stack
             if let Some(target) = sessions.get_mut(&to) {
                 target.return_stack.push(from.clone());
@@ -583,26 +572,6 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             }
         }
 
-        Request::TakeOver { name, env } => {
-            let mut sessions = sessions.lock().await;
-            if let Some(session) = sessions.get_mut(&name) {
-                if let Some(flag) = session.writer_readonly_flag.take() {
-                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                    session.writer_stack.push(flag);
-                }
-                session.writer_attached = false;
-                write_terminal_env(&name, &env);
-                write_control(&mut writer, &Response::Ok).await?;
-            } else {
-                write_control(
-                    &mut writer,
-                    &Response::Error {
-                        message: format!("session '{}' not found", name),
-                    },
-                )
-                .await?;
-            }
-        }
 
         Request::DetachSession { name } => {
             let sessions = sessions.lock().await;
@@ -679,6 +648,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             let current_cols = cols;
             let current_rows = rows;
             let mut first = true;
+            let mut client_id: u64;
 
             loop {
                 let (
@@ -706,18 +676,18 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                         }
                     };
 
-                    let readonly = session.writer_attached;
-                    let readonly_flag = Arc::new(std::sync::atomic::AtomicBool::new(readonly));
-                    if !readonly {
-                        session.writer_attached = true;
-                        session.writer_readonly_flag = Some(readonly_flag.clone());
-                        write_terminal_env(&current_name, &client_env);
+                    // Every client attaches writable. readonly stays on the
+                    // wire and in the stream loop so a deliberate read-only
+                    // attach can set it later; nothing sets it today.
+                    let readonly_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    client_id = session.add_client(current_cols, current_rows);
+                    write_terminal_env(&current_name, &client_env);
+                    if let Some((cols, rows)) = session.effective_size() {
                         let _ = session
                             .input_tx
-                            .send(SessionCommand::Resize(current_cols, current_rows))
+                            .send(SessionCommand::Resize(cols, rows))
                             .await;
                     }
-                    session.client_count += 1;
                     let screen = session.screen_contents();
                     let rx = session.output_tx.subscribe();
                     let tx = session.input_tx.clone();
@@ -731,7 +701,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                         detach,
                         sw_notify,
                         sw_target,
-                        readonly,
+                        readonly_flag.load(std::sync::atomic::Ordering::Relaxed),
                         readonly_flag,
                     )
                 };
@@ -747,7 +717,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                 };
                 write_frame(&mut writer, FRAME_DATA, &screen_data).await?;
 
-                let (result, r, w) = stream_session(
+                let streamed = stream_session(
                     reader,
                     writer,
                     &mut output_rx,
@@ -758,27 +728,29 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                     &readonly_flag,
                     sessions.clone(),
                     current_name.clone(),
+                    client_id,
                     current_cols,
                     current_rows,
                 )
-                .await?;
-                reader = r;
-                writer = w;
+                .await;
 
-                // Clean up old session
+                // Detach bookkeeping has to happen however the stream ended.
+                // `?` here skipped all of it on the error path -- a client
+                // dying while the daemon is mid-write gives a failed socket
+                // write rather than a clean EOF -- leaving the session counted
+                // as attached and its geometry pinned to a terminal nobody is
+                // looking at any more.
                 {
                     let mut sessions = sessions.lock().await;
                     if let Some(session) = sessions.get_mut(&current_name) {
-                        session.client_count = session.client_count.saturating_sub(1);
-                        let was_writer = !readonly_flag.load(std::sync::atomic::Ordering::Relaxed);
-                        if was_writer {
-                            session.writer_readonly_flag = None;
-                            if let Some(prev_flag) = session.writer_stack.pop() {
-                                prev_flag.store(false, std::sync::atomic::Ordering::Relaxed);
-                                session.writer_readonly_flag = Some(prev_flag);
-                            } else {
-                                session.writer_attached = false;
-                            }
+                        session.remove_client(client_id);
+                        // A big terminal leaving should give the remaining
+                        // clients their room back.
+                        if let Some((cols, rows)) = session.effective_size() {
+                            let _ = session
+                                .input_tx
+                                .send(SessionCommand::Resize(cols, rows))
+                                .await;
                         }
                     }
 
@@ -786,7 +758,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
 
                     let should_exit = !sessions.is_empty()
                         && sessions.values().all(|s| {
-                            matches!(s.state, SessionState::Exited(_)) && s.client_count == 0
+                            matches!(s.state, SessionState::Exited(_)) && s.client_count() == 0
                         });
                     if should_exit {
                         sessions.clear();
@@ -796,6 +768,10 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                         std::process::exit(0);
                     }
                 }
+
+                let (result, r, w) = streamed?;
+                reader = r;
+                writer = w;
 
                 match result {
                     StreamExit::SwitchTo(target) => {
@@ -889,7 +865,7 @@ fn is_numbered_session(name: &str) -> bool {
 fn try_gc_session(sessions: &mut HashMap<String, Session>, name: &str) {
     let should_kill = sessions.get(name).is_some_and(|s| {
         is_numbered_session(name)
-            && s.client_count == 0
+            && s.client_count() == 0
             && matches!(s.state, SessionState::Exited(_))
     });
     if should_kill {
@@ -917,6 +893,7 @@ async fn stream_session(
     readonly_flag: &Arc<std::sync::atomic::AtomicBool>,
     sessions: Sessions,
     session_name: String,
+    client_id: u64,
     initial_cols: u16,
     initial_rows: u16,
 ) -> Result<(StreamExit, SocketReader, SocketWriter)> {
@@ -982,7 +959,20 @@ async fn stream_session(
                     }
                     Some(Frame::Resize { cols, rows }) => {
                         client_size = Some((cols, rows));
-                        if !readonly_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        // Record this client's new geometry, then re-fit the
+                        // PTY to the smallest attached client rather than to
+                        // whoever resized last.
+                        let fitted = {
+                            let mut sessions = sessions.lock().await;
+                            match sessions.get_mut(&session_name) {
+                                Some(session) => {
+                                    session.set_client_size(client_id, cols, rows);
+                                    session.effective_size()
+                                }
+                                None => None,
+                            }
+                        };
+                        if let Some((cols, rows)) = fitted {
                             let _ = input_tx.send(SessionCommand::Resize(cols, rows)).await;
                         }
                     }

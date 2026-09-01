@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -38,15 +37,16 @@ pub struct Session {
     pub master_fd: i32,
     pub created_at: u64,
     pub state: SessionState,
-    pub client_count: usize,
     pub output_tx: broadcast::Sender<Vec<u8>>,
     pub input_tx: mpsc::Sender<SessionCommand>,
     pub detach_notify: Arc<Notify>,
     pub switch_notify: Arc<Notify>,
     pub switch_target: Arc<std::sync::Mutex<Option<String>>>,
-    pub writer_attached: bool,
-    pub writer_readonly_flag: Option<Arc<AtomicBool>>,
-    pub writer_stack: Vec<Arc<AtomicBool>>,
+    /// Geometry of every attached client. The PTY is sized to the smallest of
+    /// them, so a second terminal joining cannot reflow the session under
+    /// someone already working in it.
+    pub client_sizes: HashMap<u64, (u16, u16)>,
+    pub next_client_id: u64,
     pub return_stack: Vec<String>,
     parser: std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
 }
@@ -57,6 +57,38 @@ pub enum SessionCommand {
 }
 
 impl Session {
+    /// Register a newly attached client's geometry and return its id.
+    pub fn add_client(&mut self, cols: u16, rows: u16) -> u64 {
+        let id = self.next_client_id;
+        self.next_client_id += 1;
+        self.client_sizes.insert(id, (cols, rows));
+        id
+    }
+
+    pub fn set_client_size(&mut self, id: u64, cols: u16, rows: u16) {
+        if let Some(size) = self.client_sizes.get_mut(&id) {
+            *size = (cols, rows);
+        }
+    }
+
+    pub fn remove_client(&mut self, id: u64) {
+        self.client_sizes.remove(&id);
+    }
+
+    pub fn client_count(&self) -> usize {
+        self.client_sizes.len()
+    }
+
+    /// The largest geometry every attached client can render, i.e. the
+    /// per-axis minimum. `None` when nobody is attached, in which case the PTY
+    /// keeps whatever size it last had.
+    pub fn effective_size(&self) -> Option<(u16, u16)> {
+        self.client_sizes
+            .values()
+            .copied()
+            .reduce(|(ac, ar), (c, r)| (ac.min(c), ar.min(r)))
+    }
+
     pub fn spawn(
         name: String,
         command: Option<Vec<String>>,
@@ -232,15 +264,13 @@ impl Session {
                     master_fd: raw_fd,
                     created_at,
                     state: SessionState::Running,
-                    client_count: 0,
                     output_tx,
                     input_tx,
                     detach_notify: Arc::new(Notify::new()),
                     switch_notify: Arc::new(Notify::new()),
                     switch_target: Arc::new(std::sync::Mutex::new(None)),
-                    writer_attached: false,
-                    writer_readonly_flag: None,
-                    writer_stack: Vec::new(),
+                    client_sizes: HashMap::new(),
+                    next_client_id: 0,
                     return_stack: Vec::new(),
                     parser,
                 })

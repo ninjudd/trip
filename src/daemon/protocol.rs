@@ -41,11 +41,6 @@ pub enum Request {
         name: String,
         data: Vec<u8>,
     },
-    TakeOver {
-        name: String,
-        #[serde(default)]
-        env: HashMap<String, String>,
-    },
     SwitchSession {
         from: String,
         to: String,
