@@ -436,44 +436,33 @@ pub async fn enter(name: Option<String>, all: bool, command: Option<Vec<String>>
     let sessions = get_session_list().await?;
     let session = sessions.iter().find(|s| s.name == name);
 
-    let attached = session.map(|s| s.attached);
-    let existed = attached.is_some();
-
-    match attached {
-        None => {
-            create_session(name.clone(), command.clone()).await?;
+    // The list answers one question only: is someone else holding this
+    // session. Whether it needs creating is left to the attach below, which
+    // is the one observation that cannot be stale.
+    if session.map(|s| s.attached) == Some(true) {
+        eprint!("session '{}' is in use. take over? [y/n] ", name);
+        if read_yn() {
+            take_over(name.clone()).await?;
+        } else {
+            eprintln!();
         }
-        Some(true) => {
-            eprint!("session '{}' is in use. take over? [y/n] ", name);
-            if read_yn() {
-                take_over(name.clone()).await?;
-            } else {
-                eprintln!();
-            }
-        }
-        Some(false) => {}
     }
 
-    // The list above came from an earlier round trip, so a session that was
-    // there can be gone by the time we attach: it exited on its own, or the
-    // daemon restarted under us. `enter` is documented as create-or-attach,
-    // and the SwitchSession path already spawns a missing target, so do the
-    // same here rather than failing with "not found".
-    //
-    // Only when it existed. In the arm above we created it ourselves, and
-    // creating a second time is not a recovery: a session that died that fast
-    // dies again, and `command` may be caller-supplied and side-effecting, so
-    // it would run twice to reach the same error.
+    // A name with no session and a session that went away before we reached it
+    // are the same situation here: the attach says it is not there, so create
+    // it and attach. Deciding that from the list instead would decide it on an
+    // older round trip, and that gap is what made `enter` report "not found"
+    // instead of honouring its create-or-attach contract.
     //
     // Matched by message because the daemon reports errors as strings; keep in
-    // step with the Attach handler in daemon/mod.rs. A drift in wording costs
-    // us this retry, not a misfire.
+    // step with the Attach handler in daemon/mod.rs. A drift in wording gives
+    // back the old error rather than misfiring.
     let missing = format!("session '{}' not found", name);
     match attach::attach(name.clone()).await {
-        Err(e) if existed && e.to_string() == missing => {
-            // It can equally come back between that failed attach and this
-            // create, and then the daemon rejects the duplicate. Attaching is
-            // what we wanted, so treat that rejection as success.
+        Err(e) if e.to_string() == missing => {
+            // It can equally appear between that failed attach and this
+            // create — another `enter`, or the switch path — and the daemon
+            // rejects the duplicate. Attaching is what we wanted anyway.
             let exists = format!("session '{}' already exists", name);
             match create_session(name.clone(), command).await {
                 Ok(()) => {}
