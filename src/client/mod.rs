@@ -684,7 +684,7 @@ pub async fn list_sessions(scope: Scope, attached_only: bool) -> Result<()> {
 }
 
 pub const TERMINAL_RESET: &[u8] =
-    b"\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[H\x1b[2J";
+    b"\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[>4;0m\x1b[=0;1u\x1b[?25h\x1b[H\x1b[2J";
 
 pub async fn get_screen(name: String, watch: bool) -> Result<()> {
     let stream = launch::connect().await?;

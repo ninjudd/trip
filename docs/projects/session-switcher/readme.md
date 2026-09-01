@@ -619,7 +619,7 @@ every interactive criterion in §4: the chooser opening, Esc returning, the key
 twice detaching, per-terminal switching with a second terminal attached, the
 PTY refitting to whoever is left, `trip return` surviving three cancels, cwd
 inheritance, two terminals racing to the same displayed number, the viewport
-and its marker, and bracketed paste surviving a cancel into a live app. 42
+and its marker, and bracketed paste surviving a cancel into a live app. 46
 checks — including Esc on an exited session, Esc under continuous output, a
 mouse click while the chooser is up, and two clients racing one displayed
 number. `cargo test` covers the parser (mouse reports, paste regions, split
@@ -637,8 +637,8 @@ Shipped, as §1 described it. The detach key's first press opens the chooser,
 and the same component serves all three ways in.
 
 Every §4 criterion has evidence. The interactive ones are covered by
-`tests/switcher_e2e.py`, which drives a real PTY in a throwaway `HOME` (42
-checks); the pure ones by `cargo test` (120 tests, 63 of them new). Two
+`tests/switcher_e2e.py`, which drives a real PTY in a throwaway `HOME` (46
+checks); the pure ones by `cargo test` (128 tests, 71 of them new). Two
 criteria are proven by unit test rather than end to end, and deliberately:
 
 - **Mouse reporting surviving a cancel** shares `input_modes` with bracketed
@@ -706,3 +706,22 @@ failing that its most recently opened survivor, failing that the create row —
 found wherever recency put it. Ties (a daemon predating the stamp) fall back
 to the old workspace grouping rather than shuffling arbitrarily. `trip ls`
 keeps its workspace grouping: it is an inventory, not a switcher.
+
+### 9.11 A keyboard protocol must not outlive its session
+
+Found by the user as `;5;100~` garbage at a zsh prompt: kitty CSI-u and
+modifyOtherKeys are state of the *real terminal*, so switching away from a
+session running Claude Code left the next session's shell receiving
+`ESC[27;5;100~` for Ctrl+D — every ctrl combo broken in that tab until a
+`reset`. vt100 neither parses nor restores these modes, so the re-render
+carried everything except the thing that broke the keyboard.
+
+Each session now tracks its keyboard-protocol state by watching its own
+output (`KeyboardState` in `session.rs`: the kitty flag stack with push, pop —
+past-the-bottom resets, per spec — and absolute/bitwise sets, plus the
+modifyOtherKeys level), and `screen_contents` grounds the terminal — mouse,
+paste, keyboard protocol — before re-applying exactly what the incoming
+session asked for. The same grounding covers the pre-existing leak of mouse
+and paste modes across command-driven switches, which `input_mode_diff` could
+never fix because it only enables. `TERMINAL_RESET` grounds the keyboard
+protocol on detach as well.

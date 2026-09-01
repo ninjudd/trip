@@ -492,6 +492,51 @@ def main():
         tr.read(1.0)
         tr.close()
 
+        # ---- a keyboard protocol does not outlive its session ----
+        # The session's program switches the terminal into kitty CSI-u and
+        # modifyOtherKeys (as Claude Code does). Switching away must ground
+        # the real terminal and apply the destination's state, or every ctrl
+        # combo in the next session arrives as `ESC[27;5;100~` garbage.
+        trip("create", "kbd")
+        time.sleep(0.4)
+        trip("send", "kbd", "printf '\\033[>5u\\033[>4;2m'")
+        time.sleep(0.8)
+        tk = Term("attach", "kbd")
+        tk.read(1.2)
+        tk.clear()
+        tk.send(DETACH)
+        tk.read(1.0)
+        tk.send(b"\x1b[B")
+        tk.send(b"\r")
+        raw = tk.read(2.0)
+        check("switching away grounds modifyOtherKeys",
+              "\x1b[>4;0m" in raw, repr(raw[-300:]))
+        check("switching away grounds the kitty flags",
+              "\x1b[=0;1u" in raw, repr(raw[-300:]))
+
+        # ...and switching back re-applies what the session asked for.
+        tk.clear()
+        tk.send(DETACH)
+        tk.read(1.0)
+        tk.send(b"0" if False else b"\x1b[B")  # move to some row
+        raw2 = ""
+        # find and pick the kbd row by name: use digit-agnostic path — cancel
+        # and attach directly instead.
+        tk.send(b"\x1b")
+        tk.read(1.0)
+        tk.close()
+        tk2 = Term("attach", "kbd")
+        raw2 = tk2.read(1.5)
+        check("re-attaching re-applies the session's keyboard protocol",
+              "\x1b[>4;2m" in raw2 and "\x1b[=5;1u" in raw2, repr(raw2[-300:]))
+        tk2.send(DETACH)
+        tk2.read(0.8)
+        tk2.send(DETACH)
+        raw3 = tk2.read(1.5)
+        check("detaching grounds the keyboard protocol",
+              "\x1b[>4;0m" in raw3 and "\x1b[=0;1u" in raw3, repr(raw3[-300:]))
+        tk2.close()
+
         # ---- a live app keeps its input modes across a cancel ----
         trip("create", "modes")
         time.sleep(0.4)
