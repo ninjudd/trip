@@ -6,18 +6,27 @@ mod daemon;
 use clap::Parser;
 use cli::{Cli, Command};
 
+/// `--pwd` is the only narrowing there is; everything else spans workspaces.
+fn scope(pwd: bool) -> client::Scope {
+    if pwd {
+        client::Scope::Pwd
+    } else {
+        client::Scope::All
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Enter { name, all, command } => {
+        Command::Enter { name, pwd, command } => {
             let cmd = if command.is_empty() {
                 None
             } else {
                 Some(command)
             };
-            client::enter(name, all, cmd).await?;
+            client::enter(name, scope(pwd), cmd).await?;
         }
         Command::New { name, command } => {
             let cmd = if command.is_empty() {
@@ -47,8 +56,8 @@ async fn main() -> anyhow::Result<()> {
             };
             client::create_session(name, cmd).await?;
         }
-        Command::Ls { all, attached } => {
-            client::list_sessions(all, attached).await?;
+        Command::Ls { pwd, attached } => {
+            client::list_sessions(scope(pwd), attached).await?;
         }
         Command::Attach { name } => {
             client::attach::attach(name).await?;

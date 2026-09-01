@@ -388,13 +388,14 @@ pub(crate) fn chooser_rows(choices: &[(String, String, String)]) -> Vec<String> 
         .collect()
 }
 
-pub async fn enter(name: Option<String>, all: bool, command: Option<Vec<String>>) -> Result<()> {
+pub async fn enter(
+    name: Option<String>,
+    scope: Scope,
+    command: Option<Vec<String>>,
+) -> Result<()> {
     let name = match name {
         Some(n) => n,
         None => {
-            // --all widens the picker past this workspace; clap already
-            // rejects it alongside an explicit name.
-            let scope = if all { Scope::All } else { Scope::Pwd };
             match pick_session(scope).await? {
                 Some(n) => n,
                 None => return Ok(()),
@@ -522,7 +523,7 @@ pub async fn create_session(name: String, command: Option<Vec<String>>) -> Resul
     Ok(())
 }
 
-pub async fn list_sessions(all: bool, attached_only: bool) -> Result<()> {
+pub async fn list_sessions(scope: Scope, attached_only: bool) -> Result<()> {
     let stream = match launch::try_connect().await {
         Ok(s) => s,
         Err(_) => {
@@ -542,27 +543,25 @@ pub async fn list_sessions(all: bool, attached_only: bool) -> Result<()> {
             let response: Response = serde_json::from_slice(&payload)?;
             match response {
                 Response::SessionList { sessions } => {
-                    // "which sessions are attached" is a cross-workspace
-                    // question, so --attached implies the all-workspace view
-                    let grouped = all || attached_only;
-                    let scope = if grouped {
-                        None
-                    } else {
-                        Some(derive_session_name()?)
+                    // Headers earn their place only across workspaces.
+                    let grouped = scope == Scope::All;
+                    let workspace = match scope {
+                        Scope::Pwd => Some(derive_session_name()?),
+                        Scope::All => None,
                     };
                     let mut sessions: Vec<_> = sessions
                         .into_iter()
                         .filter(|s| !attached_only || s.attached)
                         .filter(|s| {
-                            scope
+                            workspace
                                 .as_deref()
                                 .is_none_or(|base| session_base(&s.name) == base)
                         })
                         .collect();
                     if sessions.is_empty() {
-                        match &scope {
+                        match &workspace {
                             Some(base) => {
-                                println!("no sessions for '{}' (try: trip ls -a)", base)
+                                println!("no sessions for '{}' (try: trip ls)", base)
                             }
                             None if attached_only => println!("no attached sessions"),
                             None => println!("no sessions"),
