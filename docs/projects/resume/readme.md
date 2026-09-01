@@ -38,9 +38,11 @@ crash marker this project builds on.
   is embedded in the rollout filename (`find_codex_log` in `src/client/mod.rs`
   matches it as a substring). `log.jsonl` also records it as
   `agent_session_start.continuation`.
-- **Picker UI**: the `enter -a` picker (`ls-grouping-and-enter-picker`,
-  `enter-all` branches, `src/client/mod.rs`) gives the interaction model for
-  choosing among candidates.
+- **Picker UI**: `select_choice` (`src/client/mod.rs:196`) gives the
+  interaction model for choosing among candidates. Note that it is on its way
+  out: the session-switcher plan (merged `66de6c6`) ports it and `read_key`
+  onto a `Chooser` in `src/client/chooser.rs` and deletes `enter -a` outright,
+  so the thing to build against is `Chooser`, not today's `enter -a`. See §5.
 - **Existing protocol suffices**: `CreateSession` + `SendInput` can recreate a
   session and type the resume command into it. v1 needs no daemon protocol
   changes.
@@ -96,9 +98,9 @@ daemon (`ListSessions`). For each candidate show name, cwd, agent kind (from
 
 UX:
 
-- `trip resume` — interactive picker over all candidates (reuse the
-  `enter -a` picker style), with an option to resume all and an option to
-  discard a candidate (deletes `meta.json` + `agent.json`, keeps the log).
+- `trip resume` — interactive picker over all candidates (the same chooser
+  the session-switcher plan factors out), with an option to resume all and an
+  option to discard a candidate (deletes `meta.json` + `agent.json`, keeps the log).
 - `trip resume <name>` — resume one session.
 - `trip resume --all` — resume everything non-interactively.
 - `trip resume --dry-run` — print exactly what would be created and typed,
@@ -233,8 +235,13 @@ Reproduce the incident in an isolated `HOME` and verify:
 4. Picker + `--all` + discard action.
 5. README: command reference entry + hook note.
 
-Steps 1–3 are useful on their own; 4–5 polish. Depends on `enter-all` for
-picker plumbing only — steps 1–3 don't need it.
+Steps 1–3 are useful on their own and carry the substance of the project;
+4–5 are polish. Only step 4 has a dependency, and it is on the
+session-switcher plan's `Chooser` (its §5 step 1: `src/client/chooser.rs`,
+a pure refactor that is shippable alone), not on `enter-all` — that branch's
+`enter -a` is deleted by the same plan. Land `Chooser` first and step 4 gets a
+viewport and unit tests for free instead of porting `select_choice` a second
+time.
 
 ## 6. Decisions
 
