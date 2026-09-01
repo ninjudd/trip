@@ -451,7 +451,13 @@ impl Session {
         // what this session wants is re-applied just below, and input_modes
         // only ever enables.
         output.extend_from_slice(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1049l");
-        output.extend_from_slice(&self.keyboard.lock().unwrap().restore());
+        // The main and alternate screens keep independent kitty stacks, so
+        // ground the main screen's here, while it is the active one; the
+        // session's own protocol is re-applied after the buffer switch, on
+        // the screen the session actually renders into. (modifyOtherKeys is
+        // xterm-global rather than per-screen; grounding it on both sides is
+        // harmless.)
+        output.extend_from_slice(b"\x1b[>4;0m\x1b[=0;1u");
         // A session whose program lives in the alternate buffer renders back
         // into it, so its frames stay out of the main buffer's scrollback and
         // its own exit sequence still means something; everyone else gets the
@@ -460,6 +466,7 @@ impl Session {
         if screen.alternate_screen() {
             output.extend_from_slice(b"\x1b[?1049h");
         }
+        output.extend_from_slice(&self.keyboard.lock().unwrap().restore());
 
         output.extend_from_slice(b"\x1b[2J\x1b[H");
         output.extend_from_slice(&screen.contents_formatted());

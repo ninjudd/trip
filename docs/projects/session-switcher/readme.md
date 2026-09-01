@@ -619,7 +619,7 @@ every interactive criterion in §4: the chooser opening, Esc returning, the key
 twice detaching, per-terminal switching with a second terminal attached, the
 PTY refitting to whoever is left, `trip return` surviving three cancels, cwd
 inheritance, two terminals racing to the same displayed number, the viewport
-and its marker, and bracketed paste surviving a cancel into a live app. 48
+and its marker, and bracketed paste surviving a cancel into a live app. 49
 checks — including Esc on an exited session, Esc under continuous output, a
 mouse click while the chooser is up, and two clients racing one displayed
 number. `cargo test` covers the parser (mouse reports, paste regions, split
@@ -637,7 +637,7 @@ Shipped, as §1 described it. The detach key's first press opens the chooser,
 and the same component serves all three ways in.
 
 Every §4 criterion has evidence. The interactive ones are covered by
-`tests/switcher_e2e.py`, which drives a real PTY in a throwaway `HOME` (48
+`tests/switcher_e2e.py`, which drives a real PTY in a throwaway `HOME` (49
 checks); the pure ones by `cargo test` (128 tests, 71 of them new). Two
 criteria are proven by unit test rather than end to end, and deliberately:
 
@@ -731,3 +731,12 @@ one buffered write, so the grounded main screen is never displayed alone. The sa
 and paste modes across command-driven switches, which `input_mode_diff` could
 never fix because it only enables. `TERMINAL_RESET` grounds the keyboard
 protocol on detach as well.
+
+Ordering matters around the buffer switch: the main and alternate screens
+keep independent kitty stacks, so the keyboard ground lands before the
+`?1049h` — on the main screen, while it is the active one — and the session's
+own protocol is applied after it, on the screen the session renders into.
+Review caught the restore running on the wrong side of the switch, which left
+the incoming program on legacy encoding and parked its flags on the main
+screen to resurface at the shell when it exited — the `;5;100~` bug back
+through the other buffer.

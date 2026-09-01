@@ -567,6 +567,26 @@ def main():
         tb.read(1.0)
         tb.close()
 
+        # ---- keyboard flags land on the screen the session renders into ----
+        # The main and alternate screens keep independent kitty stacks, so
+        # the restore must run after the ?1049h, not before it: flags set on
+        # the main screen never reach the program in the alt buffer, and they
+        # resurface on the shell the moment that program exits.
+        trip("create", "altkbd")
+        time.sleep(0.4)
+        trip("send", "altkbd", "printf '\\033[?1049h\\033[>5u'")
+        time.sleep(0.8)
+        tak = Term("attach", "altkbd")
+        raw = tak.read(1.5)
+        check("keyboard restore lands after the alt-screen switch",
+              "\x1b[?1049h" in raw and "\x1b[=5;1u" in raw.split("\x1b[?1049h")[-1],
+              repr(raw[-300:]))
+        tak.send(DETACH)
+        tak.read(0.8)
+        tak.send(DETACH)
+        tak.read(1.0)
+        tak.close()
+
         # ---- a live app keeps its input modes across a cancel ----
         trip("create", "modes")
         time.sleep(0.4)
