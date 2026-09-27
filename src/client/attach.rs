@@ -926,10 +926,7 @@ mod tests {
     #[test]
     fn key_inside_paste_is_forwarded() {
         let mut s = DetachScanner::new(Some(0x1c));
-        assert_eq!(
-            scan_all(&mut s, &[b"\x1b[200~data\x1cdata\x1b[201~"]),
-            None
-        );
+        assert_eq!(scan_all(&mut s, &[b"\x1b[200~data\x1cdata\x1b[201~"]), None);
     }
 
     #[test]
@@ -945,7 +942,10 @@ mod tests {
     fn paste_marker_split_across_chunks() {
         let mut s = DetachScanner::new(Some(0x1c));
         assert_eq!(
-            scan_all(&mut s, &[b"\x1b[2", b"00~in-paste\x1c", b"\x1b[20", b"1~", b"\x1c"]),
+            scan_all(
+                &mut s,
+                &[b"\x1b[2", b"00~in-paste\x1c", b"\x1b[20", b"1~", b"\x1c"]
+            ),
             Some((4, 0))
         );
     }
@@ -1009,7 +1009,10 @@ mod tests {
     #[test]
     fn an_encoded_key_inside_a_paste_is_forwarded() {
         let mut s = DetachScanner::new(Some(0x1f));
-        assert!(matches!(s.scan(b"\x1b[200~\x1b[95;5u\x1b[201~"), Scan::Forward));
+        assert!(matches!(
+            s.scan(b"\x1b[200~\x1b[95;5u\x1b[201~"),
+            Scan::Forward
+        ));
         // ...and detaches again once the paste is over.
         assert!(matches!(s.scan(b"\x1b[95;5u"), Scan::Detach { .. }));
     }
@@ -1017,7 +1020,10 @@ mod tests {
     #[test]
     fn an_unrelated_csi_sequence_is_forwarded() {
         let mut s = DetachScanner::new(Some(0x1f));
-        assert!(matches!(s.scan(b"\x1b[38;5;196m\x1b[A\x1b[27u"), Scan::Forward));
+        assert!(matches!(
+            s.scan(b"\x1b[38;5;196m\x1b[A\x1b[27u"),
+            Scan::Forward
+        ));
     }
 
     fn prefixed(chunks: &[&[u8]]) -> String {

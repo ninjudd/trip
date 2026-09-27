@@ -256,9 +256,9 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             // built on create-then-enter. Re-using the name is the one act
             // that cannot coexist with keeping the corpse, so fresh wins.
             // Deliberate corpse-viewing — attach, the chooser — is untouched.
-            let corpse = sessions
-                .get(&name)
-                .is_some_and(|s| s.client_count() == 0 && matches!(s.state, SessionState::Exited(_)));
+            let corpse = sessions.get(&name).is_some_and(|s| {
+                s.client_count() == 0 && matches!(s.state, SessionState::Exited(_))
+            });
             if corpse {
                 sessions.remove(&name);
             }
@@ -599,7 +599,6 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                 .await?;
             }
         }
-
 
         Request::DetachSession { name } => {
             let sessions = sessions.lock().await;

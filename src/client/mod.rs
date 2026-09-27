@@ -226,7 +226,6 @@ pub(crate) fn terminal_size() -> (u16, u16) {
     (80, 24)
 }
 
-
 /// Which sessions a chooser or listing covers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Scope {
@@ -347,8 +346,7 @@ async fn pick_session(scope: Scope, command: &Option<Vec<String>>) -> Result<Opt
     }
 
     let current = std::env::var("TRIP_SESSION").ok();
-    let (choices, preselected) =
-        session_choices(&sessions, &workspace, scope, current.as_deref());
+    let (choices, preselected) = session_choices(&sessions, &workspace, scope, current.as_deref());
 
     match scope {
         Scope::Pwd => eprintln!(
@@ -420,19 +418,13 @@ pub(crate) fn chooser_rows(choices: &[(String, String, String)]) -> Vec<String> 
         .collect()
 }
 
-pub async fn enter(
-    name: Option<String>,
-    scope: Scope,
-    command: Option<Vec<String>>,
-) -> Result<()> {
+pub async fn enter(name: Option<String>, scope: Scope, command: Option<Vec<String>>) -> Result<()> {
     let name = match name {
         Some(n) => n,
-        None => {
-            match pick_session(scope, &command).await? {
-                Some(n) => n,
-                None => return Ok(()),
-            }
-        }
+        None => match pick_session(scope, &command).await? {
+            Some(n) => n,
+            None => return Ok(()),
+        },
     };
 
     if let Ok(current) = std::env::var("TRIP_SESSION") {
@@ -816,7 +808,6 @@ pub async fn send_input(name: String, input: String, raw: bool) -> Result<()> {
 
     Ok(())
 }
-
 
 pub async fn return_session(name: String) -> Result<()> {
     let stream = launch::connect().await?;
@@ -1236,7 +1227,9 @@ mod tests {
         let sessions = vec![session("acme/webapp", false), session("other/api", false)];
         let (c, _) = session_choices(&sessions, "acme/webapp", Scope::All, None);
         assert_eq!(
-            c.iter().filter(|(_, _, tag)| tag == "(new session)").count(),
+            c.iter()
+                .filter(|(_, _, tag)| tag == "(new session)")
+                .count(),
             1
         );
     }
@@ -1262,7 +1255,10 @@ mod tests {
             opened("other/api", false, 9),
         ];
         let (c, pre) = session_choices(&sessions, "acme/webapp", Scope::All, None);
-        assert_eq!(c[0].0, "acme/webapp", "the create row offers the canonical back");
+        assert_eq!(
+            c[0].0, "acme/webapp",
+            "the create row offers the canonical back"
+        );
         assert_eq!(c[pre].0, "acme/webapp.2", "the workspace's most recent");
     }
 
