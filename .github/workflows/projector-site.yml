@@ -1,0 +1,25 @@
+name: Projector site
+on:
+  repository_dispatch:
+    types: [projector-summaries]
+  push:
+    branches: [main]
+    paths: [README.md, 'docs/**', .projector.toml, .github/workflows/projector-site.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pull-requests: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.site.outputs.page_url }}
+    steps:
+      - id: site
+        uses: ninjudd/projector/actions/site@v0
