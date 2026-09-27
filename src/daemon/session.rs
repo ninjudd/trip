@@ -353,15 +353,12 @@ impl Session {
                 let (output_tx, _) = broadcast::channel(256);
                 let (input_tx, input_rx) = mpsc::channel(64);
 
-                let cmd_str = command
-                    .as_ref()
-                    .map(|c| c.join(" "))
-                    .unwrap_or_else(|| {
-                        std::env::var("SHELL")
-                            .ok()
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or_else(|| "/bin/sh".into())
-                    });
+                let cmd_str = command.as_ref().map(|c| c.join(" ")).unwrap_or_else(|| {
+                    std::env::var("SHELL")
+                        .ok()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "/bin/sh".into())
+                });
 
                 let created_at = recording::now_ts() as u64;
 
@@ -450,7 +447,9 @@ impl Session {
         // keyboard protocol, the alternate screen. Ground everything first;
         // what this session wants is re-applied just below, and input_modes
         // only ever enables.
-        output.extend_from_slice(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1049l");
+        output.extend_from_slice(
+            b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[?1049l",
+        );
         // The main and alternate screens keep independent kitty stacks, so
         // ground the main screen's here, while it is the active one; the
         // session's own protocol is re-applied after the buffer switch, on
@@ -739,7 +738,10 @@ mod keyboard_tests {
 
     #[test]
     fn a_pop_returns_to_the_pushed_state() {
-        assert_eq!(restore(&[b"\x1b[>1u\x1b[>5u\x1b[<u"]), "\x1b[>4;0m\x1b[=1;1u");
+        assert_eq!(
+            restore(&[b"\x1b[>1u\x1b[>5u\x1b[<u"]),
+            "\x1b[>4;0m\x1b[=1;1u"
+        );
     }
 
     #[test]
@@ -806,7 +808,11 @@ mod tests {
     fn mouse_reporting_and_its_encoding_survive() {
         let out = modes(b"\x1b[?1002h\x1b[?1006h");
         let out = String::from_utf8_lossy(&out).into_owned();
-        assert!(out.contains("\x1b[?1002h"), "button-motion tracking: {:?}", out);
+        assert!(
+            out.contains("\x1b[?1002h"),
+            "button-motion tracking: {:?}",
+            out
+        );
         assert!(out.contains("\x1b[?1006h"), "SGR encoding: {:?}", out);
     }
 

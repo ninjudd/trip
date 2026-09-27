@@ -110,11 +110,9 @@ fn parse_claude_line(line: &str, session_started: &mut bool) -> Vec<RecordEvent>
                 }
             }
         }
-        "system" => {
-            if v.get("subtype").and_then(|v| v.as_str()) == Some("turn_duration") {
-                let duration_ms = v.get("durationMs").and_then(|v| v.as_u64());
-                events.push(RecordEvent::AgentTurnEnd { t, duration_ms });
-            }
+        "system" if v.get("subtype").and_then(|v| v.as_str()) == Some("turn_duration") => {
+            let duration_ms = v.get("durationMs").and_then(|v| v.as_u64());
+            events.push(RecordEvent::AgentTurnEnd { t, duration_ms });
         }
         _ => {}
     }
@@ -333,7 +331,9 @@ mod codex_parser_tests {
         let events = parse_codex_line(CALL, &mut started);
         assert_eq!(events.len(), 1, "expected exactly one event");
         match &events[0] {
-            RecordEvent::AgentToolCall { id, name, input, .. } => {
+            RecordEvent::AgentToolCall {
+                id, name, input, ..
+            } => {
                 assert_eq!(id, "call_94K4");
                 assert_eq!(name, "exec");
                 // input is a source string, not JSON, so it survives as one
@@ -350,7 +350,12 @@ mod codex_parser_tests {
         let events = parse_codex_line(OUTPUT, &mut started);
         assert_eq!(events.len(), 1);
         match &events[0] {
-            RecordEvent::AgentToolResult { tool_call_id, output, is_error, .. } => {
+            RecordEvent::AgentToolResult {
+                tool_call_id,
+                output,
+                is_error,
+                ..
+            } => {
                 // The call and its result correlate, which is what lets a
                 // consumer tell a pending call from an answered one.
                 assert_eq!(tool_call_id, "call_94K4");

@@ -67,17 +67,15 @@ pub(crate) fn encodes_control(event: &KeyEvent, key: u8) -> bool {
         0x01..=0x1a => {
             let lower = (key as u32) + 96;
             let upper = (key as u32) + 64;
-            return event.code == lower
-                || event.code == upper
-                || event.shifted == Some(upper);
+            return event.code == lower || event.code == upper || event.shifted == Some(upper);
         }
-        0x00 => &[64, 32],      // ^@: Ctrl+@ or Ctrl+Space
-        0x1b => &[91],          // ^[: Ctrl+[
-        0x1c => &[92],          // ^\: Ctrl+backslash
-        0x1d => &[93],          // ^]
-        0x1e => &[94, 54],      // ^^: Ctrl+^ or Ctrl+6
-        0x1f => &[95, 45, 47],  // ^_: Ctrl+_, Ctrl+-, Ctrl+/
-        0x7f => &[127],         // ^?
+        0x00 => &[64, 32],     // ^@: Ctrl+@ or Ctrl+Space
+        0x1b => &[91],         // ^[: Ctrl+[
+        0x1c => &[92],         // ^\: Ctrl+backslash
+        0x1d => &[93],         // ^]
+        0x1e => &[94, 54],     // ^^: Ctrl+^ or Ctrl+6
+        0x1f => &[95, 45, 47], // ^_: Ctrl+_, Ctrl+-, Ctrl+/
+        0x7f => &[127],        // ^?
         _ => return false,
     };
     candidates.contains(&event.code) || event.shifted.is_some_and(|s| candidates.contains(&s))
@@ -737,13 +735,13 @@ mod tests {
         let rows = vec!["x".repeat(200)];
         let mut c = Chooser::new(rows, 0, (10, 40), None);
         let painted = String::from_utf8(c.render()).unwrap();
-        let body = painted
-            .lines()
-            .next()
-            .unwrap()
-            .trim_end_matches("\x1b[0m");
+        let body = painted.lines().next().unwrap().trim_end_matches("\x1b[0m");
         // "\x1b[2K> \x1b[7m1) " + 34 chars of row = 39 columns painted.
-        assert!(body.chars().filter(|c| *c == 'x').count() == 34, "{:?}", body);
+        assert!(
+            body.chars().filter(|c| *c == 'x').count() == 34,
+            "{:?}",
+            body
+        );
     }
 
     #[test]
@@ -843,7 +841,11 @@ mod tests {
         let mut c = zero_chooser(4, 10);
         assert_eq!(pick(c.feed(b"\x1b[49;1u")), Some(1), "digit 1");
         let mut c = zero_chooser(4, 10);
-        assert_eq!(pick(c.feed(b"\x1b[48u")), Some(0), "digit 0 is the create row");
+        assert_eq!(
+            pick(c.feed(b"\x1b[48u")),
+            Some(0),
+            "digit 0 is the create row"
+        );
     }
 
     #[test]
