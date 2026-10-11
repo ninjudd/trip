@@ -5,6 +5,8 @@ on:
   push:
     branches: [main]
     paths: [README.md, 'docs/**', .projector.toml, .github/workflows/projector-site.yml]
+  pull_request_target:
+    types: [closed]
   workflow_dispatch:
 permissions:
   contents: read
@@ -12,10 +14,11 @@ permissions:
   pages: write
   id-token: write
 concurrency:
-  group: pages
+  group: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && format('fork-{0}', github.run_id) || 'pages' }}
   cancel-in-progress: false
 jobs:
   publish:
+    if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     environment:
       name: github-pages
