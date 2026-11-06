@@ -1,0 +1,84 @@
+{
+ "version": 1,
+ "name": "Draft and site conventions",
+ "project": "",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 23,
+  "title": "Refresh the Projector section of AGENTS.md and the site workflow",
+  "head": "359b0d4fcadc9dd0ddb07de6ce58da63076bdeff",
+  "headRef": "projector-agents-v4",
+  "base": "86ecd66ab92d18d92919a9f55a96e63375b19ebc",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "This repository uses Projector to record project plans, review pull requests, and publish a review site. This change brings two pieces of generated repository configuration forward: the instructions that sessions follow and the workflow that deploys the site.",
+   "Every session now opens pull requests as drafts until a review finds the head clean. The site also deploys when a same-repository pull request closes, so a merged or closed review stops appearing open without waiting for an unrelated deployment."
+  ],
+  "cards": [
+   {
+    "id": "validation",
+    "title": "What the review checked",
+    "html": "<ul><li>The review reads both changed files and finds no blocking issue.</li><li><code>project check</code> validates the plans. It warns that instruction version 4 is older than version 24 from the installed command.</li><li><code>git diff --check</code> passes, and all text outside the Projector markers is unchanged.</li><li>The close-event deployment needs a real GitHub event after this workflow reaches the default branch.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "review-conventions",
+   "title": "Keep dependent work in drafts until reviewed",
+   "kicker": "Repository instructions apply the review convention to every session.",
+   "intro": [
+    "<code>AGENTS.md</code> gives sessions the repository’s working rules. The new section tells each session to open pull requests as drafts, including each layer of a stack, which is a series of dependent pull requests. A clean review controls the transition to ready.",
+    "For dependent work, the instructions use <code>gh stack</code> to carry a fix from the branch that introduced it into the branches above. Base-branch chaining and merges remain the fallback when that tool is unavailable."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "AGENTS.md",
+     "collapsed": false,
+     "note": "Adds the draft and dependent-work conventions inside the generated Projector section.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "Compared the text before and after the Projector markers against the merge base; it is unchanged."
+      },
+      {
+       "kind": "context",
+       "text": "This update targets version 4 of the instructions. The installed Projector command ships version 24, so project check still reports instructions-outdated."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "site-close-events",
+   "title": "Refresh the site when a pull request closes",
+   "kicker": "A close event deploys the default branch for same-repository work.",
+   "intro": [
+    "The Projector site lists review summaries and each pull request’s state. Its workflow now listens for <code>pull_request_target</code> with the <code>closed</code> activity, which covers both merged pull requests and those closed without merging.",
+    "The publish job skips pull requests whose head belongs to another repository. Those fork events also receive a separate concurrency group, so they do not replace a pending deployment in the shared <code>pages</code> group."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": ".github/workflows/projector-site.yml",
+     "note": "Adds a close-event trigger, skips fork pull requests, and separates their concurrency groups.",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 8,
+       "text": "Traced the site action to actions/checkout with no ref override. <a href=\"https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target\">GitHub documents</a> that pull_request_target uses the default branch, so this trigger does not execute the pull request’s head."
+      },
+      {
+       "kind": "verify",
+       "line": 21,
+       "text": "Read the job condition against same-repository and fork close events: same-repository events publish, and fork events skip."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
