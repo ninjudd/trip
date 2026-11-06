@@ -30,14 +30,32 @@ ENV = dict(os.environ, HOME=HOME, SHELL="/bin/sh", TERM="xterm-256color")
 ENV.pop("TRIP_SESSION", None)
 ENV.pop("TRIP_WORKSPACE", None)
 
-# Saves the cursor on row 45 while a 49-row client holds the PTY, then restores
-# it and prints once a 25-row client has shrunk the PTY. Each escape is its own
-# printf because "\0337" would read as one octal byte.
-PROGRAM = 'sleep 2; printf "\\033[45;10H\\033"; printf 7; sleep 3; printf "\\033"; printf 8a; sleep 60'
+# Waits for a 49-row client to size the PTY, saves the cursor on row 45 and
+# prints "saved", then waits for a 25-row client to shrink the PTY, restores
+# the cursor below the new last row and prints "restored". The daemon resizes
+# its screen in the same step as the PTY, so once the program sees a size, the
+# screen has it too. Each escape is its own printf because "\0337" would read
+# as one octal byte.
+PROGRAM = (
+    'until [ "$(stty size)" = "49 158" ]; do sleep 0.1; done; '
+    'printf "\\033[45;10H\\033"; printf 7; printf saved; '
+    'until [ "$(stty size)" = "25 81" ]; do sleep 0.1; done; '
+    'printf "\\033"; printf 8; printf restored; sleep 60'
+)
 
 
 def trip(*args):
     return subprocess.run([TRIP, *args], env=ENV, capture_output=True, text=True, timeout=20)
+
+
+def wait_for_screen(name, text, timeout=15):
+    """Poll `trip screen` until it shows this text; return the last result."""
+    deadline = time.monotonic() + timeout
+    while True:
+        screen = trip("screen", name)
+        if (screen.returncode == 0 and text in screen.stdout) or time.monotonic() > deadline:
+            return screen
+        time.sleep(0.1)
 
 
 def attach(name, rows, cols):
@@ -68,16 +86,18 @@ try:
     trip("create", "healthy", "--", "sleep", "60")
     trip("create", "redraw", "--", "sh", "-c", PROGRAM)
     clients.append(attach("redraw", 49, 158))
-    time.sleep(3.5)
+    # "saved" on the screen means the daemon has drawn the saved cursor.
+    saved = wait_for_screen("redraw", "saved")
+    check("the program saved the cursor at 49 rows", saved.returncode == 0 and "saved" in saved.stdout,
+          (saved.stdout + saved.stderr).strip())
     clients.append(attach("redraw", 25, 81))
-    time.sleep(3)
+    screen = wait_for_screen("redraw", "restored")
+    check("the session's screen still renders", screen.returncode == 0 and "restored" in screen.stdout,
+          (screen.stdout + screen.stderr).strip())
 
     ls = trip("ls")
     check("trip ls lists every session", ls.returncode == 0 and "healthy" in ls.stdout and "redraw" in ls.stdout,
           (ls.stdout + ls.stderr).strip())
-    screen = trip("screen", "redraw")
-    check("the session's screen still renders", screen.returncode == 0 and "a" in screen.stdout,
-          (screen.stdout + screen.stderr).strip())
     log = open(f"{HOME}/.trip/daemon.log").read()
     check("the daemon logged no panic", "panicked" not in log, log.strip())
 finally:
