@@ -1,0 +1,463 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index cff8f68..728c39c 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -565,9 +565,9 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+ 
+ [[package]]
+ name = "unicode-width"
+-version = "0.1.14"
++version = "0.2.3"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "7dd6e30e90baa6f72411720665d41d89b9a3d039dc45b8faea1ddd07f617f6af"
++checksum = "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557"
+ 
+ [[package]]
+ name = "utf8parse"
+@@ -577,35 +577,23 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
+ 
+ [[package]]
+ name = "vt100"
+-version = "0.15.2"
++version = "0.18.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "84cd863bf0db7e392ba3bd04994be3473491b31e66340672af5d11943c6274de"
++checksum = "eb05cdd19ae8707bf6a0a269972c07e6358103a7079faec749dec318a5b3dc23"
+ dependencies = [
+  "itoa",
+- "log",
+  "unicode-width",
+  "vte",
+ ]
+ 
+ [[package]]
+ name = "vte"
+-version = "0.11.1"
++version = "0.15.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "f5022b5fbf9407086c180e9557be968742d839e68346af7792b8592489732197"
++checksum = "a5924018406ce0063cd67f8e008104968b74b563ee1b85dde3ed1f7cb87d3dbd"
+ dependencies = [
+  "arrayvec",
+- "utf8parse",
+- "vte_generate_state_changes",
+-]
+-
+-[[package]]
+-name = "vte_generate_state_changes"
+-version = "0.1.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "2e369bee1b05d510a7b4ed645f5faa90619e05437111783ea5848f28d97d3c2e"
+-dependencies = [
+- "proc-macro2",
+- "quote",
++ "memchr",
+ ]
+ 
+ [[package]]
+diff --git a/Cargo.toml b/Cargo.toml
+index 2c737e7..26fe581 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -10,5 +10,5 @@ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+ clap = { version = "4", features = ["derive"] }
+ anyhow = "1"
+-vt100 = "0.15"
++vt100 = "0.18"
+ chrono = "0.4"
+diff --git a/src/daemon/session.rs b/src/daemon/session.rs
+index 7f351ce..f0f97d0 100644
+--- a/src/daemon/session.rs
++++ b/src/daemon/session.rs
+@@ -1,5 +1,7 @@
+ use std::collections::HashMap;
++use std::num::NonZeroU16;
+ use std::os::fd::{AsRawFd, OwnedFd};
++use std::panic::AssertUnwindSafe;
+ use std::sync::Arc;
+ 
+ use anyhow::Result;
+@@ -53,7 +55,7 @@ pub struct Session {
+     pub client_sizes: HashMap<u64, (u16, u16)>,
+     pub next_client_id: u64,
+     pub return_stack: Vec<String>,
+-    parser: std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
++    terminal: std::sync::Arc<std::sync::Mutex<Terminal>>,
+ }
+ 
+ pub enum SessionCommand {
+@@ -190,7 +192,75 @@ impl KeyboardState {
+ /// modes. Diffed against a pristine screen so vt100 does the encoding.
+ fn input_modes(screen: &vt100::Screen) -> Vec<u8> {
+     let pristine = vt100::Parser::default();
+-    screen.input_mode_diff(pristine.screen())
++    screen.input_mode_diff(pristine.screen()).into_bytes()
++}
++
++/// A session's screen, as vt100 builds it from the program's output, and the
++/// window title the program last set.
++pub struct Terminal {
++    parser: vt100::Parser<WindowTitle>,
++}
++
++#[derive(Default)]
++struct WindowTitle(String);
++
++impl vt100::Callbacks for WindowTitle {
++    fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
++        self.0 = String::from_utf8_lossy(title).into_owned();
++    }
++}
++
++fn nonzero(n: u16) -> NonZeroU16 {
++    NonZeroU16::new(n).unwrap_or(NonZeroU16::MIN)
++}
++
++impl Terminal {
++    pub fn new(rows: u16, cols: u16) -> Self {
++        Terminal {
++            parser: vt100::Parser::new_with_callbacks(
++                nonzero(rows),
++                nonzero(cols),
++                0,
++                WindowTitle::default(),
++            ),
++        }
++    }
++
++    pub fn screen(&self) -> &vt100::Screen {
++        self.parser.screen()
++    }
++
++    pub fn title(&self) -> &str {
++        &self.parser.callbacks().0
++    }
++
++    pub fn process(&mut self, data: &[u8]) {
++        let (rows, cols) = self.parser.screen().size();
++        self.start_over_on_panic(rows, cols, |parser| parser.process(data));
++    }
++
++    pub fn set_size(&mut self, rows: u16, cols: u16) {
++        let (rows, cols) = (nonzero(rows), nonzero(cols));
++        self.start_over_on_panic(rows, cols, |parser| parser.set_size(rows, cols));
++    }
++
++    /// vt100 has panicked on output that real programs write. Unwinding out
++    /// of here would poison the session's lock, and every later request that
++    /// reads the screen would panic too, `ListSessions` among them, so one
++    /// session would break listing and attaching for all of them. Start this
++    /// screen over blank instead; the program's next redraw repaints it.
++    fn start_over_on_panic(
++        &mut self,
++        rows: NonZeroU16,
++        cols: NonZeroU16,
++        update: impl FnOnce(&mut vt100::Parser<WindowTitle>),
++    ) {
++        let updated = std::panic::catch_unwind(AssertUnwindSafe(|| update(&mut self.parser)));
++        if updated.is_err() {
++            let title = std::mem::take(&mut self.parser.callbacks_mut().0);
++            self.parser = vt100::Parser::new_with_callbacks(rows, cols, 0, WindowTitle(title));
++        }
++    }
+ }
+ 
+ /// One counter for the whole daemon: whoever was opened last sorts first.
+@@ -347,8 +417,8 @@ impl Session {
+                 }
+ 
+                 let async_fd = AsyncFd::with_interest(master, Interest::READABLE)?;
+-                let parser = vt100::Parser::new(rows, cols, 0);
+-                let parser = std::sync::Arc::new(std::sync::Mutex::new(parser));
++                let terminal =
++                    std::sync::Arc::new(std::sync::Mutex::new(Terminal::new(rows, cols)));
+ 
+                 let (output_tx, _) = broadcast::channel(256);
+                 let (input_tx, input_rx) = mpsc::channel(64);
+@@ -376,7 +446,7 @@ impl Session {
+ 
+                 // Spawn the PTY I/O task
+                 let output_tx_clone = output_tx.clone();
+-                let parser_clone = parser.clone();
++                let terminal_clone = terminal.clone();
+                 let keyboard = std::sync::Arc::new(std::sync::Mutex::new(KeyboardState::new()));
+                 let keyboard_clone = keyboard.clone();
+                 let pty_session_name = name.clone();
+@@ -385,7 +455,7 @@ impl Session {
+                         async_fd,
+                         input_rx,
+                         output_tx_clone,
+-                        parser_clone,
++                        terminal_clone,
+                         keyboard_clone,
+                         pty_session_name,
+                         log_path,
+@@ -421,25 +491,23 @@ impl Session {
+                     client_sizes: HashMap::new(),
+                     next_client_id: 0,
+                     return_stack: Vec::new(),
+-                    parser,
++                    terminal,
+                 })
+             }
+         }
+     }
+ 
+     pub fn screen_text(&self) -> String {
+-        let parser = self.parser.lock().unwrap();
+-        parser.screen().contents()
++        self.terminal.lock().unwrap().screen().contents()
+     }
+ 
+     pub fn title(&self) -> String {
+-        let parser = self.parser.lock().unwrap();
+-        parser.screen().title().to_string()
++        self.terminal.lock().unwrap().title().to_string()
+     }
+ 
+     pub fn screen_contents(&self) -> Vec<u8> {
+-        let parser = self.parser.lock().unwrap();
+-        let screen = parser.screen();
++        let terminal = self.terminal.lock().unwrap();
++        let screen = terminal.screen();
+         let mut output = Vec::new();
+ 
+         // The real terminal arrives here in whatever state the *previous*
+@@ -468,7 +536,7 @@ impl Session {
+         output.extend_from_slice(&self.keyboard.lock().unwrap().restore());
+ 
+         output.extend_from_slice(b"\x1b[2J\x1b[H");
+-        output.extend_from_slice(&screen.contents_formatted());
++        output.extend_from_slice(screen.contents_formatted().as_bytes());
+ 
+         // Cells are not the whole screen. `contents_formatted` writes what is
+         // *in* the grid and nothing about the modes the program running inside
+@@ -524,7 +592,7 @@ fn has_cursor_positioning(data: &[u8]) -> bool {
+ }
+ 
+ fn take_snapshot(
+-    parser: &std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
++    terminal: &std::sync::Arc<std::sync::Mutex<Terminal>>,
+     session_name: &str,
+     log_path: &std::path::Path,
+     last_screen: &mut String,
+@@ -534,8 +602,8 @@ fn take_snapshot(
+         return;
+     }
+ 
+-    let p = parser.lock().unwrap();
+-    let screen = p.screen();
++    let terminal = terminal.lock().unwrap();
++    let screen = terminal.screen();
+ 
+     if super::agent::agent_config_path(session_name).exists() {
+         return;
+@@ -550,7 +618,7 @@ fn take_snapshot(
+         .map(|(_, l)| l)
+         .collect::<Vec<_>>()
+         .join("\n");
+-    drop(p);
++    drop(terminal);
+ 
+     let filtered = recording::clean_screen(&screen_text);
+     if filtered != *last_screen {
+@@ -575,7 +643,7 @@ async fn pty_io_loop(
+     master: AsyncFd<OwnedFd>,
+     mut input_rx: mpsc::Receiver<SessionCommand>,
+     output_tx: broadcast::Sender<Vec<u8>>,
+-    parser: std::sync::Arc<std::sync::Mutex<vt100::Parser>>,
++    terminal: std::sync::Arc<std::sync::Mutex<Terminal>>,
+     keyboard: std::sync::Arc<std::sync::Mutex<KeyboardState>>,
+     session_name: String,
+     log_path: std::path::PathBuf,
+@@ -624,10 +692,7 @@ async fn pty_io_loop(
+                                     last_screen.clear();
+                                 }
+ 
+-                                {
+-                                    let mut p = parser.lock().unwrap();
+-                                    p.process(&data);
+-                                }
++                                terminal.lock().unwrap().process(&data);
+                                 keyboard.lock().unwrap().scan(&data);
+ 
+                                 let agent_active =
+@@ -656,14 +721,14 @@ async fn pty_io_loop(
+             }
+ 
+             _ = &mut idle_deadline, if snapshot_pending => {
+-                take_snapshot(&parser, &session_name, &log_path, &mut last_screen, tui_mode);
++                take_snapshot(&terminal, &session_name, &log_path, &mut last_screen, tui_mode);
+                 snapshot_pending = false;
+                 idle_deadline.as_mut().reset(Instant::now() + Duration::from_secs(86400));
+                 max_deadline.as_mut().reset(Instant::now() + Duration::from_secs(86400));
+             }
+ 
+             _ = &mut max_deadline, if snapshot_pending => {
+-                take_snapshot(&parser, &session_name, &log_path, &mut last_screen, tui_mode);
++                take_snapshot(&terminal, &session_name, &log_path, &mut last_screen, tui_mode);
+                 snapshot_pending = false;
+                 idle_deadline.as_mut().reset(Instant::now() + Duration::from_secs(86400));
+                 max_deadline.as_mut().reset(Instant::now() + Duration::from_secs(86400));
+@@ -696,8 +761,7 @@ async fn pty_io_loop(
+                                 &winsize,
+                             );
+                         }
+-                        let mut p = parser.lock().unwrap();
+-                        p.set_size(rows, cols);
++                        terminal.lock().unwrap().set_size(rows, cols);
+                     }
+                     None => break,
+                 }
+@@ -828,3 +892,54 @@ mod tests {
+         assert!(modes(b"\x1b[?2004h\x1b[?2004l").is_empty());
+     }
+ }
++
++#[cfg(test)]
++mod terminal_tests {
++    use super::{nonzero, Terminal};
++    use std::sync::Mutex;
++
++    #[test]
++    fn a_cursor_restored_past_a_shrunken_screen_still_draws() {
++        // vt100 0.15 panicked here: the program saves the cursor near the
++        // bottom, the client shrinks the window, the program restores the
++        // cursor below the new last row and prints.
++        let mut terminal = Terminal::new(49, 158);
++        terminal.process(b"\x1b[45;10H\x1b7");
++        terminal.set_size(25, 81);
++        terminal.process(b"\x1b8a");
++        assert!(terminal.screen().contents().contains('a'));
++    }
++
++    #[test]
++    fn a_panicking_update_starts_the_screen_over_without_poisoning_its_lock() {
++        let terminal = Mutex::new(Terminal::new(24, 80));
++        terminal.lock().unwrap().process(b"\x1b]2;vim\x07hello");
++
++        terminal
++            .lock()
++            .unwrap()
++            .start_over_on_panic(nonzero(30), nonzero(100), |_| panic!("vt100 bug"));
++
++        assert!(!terminal.is_poisoned());
++        let terminal = terminal.lock().unwrap();
++        assert_eq!(terminal.screen().size(), (nonzero(30), nonzero(100)));
++        assert!(!terminal.screen().contents().contains("hello"));
++        assert_eq!(terminal.title(), "vim");
++    }
++
++    #[test]
++    fn both_title_sequences_set_the_title() {
++        let mut terminal = Terminal::new(24, 80);
++        terminal.process(b"\x1b]0;shell\x07");
++        assert_eq!(terminal.title(), "shell");
++        terminal.process(b"\x1b]2;vim\x1b\\");
++        assert_eq!(terminal.title(), "vim");
++    }
++
++    #[test]
++    fn a_zero_size_is_clamped_instead_of_rejected() {
++        let mut terminal = Terminal::new(0, 0);
++        terminal.set_size(0, 80);
++        assert_eq!(terminal.screen().size(), (nonzero(1), nonzero(80)));
++    }
++}
+diff --git a/tests/screen_panic_e2e.py b/tests/screen_panic_e2e.py
+new file mode 100644
+index 0000000..871bde1
+--- /dev/null
++++ b/tests/screen_panic_e2e.py
+@@ -0,0 +1,90 @@
++#!/usr/bin/env python3
++"""End-to-end check that a session whose screen vt100 cannot draw leaves the
++daemon answering for every session, in an isolated HOME.
++
++vt100 0.15 panicked when a program saved the cursor, the window shrank, and
++the program restored the cursor below the new last row and printed. The panic
++poisoned that session's screen lock, and `trip ls` failed with "unexpected
++frame" until the daemon restarted.
++
++Usage: tests/screen_panic_e2e.py [path to trip binary]
++"""
++import fcntl
++import os
++import pty
++import shutil
++import struct
++import subprocess
++import sys
++import tempfile
++import termios
++import time
++
++REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++TRIP = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(REPO, "target", "debug", "trip")
++
++# Short and resolved: the daemon's socket lives under HOME, and a unix socket
++# path has to fit in SUN_LEN (~104 bytes).
++HOME = os.path.realpath(tempfile.mkdtemp(prefix="trip-panic-", dir="/tmp"))
++ENV = dict(os.environ, HOME=HOME, SHELL="/bin/sh", TERM="xterm-256color")
++ENV.pop("TRIP_SESSION", None)
++ENV.pop("TRIP_WORKSPACE", None)
++
++# Saves the cursor on row 45 while a 49-row client holds the PTY, then restores
++# it and prints once a 25-row client has shrunk the PTY. Each escape is its own
++# printf because "\0337" would read as one octal byte.
++PROGRAM = 'sleep 2; printf "\\033[45;10H\\033"; printf 7; sleep 3; printf "\\033"; printf 8a; sleep 60'
++
++
++def trip(*args):
++    return subprocess.run([TRIP, *args], env=ENV, capture_output=True, text=True, timeout=20)
++
++
++def attach(name, rows, cols):
++    """Attach a client from a terminal of this size; the PTY fits the smallest."""
++    master, slave = pty.openpty()
++    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
++    proc = subprocess.Popen(
++        [TRIP, "attach", name], stdin=slave, stdout=slave, stderr=slave,
++        env=ENV, preexec_fn=os.setsid,
++    )
++    os.close(slave)
++    return proc, master
++
++
++failures = []
++
++
++def check(name, ok, detail=""):
++    print(("  PASS  " if ok else "  FAIL  ") + name + (f"\n        {detail}" if detail and not ok else ""))
++    if not ok:
++        failures.append(name)
++
++
++clients = []
++try:
++    # A second session keeps the daemon running once the first one breaks,
++    # which is what turned one bad screen into every command failing.
++    trip("create", "healthy", "--", "sleep", "60")
++    trip("create", "redraw", "--", "sh", "-c", PROGRAM)
++    clients.append(attach("redraw", 49, 158))
++    time.sleep(3.5)
++    clients.append(attach("redraw", 25, 81))
++    time.sleep(3)
++
++    ls = trip("ls")
++    check("trip ls lists every session", ls.returncode == 0 and "healthy" in ls.stdout and "redraw" in ls.stdout,
++          (ls.stdout + ls.stderr).strip())
++    screen = trip("screen", "redraw")
++    check("the session's screen still renders", screen.returncode == 0 and "a" in screen.stdout,
++          (screen.stdout + screen.stderr).strip())
++    log = open(f"{HOME}/.trip/daemon.log").read()
++    check("the daemon logged no panic", "panicked" not in log, log.strip())
++finally:
++    trip("shutdown", "--yes")
++    for proc, _ in clients:
++        proc.kill()
++    shutil.rmtree(HOME, ignore_errors=True)
++
++print("\nall checks passed" if not failures else f"\n{len(failures)} check(s) failed")
++sys.exit(1 if failures else 0)

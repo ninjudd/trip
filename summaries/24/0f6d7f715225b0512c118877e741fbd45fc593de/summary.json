@@ -1,0 +1,118 @@
+{
+ "version": 1,
+ "name": "Terminal panic isolation",
+ "project": "",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 24,
+  "title": "Stop one session's vt100 panic from breaking every trip command",
+  "head": "0f6d7f715225b0512c118877e741fbd45fc593de",
+  "headRef": "survive-vt100-panics",
+  "base": "86ecd66ab92d18d92919a9f55a96e63375b19ebc",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "Trip keeps terminal sessions running in a background daemon. The daemon uses <code>vt100</code>, a terminal-output parser, to reconstruct each screen for listing, capturing, and reattaching sessions.",
+   "A saved cursor could fall outside the screen after a smaller client attached. Restoring that cursor and printing made the old parser panic while a shared screen lock was held. The poisoned lock then broke commands such as <code>trip ls</code> that inspect every session.",
+   "This change upgrades the parser and adds a <code>Terminal</code> wrapper that catches parser-update panics. Recovery replaces only that session’s screen with a blank screen of the requested size and keeps its title. The next program redraw repaints the screen."
+  ],
+  "cards": [
+   {
+    "id": "recovery",
+    "title": "What recovery preserves",
+    "html": "<ul class=\"tight\"><li>The session, its child process, and its current title stay alive.</li><li>The affected screen and parser state restart. A program redraw is needed to restore the display.</li><li>The daemon’s panic hook still logs the failure.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "terminal",
+   "title": "Keep a parser failure inside one session",
+   "kicker": "The screen lock survives a failed parser update.",
+   "intro": [
+    "<code>Terminal</code> now owns the parser and the title that a program sets through terminal escape sequences. Both output processing and resizing run inside <code>catch_unwind</code>, before a panic can escape through the session’s mutex, the lock that protects its screen.",
+    "A failed update replaces the parser instead of reusing partially changed state. Screen readers, recordings, and attached clients all continue through the same session-owned terminal."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "src/daemon/session.rs",
+     "note": "Wrap parser updates, track titles through callbacks, and route screen readers and resizing through the wrapper.",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 258,
+       "text": "The forced-panic unit test keeps the mutex usable, resets the screen to 30 by 100 cells, and preserves the title; it passed in the 132-test unit suite."
+      },
+      {
+       "kind": "verify",
+       "line": 208,
+       "text": "The title callback handles both OSC 0 and OSC 2 escapes; both cases passed in the unit suite."
+      },
+      {
+       "kind": "context",
+       "line": 260,
+       "text": "Recovery discards the affected screen state. It preserves the session and title, and relies on the running program to redraw."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "dependency",
+   "title": "Use the parser’s resize fix",
+   "kicker": "The dependency upgrade removes the known saved-cursor crash.",
+   "intro": [
+    "<code>vt100</code> 0.18.1 includes the fix for restoring a saved cursor after a resize. Its API also requires nonzero dimensions, returns formatted screens as strings, and reports window titles through callbacks.",
+    "The wrapper adapts those API changes. A zero dimension becomes one cell. Shrinking a screen follows the new parser’s behavior: discard rows below the cursor first, then move rows off the top."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "Cargo.toml",
+     "note": "Upgrade vt100 from 0.15 to 0.18.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "Checked the complete RustSec advisory tree: no entries exist for vt100 0.18.1, vte 0.15.0, or unicode-width 0.2.3."
+      }
+     ]
+    },
+    {
+     "path": "Cargo.lock",
+     "collapsed": true,
+     "note": "Resolve vt100 0.18.1, vte 0.15.0, and unicode-width 0.2.3."
+    }
+   ]
+  },
+  {
+   "id": "regression",
+   "title": "Reproduce the failure through real clients",
+   "kicker": "A smaller attached client triggers the original resize sequence.",
+   "intro": [
+    "The new end-to-end test starts a separate daemon in a temporary home directory. A program saves its cursor in a tall terminal, a second client shrinks the session, and the program restores its cursor and prints.",
+    "The checks then ask the daemon to list both sessions, read the affected screen, and confirm that its log contains no panic. Cleanup shuts down the isolated daemon and removes its temporary home."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "tests/screen_panic_e2e.py",
+     "note": "Exercise saved-cursor restoration after a resize through the real daemon and PTY clients.",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 75,
+       "text": "All three checks pass on this head and fail against the exact merge-base binary; the base logs the vt100 panic and a poisoned-lock error."
+      },
+      {
+       "kind": "context",
+       "line": 71,
+       "text": "The test uses fixed sleeps to order the program and attached clients. As in the existing switcher suite, a slow scheduler can change the intended ordering; an event handshake would make this deterministic."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
