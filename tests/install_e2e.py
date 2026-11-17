@@ -198,6 +198,21 @@ def test_failed_build_keeps_current():
     check(home.version() == "trip 0.2.0", "~/.local/bin/trip still runs 0.2.0", home.version())
 
 
+def test_archive_without_cargo_toml_names_the_ref():
+    """An archive of another repository, as a typo in TRIP_REPO downloads,
+    extracts like trip's but holds no trip Cargo.toml at its top level."""
+    home = Home()
+    source = os.path.join(ROOT, "src-not-trip")
+    os.makedirs(source)
+    with open(os.path.join(source, "README.md"), "w") as f:
+        f.write("not trip\n")
+    result = home.release(archive(source))
+    check(result.returncode != 0, "an archive without trip's Cargo.toml exits nonzero", outputs(result))
+    check("trip vtest" in result.stderr and "did not install" in result.stderr
+          and "is not trip's source" in result.stderr and "Nothing was installed" in result.stderr,
+          "it names the ref that did not install and why", result.stderr)
+
+
 def test_three_installs_keep_two():
     home = Home()
     # A binary copied there by hand, as trip was installed before releases.
@@ -363,6 +378,7 @@ def main():
     try:
         for test in (
             test_failed_build_keeps_current,
+            test_archive_without_cargo_toml_names_the_ref,
             test_three_installs_keep_two,
             test_live_daemon_version_is_kept,
             test_stale_daemon_record_is_ignored,

@@ -192,6 +192,9 @@ install_release() {
   mkdir "$TMP/src"
   tar -xzf "$TMP/source.tar.gz" -C "$TMP/src" --strip-components 1 \
     || fail_install "$TRIP_REF" "$url is not a source archive"
+  # tar extracts any repository's archive, so a TRIP_REPO naming another
+  # project gets this far.
+  grep -qs '^name = "trip"' "$TMP/src/Cargo.toml" || fail_install "$TRIP_REF" "$url is not trip's source"
   version="$(package_version "$TMP/src/Cargo.toml")"
   label="${version:-$TRIP_REF} ($TRIP_REPO $TRIP_REF)"
 
