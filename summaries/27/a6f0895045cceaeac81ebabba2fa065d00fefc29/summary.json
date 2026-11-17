@@ -1,0 +1,159 @@
+{
+ "version": 1,
+ "name": "Releases and trip upgrade",
+ "project": "releases",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 27,
+  "title": "Check every pull request, license the crate, and add `trip --version`",
+  "head": "a6f0895045cceaeac81ebabba2fa065d00fefc29",
+  "headRef": "releases/check",
+  "base": "650482652f142e9553bfff58a606a0c27dc0ce51",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "<code>trip</code> is a terminal session manager: a daemon owns each session's terminal, and the <code>trip</code> client attaches to it. The <code>releases</code> plan gives it numbered releases, an installer that builds a tagged release from source, and <code>trip upgrade</code>. This pull request is the plan's first step, the bottom of the stack that builds it. It adds the two things every later step depends on: a CI workflow that checks each pull request, and a <code>--version</code> flag that says whether a binary is a release.",
+   "Before this change, the repository's only workflow published its project site, so nothing checked a pull request before it merged. And no <code>trip</code> binary could name its version. A release pull request needs passing checks before you merge it, and <code>trip upgrade</code> will compare the version a binary reports with the release tag.",
+   "<ul><li><b>A version that says whether the build is a release.</b> <code>trip --version</code> and <code>-V</code> print <code>trip 0.1.0</code> only when <code>TRIP_RELEASE=1</code> was set at compile time, which the release installer in a later layer will set. Every other build prints <code>trip 0.1.0-dev</code>.</li><li><b>Crate metadata and a license.</b> <code>Cargo.toml</code> gains <code>description</code>, <code>license</code>, <code>repository</code>, and <code>rust-version = \"1.85\"</code>, and the repository gains the MIT <code>LICENSE</code> text the README already named.</li><li><b>CI.</b> <code>check.yml</code> runs formatting, clippy, the tests, and the end-to-end scripts on every pull request, on pushes to <code>main</code>, and by dispatch, plus a job that checks the build on the minimum Rust version.</li><li><b>The plan.</b> <code>releases</code> moves to <code>in-progress</code> and records what implementation settled in a new § 9.</li></ul>"
+  ],
+  "cards": [
+   {
+    "id": "terms",
+    "title": "Terms",
+    "html": "<ul class=\"tight\"><li><b><code>TRIP_RELEASE</code></b>: an environment variable read when <code>trip</code> compiles, not when it runs. Only the value <code>1</code> marks a release build.</li><li><b>MSRV</b>: minimum supported Rust version, the <code>rust-version</code> field in <code>Cargo.toml</code>.</li><li><b><code>workflow_dispatch</code></b>: a GitHub Actions trigger that starts a workflow on request, on a branch you name.</li></ul>"
+   },
+   {
+    "id": "review",
+    "title": "Review so far",
+    "html": "<ul class=\"tight\"><li><b><code>a0ec815</code></b>: clean, with three suggestions. They were to cancel earlier runs only for pull requests, to run the version test with <code>TRIP_RELEASE=0</code>, and to record the CI time in the plan.</li><li><b><code>baeba91</code></b>: took all three, and the review opened one finding. A third quick merge to <code>main</code> could still cancel the second merge's pending run, which the new comment and plan § 9 said could not happen.</li><li><b><code>a6f0895</code></b>: fixes it. Every run outside a pull request now gets a concurrency group of its own, keyed on its run ID. The review is clean and the head is signed off.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "version",
+   "title": "trip --version",
+   "kicker": "A version flag that tells a release build from every other build",
+   "intro": [
+    "<code>trip upgrade</code>, a later step, compares the version an installed binary reports with the release tag, and refuses to touch a checkout install. So the binary has to say both its version and whether it is a release. The release installer will build with <code>TRIP_RELEASE=1</code> in the environment. <code>trip</code> reads that variable when it compiles, with <code>option_env!</code>, and appends <code>-dev</code> unless it is exactly <code>1</code>.",
+    "Cargo records that the crate read the variable, so changing it between builds recompiles <code>trip</code>. A binary therefore never keeps the answer from an earlier build."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "src/cli.rs",
+     "note": "Adds the <code>VERSION</code> constant and passes it to clap's <code>version</code> attribute, which adds <code>--version</code> and <code>-V</code>.",
+     "checks": [
+      {
+       "kind": "context",
+       "line": 8,
+       "text": "The match compares bytes, <code>[b'1']</code>, instead of the string pattern <code>Some(\"1\")</code>. That is necessary: Rust refuses a <code>str</code> pattern in a constant with <code>E0658</code>, which a test compile confirmed."
+      },
+      {
+       "kind": "verify",
+       "line": 7,
+       "text": "Builds of this head print <code>trip 0.1.0-dev</code> with no <code>TRIP_RELEASE</code>, <code>trip 0.1.0</code> with <code>TRIP_RELEASE=1</code>, and <code>trip 0.1.0-dev</code> with <code>0</code> and with <code>11</code>. Cargo rebuilt <code>trip</code> after each change to the variable."
+      }
+     ]
+    },
+    {
+     "path": "tests/version.rs",
+     "note": "Runs the built binary with <code>--version</code> and <code>-V</code> and expects the answer its own build's <code>TRIP_RELEASE</code> calls for. CI runs it three times: plain, with <code>TRIP_RELEASE=1</code>, and with <code>TRIP_RELEASE=0</code>.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "The <code>TRIP_RELEASE=0</code> run passes locally at <code>baeba91</code>. It catches a change that let any value mark a release, because the test then expects <code>-dev</code> while the build prints the bare version."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "crate",
+   "title": "Crate metadata and license",
+   "kicker": "What a public release needs in Cargo.toml and the repository root",
+   "intro": [
+    "A release needs a license and a stated minimum Rust version. The README's License section already said MIT, but the repository had no <code>LICENSE</code> file. <code>rust-version = \"1.85\"</code> is the floor because <code>clap</code> 4.6 and <code>vt100</code> 0.18 use Rust's 2024 edition and declare 1.85 themselves. <code>trip</code>'s own code needs only 1.82. Setting <code>rust-version</code> also makes clippy flag any standard library API newer than it."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "Cargo.toml",
+     "note": "Adds <code>rust-version</code>, <code>description</code>, <code>license</code>, and <code>repository</code>. No dependency changes.",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 5,
+       "text": "The locked <code>clap</code> 4.6.1, <code>clap_builder</code> 4.6.0, and <code>vt100</code> 0.18.1 each declare <code>edition = \"2024\"</code> and <code>rust-version = \"1.85\"</code>, and CI's <code>msrv</code> job passed on 1.85."
+      }
+     ]
+    },
+    {
+     "path": "LICENSE",
+     "note": "The standard MIT license text."
+    },
+    {
+     "path": "README.md",
+     "note": "Documents <code>trip --version</code> and changes the Rust requirement from the 2021 edition to 1.85 or newer."
+    }
+   ]
+  },
+  {
+   "id": "ci",
+   "title": "CI on every pull request",
+   "kicker": "check.yml, the workflow every later step relies on",
+   "intro": [
+    "<code>check.yml</code> runs on each pull request, on each push to <code>main</code>, and by <code>workflow_dispatch</code>. The dispatch trigger exists for the release workflow in a later layer: GitHub starts no workflow for a pull request that a workflow's own token opened, so that workflow will dispatch this one onto the release branch.",
+    "<ol><li><b>The <code>check</code> job</b> runs on macOS: <code>cargo fmt --check</code>, clippy with warnings as errors, <code>cargo test</code>, the version test again with <code>TRIP_RELEASE=1</code> and with <code>TRIP_RELEASE=0</code>, a plain rebuild, and each <code>tests/*_e2e.py</code> script. Each script starts its own daemon in its own temporary home directory.</li><li><b>The <code>msrv</code> job</b> reads <code>rust-version</code> from <code>Cargo.toml</code>, installs that toolchain, and runs <code>cargo check --locked --all-targets</code>.</li></ol>",
+    "Runs share a concurrency group, a GitHub Actions setting that controls which runs can cancel or replace each other. A pull request's runs share one group per ref, so a new push cancels that pull request's earlier run. Every other run, a push to <code>main</code> or a dispatch, gets a group keyed on its own run ID, so nothing cancels or replaces it, and every merged commit keeps its own result."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": ".github/workflows/check.yml",
+     "note": "New workflow with the <code>check</code> and <code>msrv</code> jobs, read-only permissions, and a concurrency group that lets a new push cancel only its own pull request's earlier run.",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 2,
+       "text": "The workflow triggers on <code>pull_request</code>, not <code>pull_request_target</code>, grants only <code>contents: read</code>, uses no secrets, and interpolates no <code>${{ }}</code> expression into a <code>run:</code> step."
+      },
+      {
+       "kind": "verify",
+       "line": 18,
+       "text": "A pull request's group is <code>check-</code> plus its ref, and every other run's group is <code>check-</code> plus its unique run ID. So a third quick merge to <code>main</code> can no longer cancel the second merge's run, which the shared group at <code>baeba91</code> allowed. GitHub accepted the expression and started <code>check</code> on this head."
+      },
+      {
+       "kind": "verify",
+       "line": 43,
+       "text": "The <code>cargo build --locked</code> after the version tests rebuilds <code>target/debug/trip</code> as <code>-dev</code>, because Cargo tracks <code>TRIP_RELEASE</code>. All three end-to-end scripts passed locally against that build."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "plan",
+   "title": "The releases plan",
+   "kicker": "The plan moves to in-progress and records what step 1 settled",
+   "intro": [
+    "The plan was at <code>ready</code>. Starting its first step moves it to <code>in-progress</code>. Its new § 9 records four decisions: the minimum Rust version and why, that only <code>TRIP_RELEASE=1</code> marks a release, that the <code>check</code> job takes about 4 minutes and which runs can cancel each other, and that Linux CI stays deferred, as § 7 allowed."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "docs/projects/releases/readme.md",
+     "note": "Changes the status to <code>in-progress</code> and adds § 9, \"What implementation settled\".",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 174,
+       "text": "This bullet matches <code>check.yml</code> at this head: only a pull request's own later push cancels its run, and every other run has a group of its own keyed on <code>github.run_id</code>."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
