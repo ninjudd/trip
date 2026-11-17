@@ -251,13 +251,16 @@ install_dev() {
 }
 
 # Drop any trip hook block, from its marker through the `fi` that closes it.
+# Fail and leave the file as it is when a block has no such `fi`, as when a
+# user edited it to `fi  # trip`, rather than drop everything after it.
 remove_hook() {
   local file="$1" stripped
   stripped="$(awk -v marker="$MARKER" '
     $0 == marker { skipping = 1; next }
     skipping && $0 == "fi" { skipping = 0; next }
     !skipping { print }
-  ' "$file")"
+    END { if (skipping) exit 1 }
+  ' "$file")" || return 1
   # Write through the file rather than replacing it, so a startup file that
   # is a symlink, as dotfile managers make, stays one.
   printf '%s\n' "$stripped" > "$file"
@@ -278,7 +281,11 @@ install_hook() {
   if hook_current "$file"; then
     printf 'Shell hook already in %s\n' "$file"
   elif [ -f "$file" ] && grep -qxF "$MARKER" "$file"; then
-    remove_hook "$file"
+    if ! remove_hook "$file"; then
+      printf '\nwarning: %s has a trip shell hook with no closing fi, so it is unchanged.\nDelete the block that starts with "%s" and run the installer again.\n' \
+        "$file" "$MARKER" >&2
+      return 0
+    fi
     printf '\n%s\n' "$HOOK" >> "$file"
     printf 'Updated shell hook in %s\n' "$file"
   else

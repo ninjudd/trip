@@ -344,6 +344,20 @@ def test_shell_hook():
           "the hook stays quiet in a shell where trip does not resolve", f"{guarded.stdout!r} {guarded.stderr!r}")
 
 
+def test_hook_without_its_closing_fi_is_left_unchanged():
+    """A hook whose last line a user edited, so no `fi` at column 0 closes it,
+    gives the installer no end to remove up to."""
+    home = Home()
+    edited = OLD_HOOK.replace("\nfi\n", "\nfi  # trip\n") + "setopt autocd\nexport EDITOR=vi\n"
+    with open(os.path.join(home.dir, ".zshrc"), "w") as f:
+        f.write(edited)
+    result = home.release(release("0.2.0"))
+    check(result.returncode == 0, "an install beside an edited hook succeeds", outputs(result))
+    check(home.read(".zshrc") == edited, "the edited .zshrc is left exactly as it was", home.read(".zshrc"))
+    check(f"{os.path.join(home.dir, '.zshrc')} has a trip shell hook with no closing fi" in result.stderr,
+          "it warns which file it left alone", result.stderr)
+
+
 def source_without_trip(home, startup):
     """Source a startup file in a trip session's bash whose PATH lacks trip,
     then run one command."""
@@ -405,6 +419,7 @@ def main():
             test_stale_daemon_record_is_ignored,
             test_warnings,
             test_shell_hook,
+            test_hook_without_its_closing_fi_is_left_unchanged,
             test_checkout_installs_dev_version,
             test_dev_links_debug_build,
             test_refuses_without_cargo,
