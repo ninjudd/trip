@@ -263,8 +263,8 @@ confirm-close-surface = false</pre></dd>
   <section aria-labelledby="remote">
     <h2 id="remote">Remote sessions with mosh</h2>
     <p><a href="https://mosh.org">mosh</a> keeps a connection to another machine alive while your laptop sleeps or changes networks. trip on that machine keeps the session alive when you quit mosh altogether. Install trip there, then run it as mosh's command:</p>
-<pre class="snippet">mosh myserver -- sh -c 'TRIP_DETACH_KEY="^-" exec ~/.local/bin/trip enter main'</pre>
-    <p style="margin-top:14px">Run the same command again to reattach. If your local terminal is a trip session too, it keeps <kbd>Ctrl-\</kbd>, so the remote trip detaches on <kbd>Ctrl+-</kbd> instead.</p>
+<pre class="snippet">mosh myserver -- sh -c 'TRIP_DETACH_KEY="^]" exec ~/.local/bin/trip enter main'</pre>
+    <p style="margin-top:14px">Run the same command again to reattach. If your local terminal is a trip session too, it keeps <kbd>Ctrl-\</kbd>, so the remote trip detaches on <kbd>Ctrl-]</kbd> instead.</p>
     <p style="margin-top:20px">The <a href="https://github.com/ninjudd/trip#readme">README</a> covers every command, the detach key, window titles, and how the daemon works.</p>
   </section>
 </main>

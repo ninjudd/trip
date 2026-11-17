@@ -167,17 +167,37 @@ default Ctrl-\ sacrifices only SIGQUIT, which almost nothing wants.
 
 ## Remote sessions with mosh
 
-[mosh](https://mosh.org) keeps a connection to another machine alive while your laptop sleeps or changes networks, and trip on that machine keeps the session alive when you quit mosh altogether. Install trip on the remote machine, then run it as mosh's command:
+[mosh](https://mosh.org) keeps a connection to another machine alive while
+your laptop sleeps or changes networks, and trip on that machine keeps the
+session alive when you quit mosh altogether. Install trip on the remote
+machine, then run it as mosh's command:
 
 ```
-mosh myserver -- sh -c 'TRIP_DETACH_KEY="^-" exec ~/.local/bin/trip enter main'
+mosh myserver -- sh -c 'TRIP_DETACH_KEY="^]" exec ~/.local/bin/trip enter main'
 ```
 
-This enters the session `main` on `myserver`, and creates it if it doesn't exist. Run the same command again to reattach. mosh runs its command directly rather than through a shell, so `sh -c` is what expands `~`.
+This enters the session `main` on `myserver`, and creates it if it doesn't
+exist. Run the same command again to reattach. mosh runs its command directly
+rather than through a shell, so `sh -c` is what expands `~`.
 
-When the terminal you run mosh from is itself a trip session, that local trip catches Ctrl-\ before mosh sees it. So the command gives the remote trip a different key: Ctrl-\ leaves the local session, and Ctrl+- leaves the remote one.
+If the remote machine is a Mac with Homebrew, add
+`--server=/opt/homebrew/bin/mosh-server` to the command. mosh starts its
+server through an SSH login that doesn't have Homebrew on its `PATH`, so
+without the full path it fails with `mosh-server: command not found`.
 
-mosh doesn't pass `COLORTERM` to the remote machine, so programs there fall back to 256 colors. To keep 24-bit color, set it when mosh starts its server, with `--server="COLORTERM=$COLORTERM mosh-server"`. If the remote machine is a Mac with Homebrew, name the server by its full path, as in `--server="COLORTERM=$COLORTERM /opt/homebrew/bin/mosh-server"`, because the SSH login mosh starts it from doesn't have Homebrew on its `PATH`.
+When the terminal you run mosh from is itself a trip session, that local trip
+catches Ctrl-\ before mosh sees it. So the command gives the remote trip a
+different key: Ctrl-\ leaves the local session, and **Ctrl-]** leaves the
+remote one. Ghostty, iTerm2, Terminal.app, and the common Linux terminals all
+pass Ctrl-] through. Ctrl+- would be a poor choice here, because Ghostty on
+Linux, GNOME Terminal, and others take it to shrink the font. Programs in the
+remote session no longer see Ctrl-], such as Vim's jump to tag.
+
+mosh doesn't pass `COLORTERM` to the remote machine, so programs there fall
+back to 256 colors. To keep 24-bit color, set it when mosh starts its server,
+with `--server="COLORTERM=$COLORTERM mosh-server"`, or
+`--server="COLORTERM=$COLORTERM /opt/homebrew/bin/mosh-server"` on a Homebrew
+Mac.
 
 ## Titles
 
