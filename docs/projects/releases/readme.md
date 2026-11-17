@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 priority: now
 ---
 
@@ -104,7 +104,7 @@ In each mode it:
 - **Projector's release flow, reused.** It already solves the hard parts: a release pull request that the workflow opens and still gets checked, a publish job that can be rerun safely, and a major tag that moves last so the installer and the newest release never disagree. Copying it keeps one release process across the tools.
 - **Build from source, not binaries.** Publishing binaries means a build matrix for each platform and architecture, uploaded assets and their checksums, and, for binaries downloaded with `curl` on macOS, code signing and notarization or quarantine handling. Building with `cargo` needs none of that, and the people installing `trip` already have Rust. The cost is a build of a minute or two on each upgrade, measured in § 5.
 - **A directory per version, switched last.** A failed build can then never leave you without a working `trip`, the version before stays one rename away, and a running daemon keeps its own version's binary on disk while a newer one installs beside it.
-- **The daemon is never restarted for you.** It holds every session's terminal, so restarting it ends them. `trip shutdown --yes` already exists for the moment you choose, and the daemon exits by itself when its last session ends. Keeping sessions alive across a restart, by passing their terminals to the new daemon, is a project of its own (§ 7).
+- **The daemon is never restarted for you.** It holds every session's terminal, so restarting it ends them. `trip shutdown --yes` already exists for the moment you choose, and the daemon exits by itself when its last session ends. Restarting it automatically when no client is attached was considered and rejected, because it would still end sessions you meant to come back to. Keeping sessions alive across a restart, by passing their terminals to the new daemon, is a project of its own (§ 7).
 - **A version file, not a new request.** A daemon from before this change can't answer a version request, but a missing file is unambiguous. Reading a file also costs the client nothing when the daemon is busy.
 - **`~/.local/bin`, no `sudo`.** That is where `trip` already runs, where Projector installs, and where nothing needs a password.
 - **The MIT license.** `trip` has had no license, so a public release would leave others no right to use it. MIT matches Projector.
@@ -144,8 +144,7 @@ Steps 1 to 4 can ship as one stack. The first release waits for all of them, so 
 
 ## 7. Open questions
 
-- **Prebuilt binaries.** Building from source is the recommendation (§ 3). Prebuilt binaries for macOS and Linux could follow if installing without Rust matters. Owner: the user.
-- **What an upgrade does to the daemon.** Leaving it running and saying so is the recommendation (§ 2.4). The alternative restarts it when no client is attached, which ends idle sessions. Owner: the user.
+- **Prebuilt binaries.** Deferred: releases build from source (§ 3). Prebuilt binaries for macOS and Linux can follow as a later option if installing without Rust comes to matter.
 - **Linux.** `check.yml` runs on macOS. Add a Linux runner once the tests are known to pass there. Owner: whoever implements step 1.
 - **Keeping sessions across a daemon restart.** Passing the sessions' terminals and screen state to a new daemon would let an upgrade restart the daemon without ending anything. Deferred to its own project.
 - **A hosted installer address.** `raw.githubusercontent.com` at `v0` serves the installer for now. A short address can come later.
