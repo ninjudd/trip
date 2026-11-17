@@ -86,7 +86,7 @@ In each mode it:
 
 | File | Change |
 | --- | --- |
-| `Cargo.toml` | Adds `description`, `license`, `repository`, and `rust-version` |
+| `Cargo.toml` | Adds `description`, `license = "MIT"`, `repository`, and `rust-version` |
 | `src/cli.rs` | Adds `--version`, and the `upgrade` subcommand with `--check` |
 | `src/client/upgrade.rs` | New. Finds the release, runs its installer, verifies the result, and reports the daemon |
 | `src/daemon/mod.rs` | Writes `~/.trip/daemon.json` with the version and pid at start |
@@ -97,7 +97,7 @@ In each mode it:
 | `.github/scripts/release.py` | New. Bumps the version files, checks that a release commit touches only them, and runs the publish steps idempotently, as Projector's does |
 | `tests/release_test.py`, `tests/install_e2e.py` | New. § 4's checks of the release script and the installer |
 | `README.md` | The release install command, `trip upgrade`, and the terminal setup naming `~/.local/bin/trip` |
-| `LICENSE` | New, with the license § 7 settles |
+| `LICENSE` | New: the MIT license, as Projector uses |
 
 ## 3. Why this design
 
@@ -107,6 +107,7 @@ In each mode it:
 - **The daemon is never restarted for you.** It holds every session's terminal, so restarting it ends them. `trip shutdown --yes` already exists for the moment you choose, and the daemon exits by itself when its last session ends. Keeping sessions alive across a restart, by passing their terminals to the new daemon, is a project of its own (§ 7).
 - **A version file, not a new request.** A daemon from before this change can't answer a version request, but a missing file is unambiguous. Reading a file also costs the client nothing when the daemon is busy.
 - **`~/.local/bin`, no `sudo`.** That is where `trip` already runs, where Projector installs, and where nothing needs a password.
+- **The MIT license.** `trip` has had no license, so a public release would leave others no right to use it. MIT matches Projector.
 
 ## 4. Acceptance criteria
 
@@ -145,7 +146,6 @@ Steps 1 to 4 can ship as one stack. The first release waits for all of them, so 
 
 - **Prebuilt binaries.** Building from source is the recommendation (§ 3). Prebuilt binaries for macOS and Linux could follow if installing without Rust matters. Owner: the user.
 - **What an upgrade does to the daemon.** Leaving it running and saying so is the recommendation (§ 2.4). The alternative restarts it when no client is attached, which ends idle sessions. Owner: the user.
-- **The license.** `trip` has no `LICENSE` file. MIT matches Projector. Owner: the user, before the first release.
 - **Linux.** `check.yml` runs on macOS. Add a Linux runner once the tests are known to pass there. Owner: whoever implements step 1.
 - **Keeping sessions across a daemon restart.** Passing the sessions' terminals and screen state to a new daemon would let an upgrade restart the daemon without ending anything. Deferred to its own project.
 - **A hosted installer address.** `raw.githubusercontent.com` at `v0` serves the installer for now. A short address can come later.
