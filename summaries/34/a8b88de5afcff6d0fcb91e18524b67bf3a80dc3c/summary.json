@@ -1,0 +1,139 @@
+{
+ "version": 1,
+ "name": "Website at trip.here",
+ "project": "",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 34,
+  "title": "Add the trip.here website, and serve the installer from https://trip.here/install.sh",
+  "head": "a8b88de5afcff6d0fcb91e18524b67bf3a80dc3c",
+  "headRef": "website",
+  "base": "c4e822c6ba567ab6d3403d1d8223f4f5f7d84c6c",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "trip is a small daemon that keeps terminal sessions alive after you close a window. Until now, the only place to learn about it was the GitHub README, and the install command was a long <code>raw.githubusercontent.com</code> URL. This pull request gives trip a home page at <code>https://trip.here</code> and shortens the install command to <code>curl -fsSL https://trip.here/install.sh | bash</code>.",
+   "The site is one static HTML page in a new <code>site/</code> directory, with no build step. Vercel, a static hosting service, deploys it from a project whose root directory is <code>site</code>. A Vercel configuration file, <code>site/vercel.json</code>, decides what <code>/install.sh</code> returns. It does not hold a copy of the installer. It tells Vercel to fetch the installer from GitHub at the <code>v0</code> tag and return it under the trip.here URL.",
+   "<code>v0</code> is the tag the release workflow moves to each new release, last, after the release exists. So trip.here always serves the newest release's installer, and a release needs no site redeploy. <code>trip upgrade</code>, the command that moves an existing install to the newest release, still downloads the installer for one exact tag straight from GitHub, and this change leaves it alone.",
+   "The README and the installer's usage comment now show the trip.here command. The change does not point trip.here's DNS at Vercel; that happens outside the repository. Until it does, the new command does not work."
+  ],
+  "cards": [
+   {
+    "id": "terms",
+    "title": "Terms on this page",
+    "html": "<ul class=\"tight\"><li><b>Rewrite</b>: Vercel fetches another URL and returns its response under the site's own URL. The client sees no redirect.</li><li><b><code>v0</code></b>: the git tag that always names the newest 0.x release. The installer builds the source at <code>v0</code> by default.</li><li><b><code>ignoreCommand</code></b>: a shell command Vercel runs before a build. Exit status 0 skips the deployment.</li><li><b>Projector site</b>: the separate GitHub Pages site at ninjudd.com/trip, built from the README, <code>docs/</code>, and review summaries.</li></ul>"
+   },
+   {
+    "id": "review",
+    "title": "Review so far",
+    "html": "<ul class=\"tight\"><li>One open finding: the page's transcript shows a session chooser that <code>trip enter</code> does not draw when run from the home directory.</li><li>Merge only after trip.here serves the installer. Today trip.here is a registrar URL forward with nothing listening on HTTPS.</li><li>The rewrite, the tag it reads, and the caching headers were checked and match the release process.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "installer",
+   "title": "Serving the installer from trip.here",
+   "kicker": "What https://trip.here/install.sh returns, and where the new URL is published",
+   "intro": [
+    "Users pipe the installer straight into <code>bash</code>, so what <code>/install.sh</code> returns matters more than anything else on the site. <code>site/vercel.json</code> rewrites that one path to <code>https://raw.githubusercontent.com/ninjudd/trip/v0/install.sh</code>. Because it is a rewrite, the response comes back with a <code>200</code> under the trip.here URL, and <code>curl -fsSL</code> needs no redirect support. Both hops use HTTPS.",
+    "Serving from the <code>v0</code> tag rather than from <code>main</code> keeps the installer and the source it builds on the same release. The installer's <code>TRIP_REF</code> setting defaults to <code>v0</code> too, so a script fetched from trip.here builds the release it came from.",
+    "The README's install section and the usage comment at the top of <code>install.sh</code> switch to the trip.here command. The README also drops a sentence saying the command works only after the first release, which stopped being true at 0.1.0."
+   ],
+   "checks": [
+    {
+     "kind": "verify",
+     "text": "No other file names an installer URL that should change. <code>src/client/upgrade.rs</code> builds <code>raw.githubusercontent.com/&lt;repo&gt;/&lt;tag&gt;/install.sh</code> for the tag it checks against, the e2e tests point that at local copies through <code>TRIP_RAW_URL</code>, and <code>.github/scripts/release.py</code> names no installer URL. Checked by searching the head for every installer URL."
+    },
+    {
+     "kind": "context",
+     "text": "trip.here does not yet serve the installer. Nothing answers on port 443, and plain HTTP answers with a registrar's redirect. Merging before DNS moves publishes a README install command that fails with only curl's connection error."
+    }
+   ],
+   "files": [
+    {
+     "path": "site/vercel.json",
+     "note": "The Vercel configuration: the installer rewrite, clean URLs, and a check that skips deploys for commits that leave <code>site/</code> alone.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "GitHub serves the rewrite's destination with <code>content-type: text/plain; charset=utf-8</code> and <code>cache-control: max-age=300</code>, so trip.here can lag a release by about five minutes at most. Checked with a read-only request to the raw URL.",
+       "line": 8
+      },
+      {
+       "kind": "context",
+       "text": "<code>git diff --quiet HEAD^ HEAD -- .</code> compares only the newest commit with its parent. A push of several commits whose last one leaves <code>site/</code> alone skips the deploy. Every commit to <code>main</code> is a squash merge, so production deploys are not affected.",
+       "line": 4
+      }
+     ]
+    },
+    {
+     "path": "install.sh",
+     "note": "Only the usage comment changes, to show the trip.here command. The script's behavior is unchanged."
+    },
+    {
+     "path": "README.md",
+     "note": "The install command now uses trip.here, and an outdated sentence about the first release is gone."
+    }
+   ]
+  },
+  {
+   "id": "page",
+   "title": "The home page",
+   "kicker": "One static page that says what trip is and how to install it",
+   "intro": [
+    "<code>site/index.html</code> is a single page with inline CSS and one small inline script for the copy button. It loads no third-party script, font, or tracker. It has an install command with a copy button, a terminal transcript of a session that survives a closed window, a list of what trip does, and the terminal setup for macOS Terminal and iTerm2. For everything else it links to the README.",
+    "The page adapts to light and dark mode, and stops the blinking cursor when the reader asks for reduced motion. Its muted text keeps a contrast ratio of at least 5.4:1 in both schemes."
+   ],
+   "checks": [
+    {
+     "kind": "verify",
+     "text": "The page's claims about <code>Ctrl-\\</code>, <code>trip screen</code>, <code>trip log</code>, <code>trip send</code>, <code>trip on</code>, <code>trip wrap</code>, <code>trip upgrade</code>, and the terminal setup match the README and the code. Checked by reading each against the README and <code>src/client</code>."
+    }
+   ],
+   "files": [
+    {
+     "path": "site/index.html",
+     "note": "The whole site: the hero and install command, the transcript, the feature list, and the terminal setup.",
+     "checks": [
+      {
+       "kind": "flag",
+       "text": "Open finding: this <code>trip enter</code> runs in the home directory, where row 0 would be a new session for the home workspace and would start selected. The transcript instead shows row 0 as <code>acme/webapp.1</code> with <code>acme/webapp</code> selected, and the header of the in-session chooser (<code>esc back</code>) rather than the <code>q cancels</code> header that <code>trip enter</code> prints.",
+       "line": 205
+      },
+      {
+       "kind": "context",
+       "text": "When the clipboard API is missing or refuses the write, the copy button does nothing and shows no message.",
+       "line": 258
+      }
+     ]
+    },
+    {
+     "path": "site/favicon.svg",
+     "note": "A small prompt-and-cursor icon in the page's colors."
+    }
+   ]
+  },
+  {
+   "id": "housekeeping",
+   "title": "Ignoring Vercel's local files",
+   "kicker": "Keeping the Vercel CLI's project link and tokens out of git",
+   "intro": [
+    "<code>vercel link</code> writes a <code>.vercel</code> directory and can write <code>.env</code> files that hold a token. Both patterns have no leading slash, so they match at any depth, including inside <code>site/</code>. No file already tracked in the repository matches either one."
+   ],
+   "checks": [
+    {
+     "kind": "context",
+     "text": "The existing Projector site on GitHub Pages builds from the README, <code>docs/</code>, and review summaries, and never reads <code>site/</code>, so the two sites do not collide."
+    }
+   ],
+   "files": [
+    {
+     "path": ".gitignore",
+     "note": "Adds <code>.vercel</code> and <code>.env*</code>."
+    }
+   ]
+  }
+ ]
+}
