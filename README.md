@@ -16,11 +16,32 @@ Trip separates the terminal viewport from the runtime session. This means:
 
 ## Install
 
+trip builds from source, so you need Rust's `cargo`; install it with [rustup](https://rustup.rs) if you don't have it. Install the newest release with:
+
+```
+curl -fsSL https://raw.githubusercontent.com/ninjudd/trip/v0/install.sh | bash
+```
+
+This command works once the first release is tagged. It downloads the release's source, builds it, and installs it into `~/.local`, without `sudo`. The build takes about 10 seconds on an Apple M2 Max once its dependencies are downloaded, and longer on a slower machine or the first time.
+
+The installer puts each version in its own directory and switches to it only when the build succeeds:
+
+| Path | What it is |
+| --- | --- |
+| `~/.local/share/trip/<version>/trip` | The binary for one version |
+| `~/.local/share/trip/current` | A link to the version `trip` runs |
+| `~/.local/share/trip/previous` | A link to the version before it, kept so you can switch back |
+| `~/.local/bin/trip` | A link to `~/.local/share/trip/current/trip` |
+
+It keeps the current and previous versions, and the version a running daemon uses, and deletes older ones. When `~/.local/bin` is not on your `PATH`, it prints the `export PATH` line to add to your shell's startup file. When an earlier install left `/usr/local/bin/trip`, it prints the `sudo rm` that removes it.
+
+To install from a clone instead, run the installer there. It builds the checkout into the same layout, as version `<version>-dev`:
+
 ```
 ./install.sh
 ```
 
-For development (symlinks debug build so `cargo build` updates it instantly):
+For development, `--dev` links `~/.local/bin/trip` to the checkout's debug build, so each `cargo build` updates it, and leaves `~/.local/share/trip` as it is:
 
 ```
 ./install.sh --dev
@@ -28,13 +49,13 @@ For development (symlinks debug build so `cargo build` updates it instantly):
 
 ## Terminal setup
 
-For the best experience, configure your terminal to run trip automatically on new tabs.
+For the best experience, configure your terminal to run trip automatically on new tabs. The commands below name `~/.local/bin/trip`, where the installer puts it. If your terminal does not expand `~` there, write your home directory out, as in `/Users/you/.local/bin/trip enter`.
 
 ### macOS Terminal
 
 Open **Settings → Profiles → Shell**:
 
-- **Startup → Run command:** `/usr/local/bin/trip enter`
+- **Startup → Run command:** `~/.local/bin/trip enter`
 - **When the shell exits:** Close if the shell exited cleanly
 - **Ask before closing:** Only if there are processes other than the login shell and: add `trip` and `-trip` to the list
 
@@ -42,7 +63,7 @@ Open **Settings → Profiles → Shell**:
 
 Open **Settings → Profiles → General**:
 
-- **Command:** choose **Custom Shell**, set to `/usr/local/bin/trip enter`
+- **Command:** choose **Custom Shell**, set to `~/.local/bin/trip enter`
 
 Open **Settings → Profiles → Session**:
 
@@ -290,7 +311,7 @@ Wrapped sessions are normal trip sessions. You can `trip attach`, `trip screen`,
 
 ### Shell integration
 
-`./install.sh` adds a shell hook to `.zshrc` and `.bashrc` that runs `trip env` before each command. This keeps terminal environment variables (`TERM_PROGRAM`, `COLORTERM`, etc.) in sync when you switch between different terminal apps while attached to the same session. It also cleans up agent and TUI markers when the user returns to a shell prompt.
+The installer adds a shell hook to `.zshrc` and `.bashrc` that runs `trip env` before each command, when `trip` is on the shell's `PATH`. This keeps terminal environment variables (`TERM_PROGRAM`, `COLORTERM`, etc.) in sync when you switch between different terminal apps while attached to the same session. It also cleans up agent and TUI markers when the user returns to a shell prompt.
 
 ## How it works
 
