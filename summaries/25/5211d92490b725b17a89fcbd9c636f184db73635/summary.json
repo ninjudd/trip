@@ -1,0 +1,144 @@
+{
+ "version": 1,
+ "name": "Fresh shell after logout",
+ "project": "",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 25,
+  "title": "Give `trip enter` a fresh shell after you log out, not the dead session",
+  "head": "5211d92490b725b17a89fcbd9c636f184db73635",
+  "headRef": "fix-dead-session-after-shell-exit",
+  "base": "e3d8157183d61355cb727db645b46000c7690ba5",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "<code>trip</code> runs a daemon that keeps terminal sessions alive while clients attach to and detach from them. When a session's command exits, such as a shell you leave with Ctrl-D, the daemon keeps the session as an <b>exited session</b> (the code calls it a corpse) until the next <code>SIGCHLD</code> sweep removes it, so that <code>trip attach</code> can still show what the command left on screen.",
+   "That gap broke <code>trip enter &lt;name&gt;</code>. It attaches first and creates the session only when the attach reports the name missing, so right after a logout it attached to the exited session: you saw the old screen, keystrokes went nowhere, and the client never returned. A remote <code>mosh host -- trip enter &lt;name&gt;</code> hung instead of giving you a new shell.",
+   "This change gives the <code>Attach</code> request a <code>live</code> flag. <code>enter</code> sets it, and the daemon then removes an exited session that no client holds before it looks the name up, so <code>enter</code> falls through to creating a fresh session. Every other attach passes <code>live: false</code> and still shows an exited session. <code>trip send</code> to an exited session now fails instead of reporting success.",
+   "The review found one gap: from inside another session, <code>trip enter &lt;name&gt;</code> uses a different request, <code>SwitchSession</code>, which still moves you onto the exited session."
+  ],
+  "cards": [
+   {
+    "id": "terms",
+    "title": "Terms",
+    "html": "<ul class=\"tight\"><li><b>Exited session (corpse)</b>: a session whose command has ended but which the daemon still holds in its map, showing the command's final screen.</li><li><b>Unheld</b>: no client is attached to the session, so <code>client_count() == 0</code>.</li><li><b>SIGCHLD sweep</b>: the daemon's <code>reap_children</code> loop, which marks a session exited and removes exited sessions no client holds. It runs only when some child of the daemon exits.</li><li><b><code>live</code></b>: the new <code>Attach</code> field. When true, an unheld exited session counts as missing.</li></ul>"
+   },
+   {
+    "id": "compat",
+    "title": "Compatibility",
+    "html": "<ul class=\"tight\"><li><code>live</code> is <code>#[serde(default)]</code>, so an older client's request reads as <code>live: false</code>.</li><li><code>Request</code> does not deny unknown fields, so an older daemon ignores <code>live</code> and keeps today's behavior.</li><li>The running daemon needs a restart on the new binary for the fix to apply.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "protocol",
+   "title": "The live flag on the wire",
+   "kicker": "A new field on the Attach request says the caller needs a running session.",
+   "intro": [
+    "The client and daemon talk in JSON control frames whose shapes live in <code>src/daemon/protocol.rs</code>. The <code>Attach</code> request gains <code>live</code>, a boolean that defaults to false, so the wire format stays readable by both older and newer binaries."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "src/daemon/protocol.rs",
+     "note": "Adds <code>live: bool</code> with <code>#[serde(default)]</code> to <code>Request::Attach</code>."
+    }
+   ]
+  },
+  {
+   "id": "daemon",
+   "title": "The daemon clears an unheld exited session",
+   "kicker": "Attach with live removes the corpse first; send refuses an exited session.",
+   "intro": [
+    "The daemon now has one helper, <code>remove_unheld_corpse</code>, that drops a named session when its command has exited and no client holds it. <code>CreateSession</code> already did this inline, and now calls the helper. The <code>Attach</code> handler calls it when <code>live</code> is set, before the loop that looks the name up, so the lookup reports <code>session '&lt;name&gt;' not found</code> and the client creates the session.",
+    "<code>SendInput</code> now answers an exited session with <code>session '&lt;name&gt;' has exited (&lt;code&gt;)</code>, because nothing reads that session's input any more."
+   ],
+   "checks": [
+    {
+     "kind": "context",
+     "text": "A session held by a client, such as one a <code>trip attach</code> viewer is watching, is never cleared. Only a session that nobody is looking at is replaced."
+    }
+   ],
+   "files": [
+    {
+     "path": "src/daemon/mod.rs",
+     "note": "Extracts <code>remove_unheld_corpse</code>, calls it from <code>Attach</code> when <code>live</code> is set, and makes <code>SendInput</code> refuse an exited session.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "<code>SendInput</code> has one sender, <code>trip send</code>, so the new error reaches no other caller. Checked by searching every use of <code>Request::SendInput</code>.",
+       "line": 480
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "client",
+   "title": "Callers choose live or not",
+   "kicker": "Only enter's first attach asks for a live session.",
+   "intro": [
+    "<code>attach::attach</code> takes a new <code>live</code> argument, and every caller passes it explicitly. <code>enter</code> passes <code>true</code> on its first attach, then <code>false</code> on the attach after it creates the session, so a command that exits at once is still shown rather than cleared and reported missing. <code>trip attach</code>, <code>trip new</code>, and <code>trip wrap</code> pass <code>false</code>, so deliberate viewing of an exited session is unchanged."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "src/client/mod.rs",
+     "note": "<code>enter</code> asks for a live session on its first attach and shows whatever it created on the second.",
+     "checks": [
+      {
+       "kind": "context",
+       "text": "When <code>TRIP_SESSION</code> is set, <code>enter</code> returns earlier through <code>SwitchSession</code>, so this live attach runs only from a terminal that is not already in a session.",
+       "line": 484
+      }
+     ]
+    },
+    {
+     "path": "src/client/attach.rs",
+     "note": "<code>attach</code> takes <code>live</code> and puts it on the request."
+    },
+    {
+     "path": "src/client/wrap.rs",
+     "note": "<code>trip wrap</code> builds its own <code>Attach</code> request and passes <code>live: false</code>."
+    },
+    {
+     "path": "src/main.rs",
+     "note": "<code>trip attach</code> passes <code>live: false</code>."
+    }
+   ]
+  },
+  {
+   "id": "docs-tests",
+   "title": "Documentation and the end-to-end check",
+   "kicker": "The README describes the new behavior, and a new script reproduces the logout case.",
+   "intro": [
+    "The README now says that <code>trip enter &lt;name&gt;</code> treats an exited session as missing, that <code>trip attach</code> shows an exited session's last screen, and that <code>trip send</code> fails on one. <code>tests/exited_session_e2e.py</code> runs its own daemon in a temporary <code>HOME</code>, logs out of a <code>/bin/sh</code> session, enters it again with no <code>trip ls</code> in between, and checks that the new shell is live."
+   ],
+   "checks": [
+    {
+     "kind": "verify",
+     "text": "At this head, <code>cargo fmt --check</code>, <code>cargo clippy --all-targets</code>, <code>cargo test</code> (132 passed), <code>tests/switcher_e2e.py</code>, and <code>tests/screen_panic_e2e.py</code> pass, and <code>tests/exited_session_e2e.py</code> passed three runs in a row."
+    }
+   ],
+   "files": [
+    {
+     "path": "README.md",
+     "note": "Documents the new behavior of <code>enter</code>, <code>attach</code>, and <code>send</code> on an exited session.",
+     "checks": [
+      {
+       "kind": "flag",
+       "text": "Open finding: inside a session, <code>trip enter &lt;name&gt;</code> sends <code>SwitchSession</code>, whose handler spawns only when the name is absent, so it still moves you onto an unheld exited session, contrary to this line. The suggested fix is to call <code>remove_unheld_corpse(&amp;mut sessions, &amp;to)</code> before the <code>contains_key</code> check in that handler.",
+       "line": 165
+      }
+     ]
+    },
+    {
+     "path": "tests/exited_session_e2e.py",
+     "note": "New end-to-end check for entering a session again after logging out of it."
+    }
+   ]
+  }
+ ]
+}
