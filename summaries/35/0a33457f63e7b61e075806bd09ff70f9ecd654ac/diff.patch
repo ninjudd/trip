@@ -1,0 +1,107 @@
+diff --git a/README.md b/README.md
+index 039fa9e..0c80684 100644
+--- a/README.md
++++ b/README.md
+@@ -89,6 +89,17 @@ Open **Settings → Profiles → Session**:
+ 
+ - **After a session ends:** Close
+ 
++### Ghostty
++
++Add these lines to your Ghostty config file, such as `~/.config/ghostty/config.ghostty`:
++
++```
++command = ~/.local/bin/trip enter
++confirm-close-surface = false
++```
++
++Ghostty runs a `command` that has arguments through `/bin/sh -c`, so `~` expands. A tab closes when trip exits, and closing a tab only detaches, so `confirm-close-surface = false` stops Ghostty from asking first. Reload the config with **Cmd+Shift+,** on macOS or **Ctrl+Shift+,** on Linux, and new tabs start in trip.
++
+ This way every tab is a trip session. Close the tab to detach, open a new tab to reattach.
+ 
+ ## Quick start
+@@ -154,6 +165,40 @@ TRIP_DETACH_KEY=none    # no detach key; close the terminal to detach
+ Whatever key you pick stops reaching programs inside the session — the
+ default Ctrl-\ sacrifices only SIGQUIT, which almost nothing wants.
+ 
++## Remote sessions with mosh
++
++[mosh](https://mosh.org) keeps a connection to another machine alive while
++your laptop sleeps or changes networks, and trip on that machine keeps the
++session alive when you quit mosh altogether. Install trip on the remote
++machine, then run it as mosh's command:
++
++```
++mosh myserver -- sh -c 'TRIP_DETACH_KEY="^]" exec ~/.local/bin/trip enter main'
++```
++
++This enters the session `main` on `myserver`, and creates it if it doesn't
++exist. Run the same command again to reattach. mosh runs its command directly
++rather than through a shell, so `sh -c` is what expands `~`.
++
++If the remote machine is a Mac with Homebrew, add
++`--server=/opt/homebrew/bin/mosh-server` to the command. mosh starts its
++server through an SSH login that doesn't have Homebrew on its `PATH`, so
++without the full path it fails with `mosh-server: command not found`.
++
++When the terminal you run mosh from is itself a trip session, that local trip
++catches Ctrl-\ before mosh sees it. So the command gives the remote trip a
++different key: Ctrl-\ leaves the local session, and **Ctrl-]** leaves the
++remote one. Ghostty, iTerm2, Terminal.app, and the common Linux terminals all
++pass Ctrl-] through. Ctrl+- would be a poor choice here, because Ghostty on
++Linux, GNOME Terminal, and others take it to shrink the font. Programs in the
++remote session no longer see Ctrl-], such as Vim's jump to tag.
++
++mosh doesn't pass `COLORTERM` to the remote machine, so programs there fall
++back to 256 colors. To keep 24-bit color, set it when mosh starts its server,
++with `--server="COLORTERM=$COLORTERM mosh-server"`, or
++`--server="COLORTERM=$COLORTERM /opt/homebrew/bin/mosh-server"` on a Homebrew
++Mac.
++
+ ## Titles
+ 
+ Every title a session emits is wrapped with the workspace, so it reads
+diff --git a/site/index.html b/site/index.html
+index 26a2d75..c15e01b 100644
+--- a/site/index.html
++++ b/site/index.html
+@@ -161,6 +161,16 @@
+   dl.setup dt { font-weight: 650; margin-top: 18px; }
+   dl.setup dd { margin: 4px 0 0; color: var(--muted); }
+   dl.setup dd code { color: var(--fg); }
++  pre.snippet {
++    margin: 10px 0 0;
++    padding: 12px 16px;
++    overflow-x: auto;
++    background: var(--term-bg);
++    color: var(--term-fg);
++    border-radius: 8px;
++    font-size: 14px;
++    line-height: 1.6;
++  }
+ 
+   footer {
+     margin-top: 56px;
+@@ -239,11 +249,22 @@ <h2 id="why">Why trip</h2>
+     <h2 id="setup">Make every tab a trip session</h2>
+     <p>Set your terminal to start <code>trip enter</code> in each new tab. Closing a tab then detaches it, and a new tab reattaches.</p>
+     <dl class="setup">
++      <dt>Ghostty</dt>
++      <dd>Add these lines to your Ghostty config file, such as <code>~/.config/ghostty/config.ghostty</code>, then reload it with <strong>Cmd+Shift+,</strong> on macOS or <strong>Ctrl+Shift+,</strong> on Linux. Closing a tab only detaches, so there's no need for Ghostty to ask first.
++<pre class="snippet">command = ~/.local/bin/trip enter
++confirm-close-surface = false</pre></dd>
+       <dt>macOS Terminal</dt>
+       <dd>In <strong>Settings → Profiles → Shell</strong>, set <strong>Run command</strong> to <code>~/.local/bin/trip enter</code>, and <strong>When the shell exits</strong> to <strong>Close if the shell exited cleanly</strong>.</dd>
+       <dt>iTerm2</dt>
+       <dd>In <strong>Settings → Profiles → General</strong>, set <strong>Command</strong> to a custom shell, <code>~/.local/bin/trip enter</code>. In <strong>Session</strong>, set <strong>After a session ends</strong> to <strong>Close</strong>.</dd>
+     </dl>
++  </section>
++
++  <section aria-labelledby="remote">
++    <h2 id="remote">Remote sessions with mosh</h2>
++    <p><a href="https://mosh.org">mosh</a> keeps a connection to another machine alive while your laptop sleeps or changes networks. trip on that machine keeps the session alive when you quit mosh altogether. Install trip there, then run it as mosh's command:</p>
++<pre class="snippet">mosh myserver -- sh -c 'TRIP_DETACH_KEY="^]" exec ~/.local/bin/trip enter main'</pre>
++    <p style="margin-top:14px">Run the same command again to reattach. If your local terminal is a trip session too, it keeps <kbd>Ctrl-\</kbd>, so the remote trip detaches on <kbd>Ctrl-]</kbd> instead.</p>
+     <p style="margin-top:20px">The <a href="https://github.com/ninjudd/trip#readme">README</a> covers every command, the detach key, window titles, and how the daemon works.</p>
+   </section>
+ </main>
