@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>trip — persistent terminal sessions</title>
+<meta name="description" content="trip is a tiny daemon that keeps your terminal sessions alive when you close a window. Close the terminal to detach; open a new one to pick up where you left off.">
+<meta property="og:title" content="trip — persistent terminal sessions">
+<meta property="og:description" content="A tiny daemon that keeps your terminal sessions alive when you close a window. No panes, no splits, no keybindings to memorize.">
+<meta property="og:url" content="https://trip.here/">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#0e0f12" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f6f4ef" media="(prefers-color-scheme: light)">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg: #f6f4ef;
+    --fg: #1c1d21;
+    --muted: #5d606a;
+    --faint: #d9d5cc;
+    --panel: #ffffff;
+    --term-bg: #15161a;
+    --term-fg: #e6e4de;
+    --term-muted: #8a8d96;
+    --accent: #c2410c;
+    --accent-term: #fb923c;
+    --ok: #4ade80;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e0f12;
+      --fg: #e8e6e1;
+      --muted: #9a9da6;
+      --faint: #26282e;
+      --panel: #16171b;
+      --term-bg: #08090b;
+      --accent: #fb923c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 17px/1.6 var(--sans);
+  }
+  main, footer { max-width: 760px; margin: 0 auto; padding: 0 20px; }
+  a { color: inherit; text-decoration-color: var(--accent); text-underline-offset: 3px; }
+  a:hover { color: var(--accent); }
+  code, pre, kbd { font-family: var(--mono); font-size: 0.88em; }
+  :not(pre) > code, kbd {
+    background: var(--panel);
+    border: 1px solid var(--faint);
+    border-radius: 5px;
+    padding: 0.08em 0.35em;
+  }
+
+  header.hero { padding: 72px 0 24px; }
+  .wordmark {
+    font: 700 clamp(56px, 12vw, 92px)/1 var(--mono);
+    letter-spacing: -0.04em;
+    margin: 0;
+  }
+  .wordmark .cursor {
+    display: inline-block;
+    width: 0.5em;
+    height: 0.8em;
+    margin-left: 0.06em;
+    background: var(--accent);
+    vertical-align: -0.04em;
+    animation: blink 1.1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .wordmark .cursor { animation: none; } }
+  .tagline { font-size: clamp(22px, 4vw, 28px); line-height: 1.3; margin: 20px 0 12px; font-weight: 600; letter-spacing: -0.01em; }
+  .lede { color: var(--muted); margin: 0; max-width: 600px; }
+
+  .install {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 32px 0 10px;
+    background: var(--term-bg);
+    color: var(--term-fg);
+    border-radius: 10px;
+    padding: 6px 6px 6px 18px;
+  }
+  .install pre {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    overflow-x: auto;
+    padding: 10px 0;
+    font-size: 15px;
+    white-space: pre;
+  }
+  .install .prompt { color: var(--term-muted); user-select: none; }
+  button.copy {
+    flex: none;
+    font: 600 13px var(--sans);
+    color: var(--term-fg);
+    background: #2a2c33;
+    border: 0;
+    border-radius: 6px;
+    padding: 9px 14px;
+    cursor: pointer;
+    min-width: 72px;
+  }
+  button.copy:hover { background: #363941; }
+  button.copy:focus-visible { outline: 2px solid var(--accent-term); outline-offset: 2px; }
+  .install-note { color: var(--muted); font-size: 14px; margin: 0; }
+
+  section { padding: 40px 0 8px; }
+  h2 { font-size: 22px; letter-spacing: -0.01em; margin: 0 0 14px; }
+  h3 { font-size: 17px; margin: 24px 0 6px; }
+  p { margin: 0 0 14px; }
+
+  .terminal {
+    background: var(--term-bg);
+    color: var(--term-fg);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 1px 0 var(--faint), 0 18px 40px -24px rgba(0, 0, 0, 0.5);
+  }
+  .terminal .bar {
+    display: flex;
+    gap: 7px;
+    padding: 12px 14px;
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .terminal .bar span { width: 11px; height: 11px; border-radius: 50%; background: #3a3c43; }
+  .terminal pre {
+    margin: 0;
+    padding: 16px 18px 20px;
+    overflow-x: auto;
+    font-size: 14px;
+    line-height: 1.65;
+  }
+  .t-muted { color: var(--term-muted); }
+  .t-accent { color: var(--accent-term); }
+  .t-ok { color: var(--ok); }
+  .t-sel { color: var(--term-fg); background: #2a2c33; }
+
+  ul.points { list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; }
+  ul.points li { padding-left: 22px; position: relative; }
+  ul.points li::before {
+    content: "›";
+    position: absolute;
+    left: 2px;
+    color: var(--accent);
+    font: 700 18px/1.45 var(--mono);
+  }
+  ul.points strong { font-weight: 650; }
+
+  .not { color: var(--muted); }
+
+  dl.setup { margin: 0; }
+  dl.setup dt { font-weight: 650; margin-top: 18px; }
+  dl.setup dd { margin: 4px 0 0; color: var(--muted); }
+  dl.setup dd code { color: var(--fg); }
+
+  footer {
+    margin-top: 56px;
+    padding-top: 22px;
+    padding-bottom: 48px;
+    border-top: 1px solid var(--faint);
+    color: var(--muted);
+    font-size: 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 22px;
+  }
+  footer .spacer { flex: 1; }
+</style>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <h1 class="wordmark">trip<span class="cursor" aria-hidden="true"></span></h1>
+    <p class="tagline">Persistent terminal sessions.</p>
+    <p class="lede">trip is a tiny daemon that keeps your terminal sessions alive when you close a window. Your terminal becomes a lightweight client: close it to detach, open a new one to pick up where you left off. Think tmux, but radically simpler — no panes, no splits, no keybindings to memorize.</p>
+
+    <div class="install">
+      <pre id="install-cmd"><span class="prompt">$ </span>curl -fsSL https://trip.here/install.sh | bash</pre>
+      <button class="copy" type="button" data-copy="curl -fsSL https://trip.here/install.sh | bash" aria-label="Copy the install command">Copy</button>
+    </div>
+    <p class="install-note">Builds the newest release from source into <code>~/.local</code>, without <code>sudo</code>. Needs Rust's <code>cargo</code>, which <a href="https://rustup.rs">rustup</a> installs. Runs on macOS and Linux.</p>
+  </header>
+
+  <section aria-labelledby="how">
+    <h2 id="how">Close the window. Keep the session.</h2>
+    <p>Run <code>trip enter</code> in a project and press Enter. The chooser starts on that workspace's session, and creates it if it doesn't exist yet. Start a build, an editor, or an agent, then close the tab. Later, open a new one, run <code>trip enter</code> in the same project, and press Enter again.</p>
+    <div class="terminal" role="img" aria-label="A terminal transcript: in a project, trip enter opens the session chooser on a new session for that workspace, and Enter creates it; cargo test starts; the window closes mid-run; in a new window, trip enter in the same project starts on the running session, and Enter brings back its screen with the tests finished.">
+      <div class="bar" aria-hidden="true"><span></span><span></span><span></span></div>
+<pre><span class="t-muted">~/acme/webapp $</span> trip enter
+sessions:  <span class="t-muted">↑/↓ + enter · 0-9 · q cancels</span>
+&gt; <span class="t-sel">0) acme/webapp        (new session)</span>
+  1) notes        nvim
+
+<span class="t-accent"># enter creates the session and attaches</span>
+<span class="t-muted">~/acme/webapp $</span> cargo test
+<span class="t-muted">   Compiling webapp v0.4.1</span>
+<span class="t-muted">     Running unittests src/lib.rs</span>
+
+<span class="t-accent"># close the window mid-run, then open a new one</span>
+<span class="t-muted">~ $</span> cd acme/webapp
+<span class="t-muted">~/acme/webapp $</span> trip enter
+sessions:  <span class="t-muted">↑/↓ + enter · 0-9 · q cancels</span>
+  0) acme/webapp.1         (new session)
+&gt; <span class="t-sel">1) acme/webapp    cargo</span>
+  2) notes          nvim
+
+<span class="t-accent"># enter reattaches, and trip redraws the session's screen</span>
+<span class="t-muted">~/acme/webapp $</span> cargo test
+<span class="t-muted">   Compiling webapp v0.4.1</span>
+<span class="t-muted">     Running unittests src/lib.rs</span>
+<span class="t-muted">test result:</span> <span class="t-ok">ok</span><span class="t-muted">. 214 passed; 0 failed; finished in 48.20s</span>
+<span class="t-muted">~/acme/webapp $</span> <span class="t-accent">▍</span></pre>
+    </div>
+  </section>
+
+  <section aria-labelledby="why">
+    <h2 id="why">Why trip</h2>
+    <ul class="points">
+      <li><strong>Sessions survive window closes.</strong> The daemon owns each session's terminal, so closing a tab, quitting your terminal app, or switching to a different one leaves the processes inside running.</li>
+      <li><strong>Reattaching shows a clean screen.</strong> The daemon keeps a virtual terminal for every session and redraws its current screen when you attach, rather than replaying raw scrollback.</li>
+      <li><strong>One key to switch.</strong> Press <kbd>Ctrl-\</kbd> to open the session chooser and move this terminal to another session. Press it again to detach.</li>
+      <li><strong>Sessions you can read from outside.</strong> <code>trip screen</code> shows a session's screen, <code>trip log</code> shows what happened in it over time, and <code>trip send</code> types into it, all without attaching.</li>
+      <li><strong>Built for agents.</strong> Run <code>trip on</code> inside Claude Code or Codex, and <code>trip log</code> shows structured turns and tool calls instead of escape sequences. <code>trip wrap</code> drives any command over a JSONL protocol.</li>
+      <li><strong>Upgrades leave your sessions alone.</strong> <code>trip upgrade</code> installs the newest release without restarting the daemon, which moves to the new version when its last session ends.</li>
+    </ul>
+    <p class="not" style="margin-top:20px">trip isn't a multiplexer, a terminal emulator, or a tmux clone. Your terminal does the rendering, the windows, and the tabs; trip just keeps what runs in them alive.</p>
+  </section>
+
+  <section aria-labelledby="setup">
+    <h2 id="setup">Make every tab a trip session</h2>
+    <p>Set your terminal to start <code>trip enter</code> in each new tab. Closing a tab then detaches it, and a new tab reattaches.</p>
+    <dl class="setup">
+      <dt>macOS Terminal</dt>
+      <dd>In <strong>Settings → Profiles → Shell</strong>, set <strong>Run command</strong> to <code>~/.local/bin/trip enter</code>, and <strong>When the shell exits</strong> to <strong>Close if the shell exited cleanly</strong>.</dd>
+      <dt>iTerm2</dt>
+      <dd>In <strong>Settings → Profiles → General</strong>, set <strong>Command</strong> to a custom shell, <code>~/.local/bin/trip enter</code>. In <strong>Session</strong>, set <strong>After a session ends</strong> to <strong>Close</strong>.</dd>
+    </dl>
+    <p style="margin-top:20px">The <a href="https://github.com/ninjudd/trip#readme">README</a> covers every command, the detach key, window titles, and how the daemon works.</p>
+  </section>
+</main>
+<footer>
+  <a href="https://github.com/ninjudd/trip">GitHub</a>
+  <a href="https://github.com/ninjudd/trip/releases">Releases</a>
+  <a href="https://github.com/ninjudd/trip#readme">Documentation</a>
+  <span class="spacer"></span>
+  <span>MIT licensed</span>
+</footer>
+<script>
+  document.querySelectorAll("button.copy").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var text = button.getAttribute("data-copy");
+      var done = function () {
+        button.textContent = "Copied";
+        setTimeout(function () { button.textContent = "Copy"; }, 1600);
+      };
+      // Without clipboard access, select the command so it is ready to copy by hand.
+      var select = function () {
+        var target = document.getElementById("install-cmd");
+        var range = document.createRange();
+        range.selectNodeContents(target);
+        var prompt = target.querySelector(".prompt");
+        if (prompt) range.setStartAfter(prompt);
+        var selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, select);
+      } else {
+        select();
+      }
+    });
+  });
+</script>
+</body>
+</html>
