@@ -364,6 +364,18 @@ Trip is infrastructure. It should feel tiny, durable, and boring in a good way.
 
 The core primitive is a **persistent PTY-backed session**. Everything else is optional.
 
+## Releasing
+
+A release is a version-only pull request that a workflow opens for you. Start it from `main`, choosing `patch`, `minor`, or `major`:
+
+```
+gh workflow run release.yml -f bump=minor
+```
+
+The Release workflow raises the version in `Cargo.toml` and `Cargo.lock` on a `release/vX.Y.Z` branch, refuses the commit if it changes anything else, opens the pull request, and runs the Check workflow on it. Merging that pull request is the decision to ship: the workflow then tags `vX.Y.Z` on the merge commit, creates the GitHub release with generated notes, and moves `v0`, the tag the installer serves, to it last. If that publish job fails partway, re-run it, and it does only the steps still missing. A merge that changes `Cargo.toml` without changing the version releases nothing.
+
+The workflow opens the pull request with its own token, which needs **Allow GitHub Actions to create and approve pull requests** turned on under the repository's **Settings > Actions > General**. `.github/scripts/release.py` does the work, and `python3 tests/release_test.py` tests it.
+
 ## Requirements
 
 - macOS or Linux
