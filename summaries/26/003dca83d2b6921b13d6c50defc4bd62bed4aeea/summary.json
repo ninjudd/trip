@@ -1,0 +1,94 @@
+{
+ "version": 1,
+ "name": "Releases plan",
+ "project": "releases",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 26,
+  "title": "Plan releases, a versioned installer, and trip upgrade",
+  "head": "003dca83d2b6921b13d6c50defc4bd62bed4aeea",
+  "headRef": "spec/releases",
+  "base": "47d6d3abc65e262cdea0e7c7bae549b822efa1fa",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "<code>trip</code> keeps terminal sessions alive in a background daemon that owns each session's terminal, so closing a window doesn't end the session. Today it has no releases: <code>install.sh</code> builds whatever <code>main</code> holds and copies it to <code>/usr/local/bin/trip</code> with <code>sudo</code>, <code>trip</code> has no <code>--version</code>, and nothing upgrades a machine or tells you when the running daemon is older than the client.",
+   "This pull request adds one file, the Projector plan <code>docs/projects/releases/readme.md</code>, at <code>status: ready</code> and <code>priority: now</code>. It changes no code. The plan describes four pieces of work that later pull requests build:",
+   "<ol><li><b>A release flow copied from Projector.</b> A hand-started workflow opens a pull request that changes only the version. Merging it tags <code>vX.Y.Z</code>, creates the GitHub release, and moves the <code>v0</code> tag last.</li><li><b>An installer that builds from source.</b> <code>install.sh</code> downloads a tag's source, builds it with <code>cargo</code> into a directory per version under <code>~/.local/share/trip/</code>, and points <code>~/.local/bin/trip</code> at it only after the build succeeds. It never runs <code>sudo</code>, and it warns when <code>~/.local/bin</code> is not on <code>PATH</code>. Only a build the release installer makes reports a bare version; every other build reports <code>&lt;version&gt;-dev</code>.</li><li><b><code>trip upgrade</code>.</b> It runs the newest release's installer, checks the installed version, and tells you when the daemon still runs an older version, without restarting it.</li><li><b>A <code>check.yml</code> workflow</b> that builds, lints, and tests every pull request, which the repository lacks today.</li></ol>",
+   "The plan settles three decisions: releases ship no prebuilt binaries, an upgrade never restarts the daemon because that would end every session, and <code>trip</code> ships under the MIT license."
+  ],
+  "cards": [
+   {
+    "id": "review",
+    "title": "Where review stands",
+    "html": "<ul class=\"tight\"><li>The first Projector review, of <code>c033981</code>, requested changes with two findings on § 2.3, the installer: the <code>--dev</code> install contradicted the installer's steps and couldn't report a dev build, and nothing checked that <code>~/.local/bin</code> is on <code>PATH</code>.</li><li><code>28118db</code> fixed both and took the three suggestions. Both finding threads are resolved.</li><li><code>003dca8</code> took the last suggestion: the § 2.2 layout table now names the linked mode's target. The review of this head is clean, with nothing left to suggest.</li><li>All four open questions in § 7 are deferred, so they don't block the <code>ready</code> status.</li></ul>"
+   },
+   {
+    "id": "terms",
+    "title": "Terms",
+    "html": "<ul class=\"tight\"><li><b>Daemon</b>: the background <code>trip</code> process that owns every session's terminal. Restarting it ends every session.</li><li><b><code>v0</code></b>: a tag that always names the newest <code>0.x</code> release, so the install command can stay the same across releases.</li><li><b>Checkout install</b>: an install from a clone with <code>./install.sh</code>, which follows the clone rather than releases.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "plan",
+   "title": "The releases plan",
+   "kicker": "How trip is released, installed, and upgraded",
+   "intro": [
+    "The plan reads in order: the problem (§ 1), the release flow and installed layout (§ 2.1 to § 2.3), <code>trip upgrade</code> and how the client learns the daemon's version (§ 2.4 and § 2.5), the files each piece touches (§ 2.6), the reasons (§ 3), and acceptance criteria, cost, rollout, and open questions (§ 4 to § 7).",
+    "Hold one constraint in mind throughout: the daemon owns every session's terminal, so nothing in the plan restarts it. An upgrade installs the new binary beside the old one, and the daemon moves to it only when its last session ends or you run <code>trip shutdown --yes</code>."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "docs/projects/releases/readme.md",
+     "collapsed": false,
+     "note": "The new plan for releases, the versioned installer, and <code>trip upgrade</code>.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "§ 1 and § 8 match the repository at the base: <code>install.sh</code> copies to <code>/usr/local/bin/trip</code> with <code>sudo</code> by a rename, <code>Cargo.toml</code> says <code>0.1.0</code>, the README's terminal setup names <code>/usr/local/bin/trip enter</code>, the client starts the daemon from <code>current_exe()</code>, and the daemon exits when its last session ends. I read each file at the head."
+      },
+      {
+       "kind": "verify",
+       "text": "§ 2.1 now matches <code>main</code>'s ruleset: a pull request with one approving review, last-push approval, resolved threads, and linear history, but no status check. The repository's Actions setting doesn't yet let workflows create pull requests, which § 2.1 and § 6 say to turn on. I read both through the GitHub API.",
+       "line": 36
+      },
+      {
+       "kind": "verify",
+       "text": "§ 2.2's table now says that after <code>./install.sh --dev</code>, <code>~/.local/bin/trip</code> links to the checkout's <code>target/debug/trip</code> instead of <code>current</code>. That matches the linked mode in § 2.3. I read the two sections side by side.",
+       "line": 44
+      },
+      {
+       "kind": "verify",
+       "text": "§ 2.3, build identity: only the release mode sets <code>TRIP_RELEASE=1</code>, so a checkout build, a <code>cargo build</code> after <code>--dev</code>, and any other build report <code>&lt;version&gt;-dev</code>. § 2.4, § 2.5, § 2.6, and two new rows in § 4 agree with it. I read each section against § 2.3.",
+       "line": 59
+      },
+      {
+       "kind": "context",
+       "text": "§ 2.3, the linked mode: <code>--dev</code> now skips the temporary build and the version directory, and leaves <code>~/.local/share/trip/</code> alone, so a later install switches back to <code>current</code>.",
+       "line": 67
+      },
+      {
+       "kind": "verify",
+       "text": "§ 2.3, <code>PATH</code>: the hook now runs <code>trip env</code> only when <code>command -v trip</code> finds it, and step 5 warns when <code>~/.local/bin</code> is off <code>PATH</code>, as Projector's installer warns <code>not-on-path</code>. I compared it with Projector's <code>install.sh</code>.",
+       "line": 72
+      },
+      {
+       "kind": "verify",
+       "text": "§ 2.4: <code>trip upgrade</code> refuses any install whose version ends in <code>-dev</code>, so it can't replace a <code>--dev</code> link with a release.",
+       "line": 84
+      },
+      {
+       "kind": "context",
+       "text": "§ 7, open questions: all four are deferred, which is what lets the plan claim <code>ready</code>.",
+       "line": 158
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
