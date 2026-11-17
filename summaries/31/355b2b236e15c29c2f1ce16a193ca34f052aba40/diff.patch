@@ -1,0 +1,1701 @@
+diff --git a/README.md b/README.md
+index ce100ec..e5d186b 100644
+--- a/README.md
++++ b/README.md
+@@ -47,6 +47,26 @@ For development, `--dev` links `~/.local/bin/trip` to the checkout's debug build
+ ./install.sh --dev
+ ```
+ 
++### Upgrading
++
++Upgrade a release install to the newest release with:
++
++```
++trip upgrade
++```
++
++It asks GitHub for the newest release, through `gh` when it is signed in and anonymously otherwise, downloads that release's `install.sh`, and runs it for that release's tag. It then runs the new `~/.local/bin/trip --version`, and if that does not report the release's version, it prints both and exits 1. It upgrades from the repository the install came from, which `~/.local/share/trip/release.json` records, so a fork upgrades from the fork. To see whether there is anything to upgrade to, without installing anything, run `trip upgrade --check`.
++
++A checkout install, whose version ends in `-dev`, follows its checkout rather than releases, so `trip upgrade` refuses it and points you to `./install.sh`.
++
++The upgrade never restarts the daemon, because the daemon holds every session's terminal, and restarting it would end them. The daemon keeps running the version it started with until its last session ends or you run `trip shutdown --yes`. Until then, `trip upgrade`, `trip ls`, and the end of `trip enter` and `trip attach` print a line that names both versions and how many sessions the daemon holds:
++
++```
++the daemon still runs 0.2.0 with 4 sessions; it moves to 0.3.0 when its last session ends or you run trip shutdown --yes
++```
++
++A request that the older daemon cannot understand fails with the same line. A daemon from an install made before releases existed is named as "a trip from before releases".
++
+ ## Terminal setup
+ 
+ For the best experience, configure your terminal to run trip automatically on new tabs. The commands below name `~/.local/bin/trip`, where the installer puts it. If your terminal does not expand `~` there, write your home directory out, as in `/Users/you/.local/bin/trip enter`.
+@@ -201,7 +221,9 @@ whatever it said before rather than keeping the session's last title.
+ 
+ **`trip kill <name>`** — Kill a session.
+ 
+-**`trip shutdown`** — Stop the daemon and kill all sessions.
++**`trip shutdown`** — Stop the daemon and kill all sessions. The next trip command starts a daemon of the installed version.
++
++**`trip upgrade`** — Install the newest release, leaving the daemon and its sessions running. `--check` prints the installed version and the newest release, and installs nothing. See [Upgrading](#upgrading).
+ 
+ ### Observation
+ 
+diff --git a/docs/projects/releases/readme.md b/docs/projects/releases/readme.md
+index 9d0880f..f6cd3ff 100644
+--- a/docs/projects/releases/readme.md
++++ b/docs/projects/releases/readme.md
+@@ -1,5 +1,5 @@
+ ---
+-status: in-progress
++status: completed
+ priority: now
+ ---
+ 
+@@ -187,3 +187,35 @@ Steps 1 to 4 can ship as one stack. The first release waits for all of them, so
+ - **`check-commit` checks what the release commit changes, not only which files.** It refuses a commit unless it changes exactly `Cargo.toml` and `Cargo.lock`, raises the version, and leaves both files as they were apart from `[package]`'s version and `trip`'s entry in `Cargo.lock`. Projector's propose job compares only the list of changed files, in shell. Here the check is a `release.py` subcommand, so `tests/release_test.py` covers it.
+ - **The version is bumped as text, and checked as TOML.** `release.py` reads both versions with `tomllib` and refuses files that disagree or a `Cargo.lock` without exactly one `trip` package. It rewrites only the `version` line of Cargo.toml's `[package]` table and the one that follows `name = "trip"` in `Cargo.lock`, so every other byte, including another package at the same version, stays as it was. `--locked` builds in the Check workflow fail on a `Cargo.lock` left at the old version, which the release branch's dispatched check would show.
+ - **`check.yml` runs `python3 tests/release_test.py`** as a step of its own after `cargo fmt --check`, rather than naming it `*_e2e.py`: it tests a script, needs no `trip` build, and runs in about 8 seconds. It needs Python 3.11 or newer for `tomllib`, which the `macos-latest` and `ubuntu-latest` runners have. The release jobs run on `ubuntu-latest`, since they build nothing.
++- **The daemon writes its record before it opens its socket**, so a client that reaches a daemon never finds the record missing and takes it for one from before releases. The record is one line, `{"version":"0.2.0","pid":42}`, written to `daemon.json.<pid>` and renamed over `daemon.json`, and it carries the daemon's full version, `-dev` included, so a checkout's daemon is never called older. Every path on which the daemon exits removes the socket and then the record, and removes the record only while it still names the daemon's own pid. A daemon that is killed or panics leaves its record, which the dead pid then disqualifies. `tests/upgrade_e2e.py` reads the record a real daemon wrote with install.sh's own `daemon_version` function, so the format and the installer's `sed` stay in step.
++- **A missing record counts as older even for a `-dev` client.** It means a daemon from before releases, which is older than anything this project builds, so the line appears whichever build asks. A recorded `-dev` version, on either side, is never older or newer.
++- **`trip enter` and `trip attach` print the line when the attach ends**, on detach or when the session ends, because the attach takes the whole screen and its repaint would erase a line printed first. `trip enter` from inside a session switches the terminal rather than attaching, and prints nothing. `trip ls` prints the line after its list. Each reads `daemon.json` and asks the daemon for its session count only when the record is missing or older.
++- **Only a request the daemon could not answer maps to the line.** An older daemon closes the connection on a request it cannot decode, which the client reports as `unexpected frame`, and a reply the client cannot decode fails in `serde_json`. When a command that talks to the daemon fails either way, or on a reset connection, and the daemon is older, the error becomes `the daemon could not answer this request:` followed by the line. Any other error, or any error from a daemon that is not older, stays as it was.
++- **`trip upgrade` installs only a newer release.** When the installed version is already the newest release or past it, it says so, runs no installer, and prints the older-daemon line if it applies. When neither `gh` nor the anonymous API names a tag, it fails with each lookup's reason, rather than falling back to `v0` as Projector's does, because it has no tag to check the install against. It downloads the installer into a fresh directory only the user can enter, under `TMPDIR`, and removes it afterwards.
++- **Three variables exist for tests.** `TRIP_GH` names the `gh` command, `TRIP_GITHUB_API` replaces `https://api.github.com`, and `TRIP_RAW_URL` replaces `https://raw.githubusercontent.com`, where the installer comes from. `tests/upgrade_e2e.py` points them at a stand-in `gh` and `file://` copies, so it never reaches GitHub. It builds a release-marked trip, with `TRIP_RELEASE=1`, into `target/upgrade-e2e`, because `trip upgrade` refuses a `-dev` build and a `-dev` client never calls a release daemon older. That build took 6 seconds from a clean target directory on an Apple M2 Max, and the whole script under 15 seconds.
++
++## 10. Outcome
++
++Shipped, as the four pull requests that § 6 steps 1 to 4 describe: the Check workflow and `trip --version`, the installer, and the release workflow, which merged together as one stack, then `trip upgrade` with the daemon's version record. The first release, § 6 step 5, is yours, and it is tracked outside this plan. Turn on "Allow GitHub Actions to create and approve pull requests" in the repository settings, cut the release with `gh workflow run release.yml -f bump=minor`, which publishes `0.2.0`, and install it on each machine with the release command once. You can cut it before or after the `trip upgrade` pull request merges. A release cut before that merge has no `trip upgrade` and no daemon record, so its daemon reads as from before releases to the next release's client.
++
++Each § 4 row and what shows it:
++
++| Row | Evidence |
++| --- | --- |
++| `release.py bump minor` | `tests/release_test.py`: `test_bumps_the_repository_version_files_and_nothing_else`, `test_bumps_only_trips_entry_in_the_lock` |
++| The release check refuses a commit touching `src/` | `tests/release_test.py`: `test_refuses_a_commit_that_also_touches_src` |
++| Publish twice, after a failure between the tag and the release | `tests/release_test.py`: `test_a_rerun_after_a_failure_between_the_tag_and_the_release_finishes_it` |
++| The release installer against a local archive | `tests/install_e2e.py`: `test_release_of_trip_itself` |
++| `cargo build`, then `trip --version` | `tests/version.rs`, run by `check.yml` with `TRIP_RELEASE` unset, `1`, and `0` |
++| `./install.sh --dev` over a release install, then `trip upgrade` | `tests/install_e2e.py`: `test_dev_links_debug_build`; `tests/upgrade_e2e.py`: `test_dev_install_is_refused` |
++| A failed build | `tests/install_e2e.py`: `test_failed_build_keeps_current` |
++| Three versions in turn | `tests/install_e2e.py`: `test_three_installs_keep_two` |
++| An install beside a daemon of the oldest version | `tests/install_e2e.py`: `test_live_daemon_version_is_kept`, with `tests/upgrade_e2e.py`'s check that install.sh reads a real daemon's record |
++| A `PATH` without `~/.local/bin` | `tests/install_e2e.py`: `test_warnings` |
++| A shell whose `PATH` lacks `~/.local/bin` | `tests/install_e2e.py`: `test_shell_hook` |
++| `trip upgrade` when the installed version is not the tag's | `tests/upgrade_e2e.py`: `test_mismatched_version_exits_1` |
++| An older daemon, then `trip ls` | `tests/upgrade_e2e.py`: `test_older_daemon_line`, which also covers `attach` and `enter` |
++| A daemon with no version record | `tests/upgrade_e2e.py`: `test_missing_record_is_from_before_releases` |
++| A stopped daemon, and a record naming a dead pid | `tests/upgrade_e2e.py`: `test_record_written_and_removed`, `test_dead_pid_record_is_ignored` |
++| `/usr/local/bin/trip` present | `tests/install_e2e.py`: `test_warnings` |
++| Open a pull request | `check.yml` ran and passed on each pull request of the stack. GitHub does not enforce the "must pass": the `main` ruleset requires no status check (§ 9) |
+diff --git a/src/cli.rs b/src/cli.rs
+index 9c2c575..1c869fa 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
+ 
+ /// The bare version only for a build made with `TRIP_RELEASE=1`, as the
+ /// release installer makes one, so any other build says it is not a release.
+-const VERSION: &str = match option_env!("TRIP_RELEASE") {
++pub const VERSION: &str = match option_env!("TRIP_RELEASE") {
+     Some(flag) if matches!(flag.as_bytes(), [b'1']) => env!("CARGO_PKG_VERSION"),
+     _ => concat!(env!("CARGO_PKG_VERSION"), "-dev"),
+ };
+@@ -149,6 +149,13 @@ pub enum Command {
+         yes: bool,
+     },
+ 
++    /// Install the newest release, leaving the daemon and its sessions running
++    Upgrade {
++        /// Print the installed version and the newest release, and install nothing
++        #[arg(long)]
++        check: bool,
++    },
++
+     /// Connect trip to the current agent's structured log
+     On,
+ 
+diff --git a/src/client/attach.rs b/src/client/attach.rs
+index e3a1cf3..3791f67 100644
+--- a/src/client/attach.rs
++++ b/src/client/attach.rs
+@@ -895,6 +895,8 @@ pub async fn attach(name: String, live: bool) -> Result<()> {
+     if detached {
+         eprintln!("[detached: {}] — trip enter to resume", current);
+     }
++    // Here rather than before the attach, whose repaint would erase it.
++    super::warn_if_daemon_older(crate::cli::VERSION).await;
+ 
+     // The stdin reader thread may be blocked on read(); exit the process
+     // to avoid hanging.
+diff --git a/src/client/mod.rs b/src/client/mod.rs
+index 78066c2..b2ffb47 100644
+--- a/src/client/mod.rs
++++ b/src/client/mod.rs
+@@ -1,6 +1,7 @@
+ pub mod attach;
+ pub mod chooser;
+ pub mod launch;
++pub mod upgrade;
+ pub mod wrap;
+ 
+ use std::collections::HashMap;
+@@ -79,24 +80,142 @@ pub fn derive_session_name() -> Result<String> {
+ }
+ 
+ pub async fn get_session_list() -> Result<Vec<crate::daemon::protocol::SessionInfo>> {
+-    match launch::try_connect().await {
+-        Ok(stream) => {
+-            let (reader, writer) = stream.into_split();
+-            let mut reader = BufReader::new(reader);
+-            let mut writer = BufWriter::new(writer);
+-            write_control(&mut writer, &Request::ListSessions).await?;
+-            match read_frame(&mut reader).await? {
+-                Some(Frame::Control(payload)) => {
+-                    let response: Response = serde_json::from_slice(&payload)?;
+-                    match response {
+-                        Response::SessionList { sessions } => Ok(sessions),
+-                        _ => Ok(Vec::new()),
+-                    }
+-                }
+-                _ => Ok(Vec::new()),
++    Ok(running_sessions().await?.unwrap_or_default())
++}
++
++/// The running daemon's sessions, or None when no daemon answers the socket.
++async fn running_sessions() -> Result<Option<Vec<crate::daemon::protocol::SessionInfo>>> {
++    let Ok(stream) = launch::try_connect().await else {
++        return Ok(None);
++    };
++    let (reader, writer) = stream.into_split();
++    let mut reader = BufReader::new(reader);
++    let mut writer = BufWriter::new(writer);
++    write_control(&mut writer, &Request::ListSessions).await?;
++    match read_frame(&mut reader).await? {
++        Some(Frame::Control(payload)) => {
++            let response: Response = serde_json::from_slice(&payload)?;
++            match response {
++                Response::SessionList { sessions } => Ok(Some(sessions)),
++                _ => Ok(Some(Vec::new())),
+             }
+         }
+-        Err(_) => Ok(Vec::new()),
++        _ => Ok(Some(Vec::new())),
++    }
++}
++
++/// The running daemon's version, as far as the client can tell.
++#[derive(Debug, PartialEq)]
++pub enum DaemonVersion {
++    Recorded(String),
++    /// No record whose daemon still runs: a daemon from before releases,
++    /// which writes none, or one whose record was left by a daemon since gone.
++    BeforeReleases,
++}
++
++/// What `~/.trip/daemon.json` says about the running daemon. It says nothing
++/// about whether one runs; only the socket answers that.
++pub fn daemon_version() -> DaemonVersion {
++    match crate::common::read_daemon_record() {
++        Some(record) if pid_running(record.pid) => DaemonVersion::Recorded(record.version),
++        _ => DaemonVersion::BeforeReleases,
++    }
++}
++
++fn pid_running(pid: u32) -> bool {
++    use nix::errno::Errno;
++    use nix::sys::signal::kill;
++    use nix::unistd::Pid;
++    // Signal 0 only asks. Pid 0 and negative pids name process groups, which
++    // a record never means.
++    match i32::try_from(pid) {
++        Ok(pid) if pid > 0 => matches!(kill(Pid::from_raw(pid), None), Ok(()) | Err(Errno::EPERM)),
++        _ => false,
++    }
++}
++
++/// A release version's numbers. A `-dev` build, or anything else that is not
++/// `X.Y.Z`, has none, so it is never older or newer than a release.
++pub fn release_numbers(version: &str) -> Option<[u64; 3]> {
++    let mut parts = version.split('.').map(|part| part.parse::<u64>().ok());
++    let numbers = [parts.next()??, parts.next()??, parts.next()??];
++    parts.next().is_none().then_some(numbers)
++}
++
++/// Whether the daemon runs an older trip than `version`. A daemon from before
++/// releases is older than anything.
++pub fn daemon_is_older(daemon: &DaemonVersion, version: &str) -> bool {
++    match daemon {
++        DaemonVersion::BeforeReleases => true,
++        DaemonVersion::Recorded(running) => {
++            matches!((release_numbers(running), release_numbers(version)), (Some(a), Some(b)) if a < b)
++        }
++    }
++}
++
++/// The line that says the daemon is older than `version` and how it moves.
++/// `sessions` is None when the daemon would not say how many it holds.
++pub fn older_daemon_line(daemon: &DaemonVersion, version: &str, sessions: Option<usize>) -> String {
++    let runs = match daemon {
++        DaemonVersion::Recorded(running) => format!("the daemon still runs {}", running),
++        DaemonVersion::BeforeReleases => "the daemon still runs a trip from before releases".into(),
++    };
++    let holding = match sessions {
++        Some(1) => " with 1 session".to_string(),
++        Some(n) => format!(" with {} sessions", n),
++        None => String::new(),
++    };
++    format!(
++        "{}{}; it moves to {} when its last session ends or you run trip shutdown --yes",
++        runs, holding, version
++    )
++}
++
++/// The older-daemon line when a running daemon is older than `version`,
++/// asking it how many sessions it holds. No daemon, no line.
++async fn older_daemon_note(version: &str) -> Option<String> {
++    let daemon = daemon_version();
++    if !daemon_is_older(&daemon, version) {
++        return None;
++    }
++    let sessions = match running_sessions().await {
++        Ok(None) => return None,
++        Ok(Some(sessions)) => Some(sessions.len()),
++        Err(_) => None,
++    };
++    Some(older_daemon_line(&daemon, version, sessions))
++}
++
++pub async fn warn_if_daemon_older(version: &str) {
++    if let Some(line) = older_daemon_note(version).await {
++        eprintln!("{}", line);
++    }
++}
++
++/// Explain a request that failed because the daemon is older than this
++/// client. An older daemon closes the connection on a request it cannot
++/// decode, which every request reports as `unexpected frame`, and a reply
++/// this client cannot decode fails in `serde_json`. Any other failure, or
++/// one from a daemon that is not older, stays as it was.
++pub async fn explain_daemon_failure(error: anyhow::Error) -> anyhow::Error {
++    let undecoded = error.to_string() == "unexpected frame"
++        || error.chain().any(|cause| {
++            cause.is::<serde_json::Error>()
++                || cause.downcast_ref::<std::io::Error>().is_some_and(|e| {
++                    matches!(
++                        e.kind(),
++                        std::io::ErrorKind::UnexpectedEof
++                            | std::io::ErrorKind::ConnectionReset
++                            | std::io::ErrorKind::BrokenPipe
++                    )
++                })
++        });
++    if !undecoded {
++        return error;
++    }
++    match older_daemon_note(crate::cli::VERSION).await {
++        Some(line) => anyhow::anyhow!("the daemon could not answer this request: {}", line),
++        None => error,
+     }
+ }
+ 
+@@ -571,99 +690,13 @@ pub async fn list_sessions(scope: Scope, attached_only: bool) -> Result<()> {
+             let response: Response = serde_json::from_slice(&payload)?;
+             match response {
+                 Response::SessionList { sessions } => {
+-                    // Headers earn their place only across workspaces.
+-                    let grouped = scope == Scope::All;
+-                    let workspace = match scope {
+-                        Scope::Pwd => Some(derive_session_name()?),
+-                        Scope::All => None,
+-                    };
+-                    let mut sessions: Vec<_> = sessions
+-                        .into_iter()
+-                        .filter(|s| !attached_only || s.attached)
+-                        .filter(|s| {
+-                            workspace
+-                                .as_deref()
+-                                .is_none_or(|base| session_base(&s.name) == base)
+-                        })
+-                        .collect();
+-                    if sessions.is_empty() {
+-                        match &workspace {
+-                            Some(base) => {
+-                                println!("no sessions for '{}' (try: trip ls)", base)
+-                            }
+-                            None if attached_only => println!("no attached sessions"),
+-                            None => println!("no sessions"),
+-                        }
+-                        return Ok(());
+-                    }
+-                    sessions.sort_by(|a, b| {
+-                        (session_base(&a.name), group_order(&a.name))
+-                            .cmp(&(session_base(&b.name), group_order(&b.name)))
+-                    });
+-
+-                    let current = std::env::var("TRIP_SESSION").ok();
+-                    let home = std::env::var("HOME").unwrap_or_default();
+-                    let rows: Vec<_> = sessions
+-                        .iter()
+-                        .map(|s| {
+-                            let is_current = current.as_deref() == Some(&s.name);
+-                            let marker = if is_current {
+-                                "*"
+-                            } else if s.attached {
+-                                "+"
+-                            } else {
+-                                match s.state {
+-                                    SessionState::Exited(_) => "✕",
+-                                    _ => "-",
+-                                }
+-                            };
+-                            let cmd = s
+-                                .title
+-                                .as_deref()
+-                                .or(s.fg_command.as_deref())
+-                                .unwrap_or(&s.command);
+-                            let branch = s.git_branch.as_deref().unwrap_or("-");
+-                            let cwd = s.cwd.as_deref().unwrap_or("");
+-                            let cwd = if !home.is_empty() && cwd.starts_with(&home) {
+-                                format!("~{}", &cwd[home.len()..])
+-                            } else {
+-                                cwd.to_string()
+-                            };
+-                            (
+-                                session_base(&s.name).to_string(),
+-                                marker.to_string(),
+-                                s.name.clone(),
+-                                cmd.to_string(),
+-                                branch.to_string(),
+-                                cwd,
+-                            )
+-                        })
+-                        .collect();
+-
+-                    let nw = rows.iter().map(|r| r.2.len()).max().unwrap_or(0);
+-                    let cw = rows.iter().map(|r| r.3.len()).max().unwrap_or(0);
+-                    let bw = rows.iter().map(|r| r.4.len()).max().unwrap_or(0);
+-
+-                    let indent = if grouped { "  " } else { "" };
+-                    let mut last_base: Option<&str> = None;
+-                    for (base, marker, name, cmd, branch, cwd) in &rows {
+-                        if grouped && last_base != Some(base.as_str()) {
+-                            if last_base.is_some() {
+-                                println!();
+-                            }
+-                            println!("{}", base);
+-                            last_base = Some(base);
+-                        }
+-                        println!(
+-                            "{indent}{} {:<nw$}  {:<cw$}  {:<bw$}  {}",
+-                            marker,
+-                            name,
+-                            cmd,
+-                            branch,
+-                            cwd,
+-                            nw = nw,
+-                            cw = cw,
+-                            bw = bw,
++                    let total = sessions.len();
++                    print_sessions(sessions, scope, attached_only)?;
++                    let daemon = daemon_version();
++                    if daemon_is_older(&daemon, crate::cli::VERSION) {
++                        eprintln!(
++                            "{}",
++                            older_daemon_line(&daemon, crate::cli::VERSION, Some(total))
+                         );
+                     }
+                 }
+@@ -679,6 +712,109 @@ pub async fn list_sessions(scope: Scope, attached_only: bool) -> Result<()> {
+     Ok(())
+ }
+ 
++fn print_sessions(
++    sessions: Vec<crate::daemon::protocol::SessionInfo>,
++    scope: Scope,
++    attached_only: bool,
++) -> Result<()> {
++    // Headers earn their place only across workspaces.
++    let grouped = scope == Scope::All;
++    let workspace = match scope {
++        Scope::Pwd => Some(derive_session_name()?),
++        Scope::All => None,
++    };
++    let mut sessions: Vec<_> = sessions
++        .into_iter()
++        .filter(|s| !attached_only || s.attached)
++        .filter(|s| {
++            workspace
++                .as_deref()
++                .is_none_or(|base| session_base(&s.name) == base)
++        })
++        .collect();
++    if sessions.is_empty() {
++        match &workspace {
++            Some(base) => {
++                println!("no sessions for '{}' (try: trip ls)", base)
++            }
++            None if attached_only => println!("no attached sessions"),
++            None => println!("no sessions"),
++        }
++        return Ok(());
++    }
++    sessions.sort_by(|a, b| {
++        (session_base(&a.name), group_order(&a.name))
++            .cmp(&(session_base(&b.name), group_order(&b.name)))
++    });
++
++    let current = std::env::var("TRIP_SESSION").ok();
++    let home = std::env::var("HOME").unwrap_or_default();
++    let rows: Vec<_> = sessions
++        .iter()
++        .map(|s| {
++            let is_current = current.as_deref() == Some(&s.name);
++            let marker = if is_current {
++                "*"
++            } else if s.attached {
++                "+"
++            } else {
++                match s.state {
++                    SessionState::Exited(_) => "✕",
++                    _ => "-",
++                }
++            };
++            let cmd = s
++                .title
++                .as_deref()
++                .or(s.fg_command.as_deref())
++                .unwrap_or(&s.command);
++            let branch = s.git_branch.as_deref().unwrap_or("-");
++            let cwd = s.cwd.as_deref().unwrap_or("");
++            let cwd = if !home.is_empty() && cwd.starts_with(&home) {
++                format!("~{}", &cwd[home.len()..])
++            } else {
++                cwd.to_string()
++            };
++            (
++                session_base(&s.name).to_string(),
++                marker.to_string(),
++                s.name.clone(),
++                cmd.to_string(),
++                branch.to_string(),
++                cwd,
++            )
++        })
++        .collect();
++
++    let nw = rows.iter().map(|r| r.2.len()).max().unwrap_or(0);
++    let cw = rows.iter().map(|r| r.3.len()).max().unwrap_or(0);
++    let bw = rows.iter().map(|r| r.4.len()).max().unwrap_or(0);
++
++    let indent = if grouped { "  " } else { "" };
++    let mut last_base: Option<&str> = None;
++    for (base, marker, name, cmd, branch, cwd) in &rows {
++        if grouped && last_base != Some(base.as_str()) {
++            if last_base.is_some() {
++                println!();
++            }
++            println!("{}", base);
++            last_base = Some(base);
++        }
++        println!(
++            "{indent}{} {:<nw$}  {:<cw$}  {:<bw$}  {}",
++            marker,
++            name,
++            cmd,
++            branch,
++            cwd,
++            nw = nw,
++            cw = cw,
++            bw = bw,
++        );
++    }
++    Ok(())
++}
++
+ pub const TERMINAL_RESET: &[u8] =
+     b"\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l\x1b[>4;0m\x1b[=0;1u\x1b[?25h\x1b[H\x1b[2J";
+ 
+@@ -1312,3 +1448,79 @@ mod tests {
+         assert_eq!(rows[1], "bbb  vim");
+     }
+ }
++
++#[cfg(test)]
++mod daemon_version_tests {
++    use super::{daemon_is_older, older_daemon_line, pid_running, release_numbers, DaemonVersion};
++
++    fn recorded(version: &str) -> DaemonVersion {
++        DaemonVersion::Recorded(version.into())
++    }
++
++    #[test]
++    fn versions_compare_by_number_not_by_text() {
++        assert_eq!(release_numbers("0.10.2"), Some([0, 10, 2]));
++        assert!(daemon_is_older(&recorded("0.9.0"), "0.10.0"));
++        assert!(daemon_is_older(&recorded("0.2.9"), "0.3.0"));
++        assert!(daemon_is_older(&recorded("1.2.3"), "1.2.4"));
++        assert!(!daemon_is_older(&recorded("0.3.0"), "0.3.0"));
++        assert!(!daemon_is_older(&recorded("0.10.0"), "0.9.0"));
++    }
++
++    #[test]
++    fn a_dev_version_is_never_older_or_newer_than_a_release() {
++        assert_eq!(release_numbers("0.2.0-dev"), None);
++        assert!(!daemon_is_older(&recorded("0.1.0-dev"), "0.3.0"));
++        assert!(!daemon_is_older(&recorded("0.1.0"), "0.3.0-dev"));
++        assert!(!daemon_is_older(&recorded("0.1.0-dev"), "0.3.0-dev"));
++    }
++
++    #[test]
++    fn anything_but_three_numbers_is_not_a_release() {
++        for version in ["", "0.2", "0.2.0.1", "v0.2.0", "0.2.x", "0..2"] {
++            assert_eq!(release_numbers(version), None, "{:?}", version);
++            assert!(
++                !daemon_is_older(&recorded(version), "9.9.9"),
++                "{:?}",
++                version
++            );
++        }
++    }
++
++    #[test]
++    fn a_daemon_from_before_releases_is_older_than_anything() {
++        assert!(daemon_is_older(&DaemonVersion::BeforeReleases, "0.2.0"));
++        assert!(daemon_is_older(&DaemonVersion::BeforeReleases, "0.2.0-dev"));
++    }
++
++    #[test]
++    fn the_line_names_both_versions_and_the_sessions() {
++        assert_eq!(
++            older_daemon_line(&recorded("0.2.0"), "0.3.0", Some(4)),
++            "the daemon still runs 0.2.0 with 4 sessions; it moves to 0.3.0 \
++             when its last session ends or you run trip shutdown --yes"
++        );
++        assert_eq!(
++            older_daemon_line(&DaemonVersion::BeforeReleases, "0.3.0", Some(1)),
++            "the daemon still runs a trip from before releases with 1 session; \
++             it moves to 0.3.0 when its last session ends or you run trip shutdown --yes"
++        );
++        assert_eq!(
++            older_daemon_line(&recorded("0.2.0"), "0.3.0", None),
++            "the daemon still runs 0.2.0; it moves to 0.3.0 \
++             when its last session ends or you run trip shutdown --yes"
++        );
++    }
++
++    #[test]
++    fn only_a_running_pid_vouches_for_a_record() {
++        assert!(pid_running(std::process::id()));
++        let mut child = std::process::Command::new("true").spawn().unwrap();
++        let exited = child.id();
++        child.wait().unwrap();
++        assert!(!pid_running(exited));
++        // 0 and anything past i32::MAX would signal a process group.
++        assert!(!pid_running(0));
++        assert!(!pid_running(u32::MAX));
++    }
++}
+diff --git a/src/client/upgrade.rs b/src/client/upgrade.rs
+new file mode 100644
+index 0000000..163b194
+--- /dev/null
++++ b/src/client/upgrade.rs
+@@ -0,0 +1,337 @@
++//! `trip upgrade`: install the newest release with that release's own
++//! installer, check what it installed, and say what became of the daemon,
++//! which keeps running the version it started with.
++
++use std::path::PathBuf;
++use std::time::Duration;
++
++use anyhow::{bail, Context, Result};
++use tokio::process::Command;
++
++use super::{release_numbers, warn_if_daemon_older};
++use crate::cli::VERSION;
++
++const UPSTREAM: &str = "ninjudd/trip";
++const LOOKUP_TIMEOUT: Duration = Duration::from_secs(15);
++
++pub async fn upgrade(check: bool) -> Result<()> {
++    let checkout = VERSION.ends_with("-dev");
++    if checkout && !check {
++        bail!(
++            "trip {} is a checkout install, which follows its checkout rather than releases; \
++             run ./install.sh in the checkout to update it",
++            VERSION
++        );
++    }
++
++    let repo = release_repo()?;
++    let tag = newest_tag(&repo).await?;
++    let newest = tag.strip_prefix('v').unwrap_or(&tag);
++
++    if check {
++        if checkout {
++            println!(
++                "trip {} is a checkout install; the newest release is {}",
++                VERSION, newest
++            );
++        } else if is_newer(newest, VERSION) {
++            println!(
++                "trip {} is installed; the newest release is {}; run trip upgrade to install it",
++                VERSION, newest
++            );
++        } else {
++            println!(
++                "trip {} is installed, and the newest release is {}",
++                VERSION, newest
++            );
++        }
++        return Ok(());
++    }
++
++    if !is_newer(newest, VERSION) {
++        println!(
++            "trip {} is installed, and the newest release is {}",
++            VERSION, newest
++        );
++        warn_if_daemon_older(VERSION).await;
++        return Ok(());
++    }
++
++    run_installer(&repo, &tag).await?;
++
++    let installed = installed_version().await?;
++    if installed != newest {
++        bail!(
++            "the upgrade installed trip {}, but the newest release, {}, is {}",
++            installed,
++            tag,
++            newest
++        );
++    }
++    println!("upgraded trip {} to {}", VERSION, installed);
++    warn_if_daemon_older(&installed).await;
++    Ok(())
++}
++
++/// Whether `candidate` is a newer release than `installed`. A version that is
++/// not `X.Y.Z` counts as newer, so an odd tag still installs and the check of
++/// what it installed decides.
++fn is_newer(candidate: &str, installed: &str) -> bool {
++    match (release_numbers(candidate), release_numbers(installed)) {
++        (Some(candidate), Some(installed)) => candidate > installed,
++        _ => candidate != installed,
++    }
++}
++
++fn share_dir() -> PathBuf {
++    let home = std::env::var("HOME").expect("HOME not set");
++    PathBuf::from(home)
++        .join(".local")
++        .join("share")
++        .join("trip")
++}
++
++/// The repository the release install came from, as `release.json` records
++/// it, so a fork upgrades from the fork.
++fn release_repo() -> Result<String> {
++    let path = share_dir().join("release.json");
++    let text = match std::fs::read_to_string(&path) {
++        Ok(text) => text,
++        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(UPSTREAM.into()),
++        Err(e) => return Err(e).with_context(|| format!("could not read {}", path.display())),
++    };
++    repo_from_record(&text).with_context(|| format!("{} names no repository", path.display()))
++}
++
++fn repo_from_record(text: &str) -> Option<String> {
++    let record: serde_json::Value = serde_json::from_str(text).ok()?;
++    let repo = record.get("repo")?.as_str()?;
++    plain_repo(repo).then(|| repo.to_string())
++}
++
++/// `owner/name`, as install.sh accepts it, so it fits in a URL as it is.
++fn plain_repo(repo: &str) -> bool {
++    let mut parts = repo.split('/');
++    let (Some(owner), Some(name), None) = (parts.next(), parts.next(), parts.next()) else {
++        return false;
++    };
++    plain_ref(owner) && plain_ref(name)
++}
++
++/// A tag or name that fits in a URL path as it is.
++fn plain_ref(name: &str) -> bool {
++    name.bytes()
++        .next()
++        .is_some_and(|b| b.is_ascii_alphanumeric())
++        && name
++            .bytes()
++            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
++}
++
++/// Run a command and keep its output, giving up after `LOOKUP_TIMEOUT`.
++async fn output(command: &mut Command) -> Result<std::process::Output> {
++    command.kill_on_drop(true);
++    match tokio::time::timeout(LOOKUP_TIMEOUT, command.output()).await {
++        Ok(output) => Ok(output?),
++        Err(_) => bail!("no answer in {} seconds", LOOKUP_TIMEOUT.as_secs()),
++    }
++}
++
++/// The tag of the repository's newest release: through `gh` when it is signed
++/// in, which spares the anonymous rate limit, and otherwise through the same
++/// API anonymously with `curl`. `TRIP_GH` and `TRIP_GITHUB_API` replace the
++/// two, so a test can answer without GitHub.
++async fn newest_tag(repo: &str) -> Result<String> {
++    let endpoint = format!("repos/{}/releases/latest", repo);
++    let mut reasons = Vec::new();
++
++    let gh = std::env::var("TRIP_GH").unwrap_or_else(|_| "gh".into());
++    match output(Command::new(&gh).args([
++        "api",
++        "--hostname",
++        "github.com",
++        &endpoint,
++        "--jq",
++        ".tag_name",
++    ]))
++    .await
++    {
++        Ok(out) if out.status.success() => {
++            let tag = String::from_utf8_lossy(&out.stdout).trim().to_string();
++            if plain_ref(&tag) {
++                return Ok(tag);
++            }
++            reasons.push(format!("gh: the newest release names no tag ({:?})", tag));
++        }
++        Ok(out) => {
++            let said = String::from_utf8_lossy(&out.stderr);
++            reasons.push(format!(
++                "gh: {}",
++                said.lines().last().unwrap_or("failed").trim()
++            ));
++        }
++        Err(e) => reasons.push(format!("gh: {}", e)),
++    }
++
++    let api = std::env::var("TRIP_GITHUB_API").unwrap_or_else(|_| "https://api.github.com".into());
++    let url = format!("{}/{}", api.trim_end_matches('/'), endpoint);
++    match output(Command::new("curl").args([
++        "-fsSL",
++        "-H",
++        "Accept: application/vnd.github+json",
++        &url,
++    ]))
++    .await
++    {
++        Ok(out) if out.status.success() => match tag_from_release(&out.stdout) {
++            Some(tag) => return Ok(tag),
++            None => reasons.push(format!("{}: the newest release names no tag", url)),
++        },
++        Ok(out) => {
++            let said = String::from_utf8_lossy(&out.stderr);
++            reasons.push(format!(
++                "{}: {}",
++                url,
++                said.lines().last().unwrap_or("failed").trim()
++            ));
++        }
++        Err(e) => reasons.push(format!("curl: {}", e)),
++    }
++
++    bail!(
++        "could not find the newest release of {}: {}",
++        repo,
++        reasons.join("; ")
++    )
++}
++
++fn tag_from_release(body: &[u8]) -> Option<String> {
++    let release: serde_json::Value = serde_json::from_slice(body).ok()?;
++    let tag = release.get("tag_name")?.as_str()?;
++    plain_ref(tag).then(|| tag.to_string())
++}
++
++/// Download the tag's own install.sh and run it with `TRIP_REF` set to the
++/// tag, so the installer and the source it builds come from one tag that
++/// never moves. `TRIP_RAW_URL` replaces where it comes from, for tests.
++async fn run_installer(repo: &str, tag: &str) -> Result<()> {
++    let raw = std::env::var("TRIP_RAW_URL")
++        .unwrap_or_else(|_| "https://raw.githubusercontent.com".into());
++    let url = format!("{}/{}/{}/install.sh", raw.trim_end_matches('/'), repo, tag);
++
++    // A directory only this user can enter, made fresh, so no one else can
++    // swap the installer between the download and the run. A directory left
++    // at this name is removed first; one that reappears fails the create.
++    let scratch = std::env::temp_dir().join(format!("trip-upgrade-{}", std::process::id()));
++    let _ = std::fs::remove_dir_all(&scratch);
++    std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700)
++        .create(&scratch)
++        .with_context(|| format!("could not create {}", scratch.display()))?;
++    let result = download_and_run(&url, &scratch.join("install.sh"), repo, tag).await;
++    let _ = std::fs::remove_dir_all(&scratch);
++    result
++}
++
++async fn download_and_run(
++    url: &str,
++    script: &std::path::Path,
++    repo: &str,
++    tag: &str,
++) -> Result<()> {
++    let fetched = output(
++        Command::new("curl")
++            .arg("-fsSL")
++            .arg(url)
++            .arg("-o")
++            .arg(script),
++    )
++    .await?;
++    if !fetched.status.success() {
++        bail!(
++            "could not download the installer from {}: {}; trip {} is still installed",
++            url,
++            String::from_utf8_lossy(&fetched.stderr).trim(),
++            VERSION
++        );
++    }
++
++    eprintln!(
++        "+ curl -fsSL {} | TRIP_REPO={} TRIP_REF={} bash",
++        url, repo, tag
++    );
++    let status = Command::new("bash")
++        .arg(script)
++        .env("TRIP_REPO", repo)
++        .env("TRIP_REF", tag)
++        .status()
++        .await
++        .context("could not run bash")?;
++    if !status.success() {
++        bail!(
++            "the installer for {} failed; trip {} is still installed",
++            tag,
++            VERSION
++        );
++    }
++    Ok(())
++}
++
++/// What the installed `~/.local/bin/trip --version` says it is.
++async fn installed_version() -> Result<String> {
++    let home = std::env::var("HOME").expect("HOME not set");
++    let bin = PathBuf::from(home).join(".local").join("bin").join("trip");
++    let out = output(Command::new(&bin).arg("--version"))
++        .await
++        .with_context(|| format!("could not run {} --version", bin.display()))?;
++    let said = String::from_utf8_lossy(&out.stdout);
++    match said.split_whitespace().last() {
++        Some(version) if out.status.success() => Ok(version.to_string()),
++        _ => bail!("{} --version printed no version", bin.display()),
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn a_release_is_newer_only_by_its_numbers() {
++        assert!(is_newer("0.3.0", "0.2.9"));
++        assert!(is_newer("0.10.0", "0.9.0"));
++        assert!(!is_newer("0.2.0", "0.2.0"));
++        assert!(!is_newer("0.2.0", "0.3.0"));
++        // An odd tag installs, and the version check decides.
++        assert!(is_newer("0.3.0-rc1", "0.2.0"));
++        assert!(!is_newer("0.3.0-rc1", "0.3.0-rc1"));
++    }
++
++    #[test]
++    fn the_record_names_an_owner_and_repository() {
++        assert_eq!(
++            repo_from_record(r#"{"repo": "someone/trip", "ref": "v0"}"#).as_deref(),
++            Some("someone/trip")
++        );
++        for record in [
++            r#"{"ref": "v0"}"#,
++            r#"{"repo": "trip"}"#,
++            r#"{"repo": "a/b/c"}"#,
++            r#"{"repo": "a/b c"}"#,
++            r#"{"repo": "../b"}"#,
++            r#"{"repo": 7}"#,
++            "not json",
++        ] {
++            assert_eq!(repo_from_record(record), None, "{}", record);
++        }
++    }
++
++    #[test]
++    fn a_release_names_a_plain_tag() {
++        assert_eq!(
++            tag_from_release(br#"{"tag_name": "v0.3.0", "name": "0.3.0"}"#).as_deref(),
++            Some("v0.3.0")
++        );
++        assert_eq!(tag_from_release(br#"{"tag_name": "v0.3.0/../x"}"#), None);
++        assert_eq!(tag_from_release(br#"{"message": "Not Found"}"#), None);
++        assert_eq!(tag_from_release(b""), None);
++    }
++}
+diff --git a/src/common.rs b/src/common.rs
+index 51506c0..07c3079 100644
+--- a/src/common.rs
++++ b/src/common.rs
+@@ -19,6 +19,24 @@ pub fn daemon_log_path() -> PathBuf {
+     trip_dir().join("daemon.log")
+ }
+ 
++pub fn daemon_record_path() -> PathBuf {
++    trip_dir().join("daemon.json")
++}
++
++/// What `~/.trip/daemon.json` holds while a daemon runs. install.sh reads
++/// both fields with `sed`, so each must stay a plain JSON string or number.
++#[derive(Debug, PartialEq, Serialize, Deserialize)]
++pub struct DaemonRecord {
++    pub version: String,
++    pub pid: u32,
++}
++
++/// The record as the file holds it, whether or not its daemon still runs.
++pub fn read_daemon_record() -> Option<DaemonRecord> {
++    let text = std::fs::read_to_string(daemon_record_path()).ok()?;
++    serde_json::from_str(&text).ok()
++}
++
+ pub fn session_dir(name: &str) -> PathBuf {
+     trip_dir().join("sessions").join(name)
+ }
+@@ -56,3 +74,47 @@ pub fn write_session_meta(meta: &SessionMeta) {
+ pub fn remove_session_meta(name: &str) {
+     let _ = std::fs::remove_file(meta_path(name));
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::DaemonRecord;
++
++    #[test]
++    fn the_daemon_record_is_one_line_of_plain_values() {
++        // install.sh reads "version" and "pid" with sed, line by line.
++        let record = DaemonRecord {
++            version: "0.2.0".into(),
++            pid: 42,
++        };
++        assert_eq!(
++            serde_json::to_string(&record).unwrap(),
++            r#"{"version":"0.2.0","pid":42}"#
++        );
++    }
++
++    #[test]
++    fn a_record_reads_back_however_it_is_spaced() {
++        let record: DaemonRecord =
++            serde_json::from_str("{\"version\": \"0.2.0\",\n \"pid\": 42}\n").unwrap();
++        assert_eq!(
++            record,
++            DaemonRecord {
++                version: "0.2.0".into(),
++                pid: 42
++            }
++        );
++        for broken in [
++            r#"{"version": "0.2.0"}"#,
++            r#"{"pid": 42}"#,
++            r#"{"version": 2, "pid": 42}"#,
++            r#"{"version": "0.2.0", "pid": -1}"#,
++            "",
++        ] {
++            assert!(
++                serde_json::from_str::<DaemonRecord>(broken).is_err(),
++                "{}",
++                broken
++            );
++        }
++    }
++}
+diff --git a/src/daemon/mod.rs b/src/daemon/mod.rs
+index 416d4ee..4961707 100644
+--- a/src/daemon/mod.rs
++++ b/src/daemon/mod.rs
+@@ -16,7 +16,10 @@ use tokio::io::{BufReader, BufWriter};
+ use tokio::net::{UnixListener, UnixStream};
+ use tokio::sync::Mutex;
+ 
+-use crate::common::{lock_path, socket_path, terminal_env_path, trip_dir};
++use crate::common::{
++    daemon_record_path, lock_path, read_daemon_record, socket_path, terminal_env_path, trip_dir,
++    DaemonRecord,
++};
+ use protocol::{
+     read_frame, write_control, write_frame, Frame, Request, Response, SessionInfo, SessionState,
+     FRAME_DATA,
+@@ -145,14 +148,30 @@ pub async fn run() -> Result<()> {
+         anyhow::bail!("daemon already running");
+     }
+ 
++    // Before the socket exists, so no client that reaches this daemon can
++    // find the record missing and take it for a daemon from before releases.
++    if let Err(e) = write_daemon_record() {
++        dlog(&format!(
++            "could not write {}: {}",
++            daemon_record_path().display(),
++            e
++        ));
++    }
++
+     let sock_path = socket_path();
+     let _ = std::fs::remove_file(&sock_path);
+-    let listener = UnixListener::bind(&sock_path)?;
++    let listener = match UnixListener::bind(&sock_path) {
++        Ok(listener) => listener,
++        Err(e) => {
++            remove_daemon_record();
++            return Err(e.into());
++        }
++    };
+ 
+     dlog(&format!(
+         "daemon started (pid {}, version {})",
+         std::process::id(),
+-        env!("CARGO_PKG_VERSION")
++        crate::cli::VERSION
+     ));
+ 
+     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
+@@ -182,6 +201,35 @@ pub async fn run() -> Result<()> {
+     }
+ }
+ 
++/// Say which version this daemon runs, for clients and the installer. Written
++/// to a temporary file and renamed, so a reader never sees half a record.
++fn write_daemon_record() -> Result<()> {
++    let record = DaemonRecord {
++        version: crate::cli::VERSION.to_string(),
++        pid: std::process::id(),
++    };
++    let path = daemon_record_path();
++    let staged = path.with_extension(format!("json.{}", record.pid));
++    std::fs::write(&staged, serde_json::to_string(&record)? + "\n")?;
++    std::fs::rename(&staged, &path)?;
++    Ok(())
++}
++
++/// Remove the record only while it is still this daemon's: a daemon started
++/// after this one has written its own.
++fn remove_daemon_record() {
++    if read_daemon_record().is_some_and(|record| record.pid == std::process::id()) {
++        let _ = std::fs::remove_file(daemon_record_path());
++    }
++}
++
++/// Remove what tells clients a daemon is here, as it exits: the socket first,
++/// so no client connects to a daemon whose record is already gone.
++fn remove_daemon_files() {
++    let _ = std::fs::remove_file(socket_path());
++    remove_daemon_record();
++}
++
+ async fn reap_children(sessions: Sessions) {
+     use tokio::signal::unix::{signal, SignalKind};
+     let mut sigchld = signal(SignalKind::child()).unwrap();
+@@ -214,7 +262,7 @@ async fn reap_children(sessions: Sessions) {
+ 
+         if sessions.is_empty() {
+             dlog("last session exited; daemon exiting");
+-            let _ = std::fs::remove_file(socket_path());
++            remove_daemon_files();
+             std::process::exit(0);
+         }
+     }
+@@ -648,7 +696,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
+                 if sessions.is_empty() {
+                     drop(sessions);
+                     dlog("last session killed; daemon exiting");
+-                    let _ = std::fs::remove_file(socket_path());
++                    remove_daemon_files();
+                     write_control(&mut writer, &Response::Ok).await?;
+                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                     std::process::exit(0);
+@@ -678,7 +726,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
+             }
+             sessions.clear();
+             drop(sessions);
+-            let _ = std::fs::remove_file(socket_path());
++            remove_daemon_files();
+             write_control(&mut writer, &Response::Ok).await?;
+             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+             std::process::exit(0);
+@@ -836,7 +884,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
+                         sessions.clear();
+                         drop(sessions);
+                         dlog("last client detached from exited session(s); daemon exiting");
+-                        let _ = std::fs::remove_file(socket_path());
++                        remove_daemon_files();
+                         std::process::exit(0);
+                     }
+                 }
+diff --git a/src/main.rs b/src/main.rs
+index b4ea845..724ed63 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -17,9 +17,24 @@ fn scope(pwd: bool) -> client::Scope {
+ 
+ #[tokio::main]
+ async fn main() -> anyhow::Result<()> {
+-    let cli = Cli::parse();
++    let command = Cli::parse().command;
++    let asks_daemon = !matches!(
++        command,
++        Command::Current
++            | Command::On
++            | Command::Env
++            | Command::Daemon
++            | Command::Upgrade { .. }
++            | Command::External(_)
++    );
++    match run(command).await {
++        Err(e) if asks_daemon => Err(client::explain_daemon_failure(e).await),
++        result => result,
++    }
++}
+ 
+-    match cli.command {
++async fn run(command: Command) -> anyhow::Result<()> {
++    match command {
+         Command::Enter { name, pwd, command } => {
+             let cmd = if command.is_empty() {
+                 None
+@@ -112,6 +127,9 @@ async fn main() -> anyhow::Result<()> {
+         Command::Shutdown { yes } => {
+             client::shutdown(yes).await?;
+         }
++        Command::Upgrade { check } => {
++            client::upgrade::upgrade(check).await?;
++        }
+         Command::On => {
+             client::agent_on()?;
+         }
+diff --git a/tests/upgrade_e2e.py b/tests/upgrade_e2e.py
+new file mode 100755
+index 0000000..60a08c8
+--- /dev/null
++++ b/tests/upgrade_e2e.py
+@@ -0,0 +1,516 @@
++#!/usr/bin/env python3
++"""End-to-end checks of `trip upgrade` and the daemon's version record, each in
++its own temporary HOME.
++
++`trip upgrade` finds the newest release, runs that tag's installer, and checks
++what it installed. Here a fake release source answers instead of GitHub: a
++`gh` stand-in, a file:// copy of the releases API, and a file:// installer
++that installs a stub `trip` printing the version it is told to. Nothing here
++reaches the network.
++
++The daemon writes ~/.trip/daemon.json with its version and pid, and removes it
++when it exits. `trip ls`, `attach`, and `enter` print one line when the daemon
++is older than the client, and a request an older daemon cannot decode fails
++with that line. A `-dev` build is never older than a release, so these checks
++build a release-marked trip of their own, with `TRIP_RELEASE=1`, into
++target/upgrade-e2e.
++
++Usage: tests/upgrade_e2e.py
++"""
++import fcntl
++import json
++import os
++import pty
++import select
++import shutil
++import signal
++import socket
++import struct
++import subprocess
++import sys
++import tempfile
++import termios
++import threading
++import time
++
++REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++RELEASE_TARGET = os.path.join(REPO, "target", "upgrade-e2e")
++RELEASE = os.path.join(RELEASE_TARGET, "debug", "trip")
++INSTALL = os.path.join(REPO, "install.sh")
++LINE_END = "when its last session ends or you run trip shutdown --yes"
++
++CARGO = shutil.which("cargo")
++if not CARGO:
++    sys.exit("upgrade_e2e: cargo is not on PATH")
++# A temporary HOME would hide the toolchain and crate cache that cargo and
++# rustup find under the real one.
++TOOL_HOMES = {}
++for name, default in (("CARGO_HOME", "~/.cargo"), ("RUSTUP_HOME", "~/.rustup")):
++    path = os.environ.get(name) or os.path.expanduser(default)
++    if os.path.isdir(path):
++        TOOL_HOMES[name] = path
++
++# Short and resolved: each daemon's socket lives under its HOME, and a unix
++# socket path has to fit in SUN_LEN (~104 bytes).
++ROOT = os.path.realpath(tempfile.mkdtemp(prefix="trip-upgrade-", dir="/tmp"))
++failures = []
++homes = []
++daemons = []
++
++
++def check(ok, what, detail=""):
++    print(("ok   " if ok else "FAIL ") + what)
++    if not ok:
++        failures.append(what)
++        if detail:
++            print("     " + detail.replace("\n", "\n     "))
++
++
++def outputs(result):
++    return f"exit {result.returncode}\nstdout: {result.stdout}\nstderr: {result.stderr}"
++
++
++def build_release():
++    """A trip that reports a bare version, as the release installer builds it."""
++    subprocess.run(
++        [CARGO, "build", "--locked", "--target-dir", RELEASE_TARGET],
++        cwd=REPO, env={**os.environ, "TRIP_RELEASE": "1"}, check=True,
++    )
++    said = subprocess.run([RELEASE, "--version"], capture_output=True, text=True, check=True).stdout.split()
++    if said[-1].endswith("-dev"):
++        sys.exit(f"upgrade_e2e: {RELEASE} reports {said[-1]}, not a release")
++    return said[-1]
++
++
++def write(path, text, mode=None):
++    os.makedirs(os.path.dirname(path), exist_ok=True)
++    with open(path, "w") as f:
++        f.write(text)
++    if mode:
++        os.chmod(path, mode)
++
++
++def read(path):
++    try:
++        with open(path) as f:
++            return f.read()
++    except FileNotFoundError:
++        return None
++
++
++def alive(pid):
++    try:
++        os.kill(pid, 0)
++    except ProcessLookupError:
++        return False
++    except PermissionError:
++        return True
++    return True
++
++
++def is_test_daemon(pid):
++    """Whether `pid` is still a daemon these checks started, not a process
++    that has since taken its number."""
++    said = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True, text=True).stdout
++    return said.strip() == f"{RELEASE} daemon"
++
++
++class Home:
++    """A fresh HOME, and a fake release source that stands in for GitHub."""
++
++    count = 0
++
++    def __init__(self):
++        Home.count += 1
++        self.dir = os.path.join(ROOT, f"h{Home.count}")
++        self.source = os.path.join(ROOT, f"s{Home.count}")
++        os.makedirs(self.dir)
++        os.makedirs(self.source)
++        self.bin = os.path.join(self.dir, ".local", "bin", "trip")
++        self.record = os.path.join(self.dir, ".trip", "daemon.json")
++        self.gh_calls = os.path.join(self.source, "gh-calls")
++        self.installer_ran = os.path.join(self.source, "installer-ran")
++        self.gh = os.path.join(self.source, "gh")
++        # Answers only when a case writes the tag it should print.
++        write(self.gh, f"""#!/bin/sh
++echo "$*" >> {self.gh_calls}
++if [ -f {self.source}/gh-tag ]; then cat {self.source}/gh-tag; exit 0; fi
++echo "gh: not signed in" >&2
++exit 1
++""", 0o755)
++        self.env = {
++            "HOME": self.dir,
++            "TMPDIR": os.path.join(self.source, "tmp"),
++            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
++            "SHELL": "/bin/sh",
++            "TERM": "xterm-256color",
++            "LANG": "C",
++            "TRIP_GH": self.gh,
++            "TRIP_GITHUB_API": "file://" + os.path.join(self.source, "api"),
++            "TRIP_RAW_URL": "file://" + os.path.join(self.source, "raw"),
++        }
++        os.makedirs(self.env["TMPDIR"])
++        homes.append(self)
++
++    def publish(self, tag, installs=None, repo="ninjudd/trip"):
++        """Make `tag` the newest release of `repo`, with an installer that
++        installs a trip reporting `installs`, the tag's version by default."""
++        installs = installs or tag.lstrip("v")
++        write(os.path.join(self.source, "api", "repos", repo, "releases", "latest"),
++              json.dumps({"tag_name": tag, "name": tag.lstrip("v")}))
++        write(os.path.join(self.source, "raw", repo, tag, "install.sh"), f"""#!/usr/bin/env bash
++set -eu
++printf '%s %s\\n' "$TRIP_REPO" "$TRIP_REF" > {self.installer_ran}
++mkdir -p "$HOME/.local/bin"
++rm -f "$HOME/.local/bin/trip"
++printf '#!/bin/sh\\necho "trip {installs}"\\n' > "$HOME/.local/bin/trip"
++chmod +x "$HOME/.local/bin/trip"
++echo "Done."
++""")
++
++    def gh_answers(self, tag):
++        write(os.path.join(self.source, "gh-tag"), tag + "\n")
++
++    def release_json(self, repo):
++        write(os.path.join(self.dir, ".local", "share", "trip", "release.json"),
++              json.dumps({"repo": repo, "ref": "v0"}) + "\n")
++
++    def run(self, *args, trip=RELEASE, timeout=30):
++        return subprocess.run([trip, *args], capture_output=True, text=True,
++                              env=self.env, cwd=self.dir, timeout=timeout)
++
++    def start_daemon(self, *names):
++        """Start this HOME's daemon with a session per name, and note its pid
++        so the cleanup can stop it."""
++        for name in names:
++            result = self.run("create", name, "--", "/bin/sleep", "300")
++            if result.returncode != 0:
++                raise RuntimeError(outputs(result))
++        record = json.loads(read(self.record))
++        daemons.append(record["pid"])
++        return record
++
++    def stop(self):
++        self.run("shutdown", "--yes")
++
++
++class Term:
++    """A client on a real PTY, its output drained so it never blocks."""
++
++    def __init__(self, home, *args):
++        self.master, slave = pty.openpty()
++        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
++        self.proc = subprocess.Popen([RELEASE, *args], stdin=slave, stdout=slave, stderr=slave,
++                                     env=home.env, cwd=home.dir, preexec_fn=os.setsid)
++        os.close(slave)
++        self.output = b""
++
++    def drain(self, seconds):
++        deadline = time.monotonic() + seconds
++        while select.select([self.master], [], [], max(0, deadline - time.monotonic()))[0]:
++            try:
++                chunk = os.read(self.master, 65536)
++            except OSError:
++                return
++            if not chunk:
++                return
++            self.output += chunk
++
++    def detach(self):
++        """Press the detach key twice, as a person leaves a session, and
++        return what the client printed by the time it exits."""
++        self.drain(1)
++        os.write(self.master, b"\x1c")
++        self.drain(0.5)
++        os.write(self.master, b"\x1c")
++        deadline = time.monotonic() + 10
++        while self.proc.poll() is None and time.monotonic() < deadline:
++            self.drain(0.1)
++        self.drain(0.2)
++        if self.proc.poll() is None:
++            self.proc.kill()
++            self.proc.wait()
++        os.close(self.master)
++        return self.output.decode(errors="replace")
++
++
++def older(daemon, client, sessions):
++    plural = "session" if sessions == 1 else "sessions"
++    return f"the daemon still runs {daemon} with {sessions} {plural}; it moves to {client} {LINE_END}"
++
++
++# ---- trip upgrade ----
++
++def test_upgrade_installs_the_newest_release(version):
++    home = Home()
++    home.release_json("someone/trip-fork")
++    home.publish("v9.0.0", repo="someone/trip-fork")
++    result = home.run("upgrade")
++    check(result.returncode == 0, "upgrade succeeds", outputs(result))
++    check(read(home.installer_ran) == "someone/trip-fork v9.0.0\n",
++          "the tag's own installer runs with TRIP_REPO and TRIP_REF set to the fork and the tag",
++          str(read(home.installer_ran)))
++    check("repos/someone/trip-fork/releases/latest" in (read(home.gh_calls) or ""),
++          "gh is asked for the fork's newest release first", str(read(home.gh_calls)))
++    check(f"upgraded trip {version} to 9.0.0" in result.stdout,
++          "it says which version it upgraded from and to", outputs(result))
++    check("+ curl -fsSL file://" in result.stderr and "TRIP_REF=v9.0.0 bash" in result.stderr,
++          "it prints the installer command it runs", result.stderr)
++
++
++def test_gh_answers_before_the_anonymous_api(version):
++    home = Home()
++    home.publish("v9.1.0")
++    # The anonymous API names an older tag than gh does.
++    home.publish("v9.0.0")
++    home.gh_answers("v9.1.0")
++    result = home.run("upgrade")
++    check(result.returncode == 0 and read(home.installer_ran) == "ninjudd/trip v9.1.0\n",
++          "the tag gh names wins over the anonymous API's", outputs(result) + f"\n{read(home.installer_ran)}")
++
++
++def test_mismatched_version_exits_1(version):
++    home = Home()
++    home.publish("v9.0.0", installs="8.0.0")
++    result = home.run("upgrade")
++    check(result.returncode == 1, "an install that reports another version exits 1", outputs(result))
++    check("8.0.0" in result.stderr and "v9.0.0" in result.stderr and "upgraded" not in result.stdout,
++          "and names both versions instead of reporting success", outputs(result))
++
++
++def test_check_installs_nothing(version):
++    home = Home()
++    home.publish("v9.0.0")
++    result = home.run("upgrade", "--check")
++    check(result.returncode == 0 and f"trip {version} is installed" in result.stdout
++          and "newest release is 9.0.0" in result.stdout,
++          "--check prints the installed version and the newest release", outputs(result))
++    check(read(home.installer_ran) is None and not os.path.exists(home.bin), "--check installs nothing")
++
++
++def test_newest_already_installed(version):
++    home = Home()
++    home.publish("v" + version)
++    result = home.run("upgrade")
++    check(result.returncode == 0 and read(home.installer_ran) is None,
++          "an install already at the newest release runs no installer", outputs(result))
++
++
++def test_no_release_found(version):
++    home = Home()
++    result = home.run("upgrade")
++    check(result.returncode == 1 and "could not find the newest release of ninjudd/trip" in result.stderr
++          and "not signed in" in result.stderr,
++          "with no release to find it fails and says why each lookup failed", outputs(result))
++
++
++def test_dev_install_is_refused(version):
++    """`./install.sh --dev` over a release install, then `trip upgrade`."""
++    home = Home()
++    home.publish("v9.0.0")
++    share = os.path.join(home.dir, ".local", "share", "trip")
++    write(os.path.join(share, "0.0.9", "trip"), "#!/bin/sh\necho 'trip 0.0.9'\n", 0o755)
++    os.symlink("0.0.9", os.path.join(share, "current"))
++    os.makedirs(os.path.dirname(home.bin))
++    os.symlink(os.path.join(share, "current", "trip"), home.bin)
++    linked = subprocess.run(
++        ["./install.sh", "--dev"], capture_output=True, text=True, cwd=REPO, timeout=600,
++        env={**home.env, **TOOL_HOMES, "PATH": os.path.dirname(CARGO) + ":" + home.env["PATH"]},
++    )
++    target = os.readlink(home.bin) if os.path.islink(home.bin) else None
++    check(linked.returncode == 0 and target is not None and target.endswith("/debug/trip"),
++          "./install.sh --dev links ~/.local/bin/trip to the checkout's debug build", outputs(linked))
++    result = home.run("upgrade", trip=home.bin)
++    check(result.returncode != 0 and "checkout install" in result.stderr and "./install.sh" in result.stderr,
++          "trip upgrade on a -dev install refuses and points to ./install.sh", outputs(result))
++    check(os.readlink(home.bin) == target
++          and os.readlink(os.path.join(share, "current")) == "0.0.9"
++          and read(home.installer_ran) is None and read(home.gh_calls) is None,
++          "and leaves the link and current alone without looking anything up")
++
++
++def test_upgrade_leaves_an_older_daemon_running(version):
++    home = Home()
++    record = home.start_daemon("work")
++    home.publish("v9.0.0")
++    result = home.run("upgrade")
++    check(result.returncode == 0, "upgrade beside a running daemon succeeds", outputs(result))
++    check(older(version, "9.0.0", 1) in result.stderr,
++          "and says the daemon still runs the old version, with its session count", result.stderr)
++    check(alive(record["pid"]) and "work" in home.run("ls").stdout,
++          "the daemon and its session are still running")
++    home.stop()
++
++
++# ---- the daemon's version record ----
++
++def installer_reads(home):
++    """What install.sh's own daemon_version function reads from the record."""
++    script = f'DAEMON_RECORD="{home.record}"\n' + subprocess.run(
++        ["sed", "-n", "/^daemon_version()/,/^}/p", INSTALL], capture_output=True, text=True, check=True,
++    ).stdout + "daemon_version\n"
++    return subprocess.run(["bash", "-c", script], capture_output=True, text=True).stdout.strip()
++
++
++def test_record_written_and_removed(version):
++    home = Home()
++    record = home.start_daemon("work")
++    check(record["version"] == version and alive(record["pid"]),
++          "the daemon records its version and its own pid", str(record))
++    check(installer_reads(home) == version, "install.sh reads the version from the record", installer_reads(home))
++    listed = home.run("ls")
++    check(listed.returncode == 0 and listed.stderr == "", "a current daemon adds no line to trip ls", outputs(listed))
++    home.stop()
++    check(read(home.record) is None, "daemon.json is gone once the daemon stops", str(read(home.record)))
++
++    record = home.start_daemon("short")
++    home.run("kill", "short")
++    deadline = time.monotonic() + 5
++    while alive(record["pid"]) and time.monotonic() < deadline:
++        time.sleep(0.05)
++    check(read(home.record) is None, "and once it exits with its last session", str(read(home.record)))
++
++
++def test_older_daemon_line(version):
++    home = Home()
++    record = home.start_daemon("one", "two")
++    write(home.record, json.dumps({"version": "0.0.9", "pid": record["pid"]}))
++    listed = home.run("ls")
++    check(listed.returncode == 0 and "one" in listed.stdout and "two" in listed.stdout,
++          "trip ls still lists the older daemon's sessions", outputs(listed))
++    check(listed.stderr == older("0.0.9", version, 2) + "\n",
++          "and adds one line naming both versions and the session count", outputs(listed))
++
++    attached = Term(home, "attach", "one").detach()
++    check(older("0.0.9", version, 2) in attached, "trip attach prints it once it detaches", attached[-400:])
++    entered = Term(home, "enter", "two").detach()
++    check(older("0.0.9", version, 2) in entered, "and so does trip enter", entered[-400:])
++
++    write(home.record, json.dumps({"version": version, "pid": record["pid"]}))
++    check(home.run("ls").stderr == "", "a record at the client's version adds nothing")
++    write(home.record, json.dumps({"version": "99.0.0", "pid": record["pid"]}))
++    check(home.run("ls").stderr == "", "nor does a newer daemon")
++    write(home.record, json.dumps({"version": "0.0.9-dev", "pid": record["pid"]}))
++    check(home.run("ls").stderr == "", "nor a -dev daemon")
++    home.stop()
++
++
++def test_missing_record_is_from_before_releases(version):
++    home = Home()
++    home.start_daemon("work")
++    os.remove(home.record)
++    listed = home.run("ls")
++    check(listed.stderr == f"the daemon still runs a trip from before releases with 1 session; "
++                           f"it moves to {version} {LINE_END}\n",
++          "a daemon with no record is named as from before releases", outputs(listed))
++    home.stop()
++    check(home.run("ls").stderr == "", "and with no daemon at all there is no line")
++
++
++def test_dead_pid_record_is_ignored(version):
++    home = Home()
++    home.start_daemon("work")
++    exited = subprocess.Popen(["true"])
++    exited.wait()
++    # A record at the client's own version would vouch for the daemon if its
++    # pid were not checked.
++    write(home.record, json.dumps({"version": version, "pid": exited.pid}))
++    listed = home.run("ls")
++    check("from before releases with 1 session" in listed.stderr,
++          "a record whose pid is gone vouches for nothing", outputs(listed))
++    home.stop()
++
++
++class OlderDaemon:
++    """A daemon that lists sessions but closes the connection on any other
++    request, as an older daemon does on a request it cannot decode."""
++
++    def __init__(self, home, version, sessions):
++        os.makedirs(os.path.dirname(home.record), exist_ok=True)
++        self.path = os.path.join(home.dir, ".trip", "daemon.sock")
++        write(home.record, json.dumps({"version": version, "pid": os.getpid()}))
++        self.listing = json.dumps({"type": "SessionList", "sessions": [{
++            "name": f"s{i}", "command": "sh", "pid": 1, "created_at": 0, "state": "Running",
++            "attached": False, "cwd": None, "fg_command": None, "git_branch": None, "title": None,
++        } for i in range(sessions)]}).encode()
++        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
++        self.server.bind(self.path)
++        self.server.listen()
++        threading.Thread(target=self.serve, daemon=True).start()
++
++    def serve(self):
++        while True:
++            try:
++                conn, _ = self.server.accept()
++            except OSError:
++                return
++            with conn:
++                head = conn.recv(5)
++                if len(head) < 5:
++                    continue
++                length = struct.unpack(">I", head[:4])[0]
++                body = b""
++                while len(body) < length - 1:
++                    body += conn.recv(length - 1 - len(body))
++                if json.loads(body).get("type") == "ListSessions":
++                    conn.sendall(struct.pack(">I", len(self.listing) + 1) + b"\x01" + self.listing)
++
++    def close(self):
++        self.server.close()
++        os.remove(self.path)
++
++
++def test_older_daemon_failing_a_request(version):
++    home = Home()
++    fake = OlderDaemon(home, "0.0.9", 3)
++    try:
++        result = home.run("kill", "anything")
++        check(result.returncode != 0
++              and f"the daemon could not answer this request: {older('0.0.9', version, 3)}" in result.stderr
++              and "unexpected frame" not in result.stderr,
++              "a request an older daemon cannot decode fails with the older-daemon line", outputs(result))
++        write(home.record, json.dumps({"version": version, "pid": os.getpid()}))
++        result = home.run("kill", "anything")
++        check("unexpected frame" in result.stderr and "older" not in result.stderr
++              and "could not answer" not in result.stderr,
++              "a daemon at the client's version keeps the original error", outputs(result))
++    finally:
++        fake.close()
++
++
++def main():
++    version = build_release()
++    try:
++        for test in (
++            test_upgrade_installs_the_newest_release,
++            test_gh_answers_before_the_anonymous_api,
++            test_mismatched_version_exits_1,
++            test_check_installs_nothing,
++            test_newest_already_installed,
++            test_no_release_found,
++            test_dev_install_is_refused,
++            test_upgrade_leaves_an_older_daemon_running,
++            test_record_written_and_removed,
++            test_older_daemon_line,
++            test_missing_record_is_from_before_releases,
++            test_dead_pid_record_is_ignored,
++            test_older_daemon_failing_a_request,
++        ):
++            print(f"-- {test.__name__}")
++            test(version)
++    finally:
++        for home in homes:
++            if os.path.exists(os.path.join(home.dir, ".trip", "daemon.sock")):
++                home.stop()
++        for pid in daemons:
++            if is_test_daemon(pid):
++                os.kill(pid, signal.SIGKILL)
++        shutil.rmtree(ROOT, ignore_errors=True)
++    if failures:
++        print(f"\n{len(failures)} check(s) failed")
++        sys.exit(1)
++    print("\nall upgrade checks passed")
++
++
++if __name__ == "__main__":
++    main()

@@ -1,0 +1,205 @@
+{
+ "version": 1,
+ "name": "Releases and trip upgrade",
+ "project": "releases",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 31,
+  "title": "Add `trip upgrade`, and name a daemon older than the client instead of restarting it",
+  "head": "355b2b236e15c29c2f1ce16a193ca34f052aba40",
+  "headRef": "releases/upgrade",
+  "base": "44613897217ccc8106c790a6ccce9b57d5d7be30",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "<code>trip</code> keeps every terminal session inside one background process, the <b>daemon</b>. A <b>client</b> is each <code>trip</code> command you run, such as <code>trip ls</code> or <code>trip attach</code>, and it talks to the daemon over a Unix socket under <code>~/.trip</code>. Earlier pull requests in the <code>releases</code> project gave <code>trip</code> numbered releases and an installer, <code>install.sh</code>, that builds each version into <code>~/.local/share/trip/&lt;version&gt;/</code> and points <code>~/.local/bin/trip</code> at the current one.",
+   "This pull request is the last piece. It adds <code>trip upgrade</code>, which installs the newest release by running that release's own installer and then checks that the result reports the right version. Because the daemon holds every session's terminal, restarting it would end them, so nothing restarts it. Instead, the daemon now records its version in <code>~/.trip/daemon.json</code>. The client reads that record and prints one line when the daemon is older than the client, so you know the daemon still runs the old version and how to move it.",
+   "<div class=\"tblwrap\"><table class=\"tbl\"><thead><tr><th>Daemon's record</th><th>Client is a release</th><th>Client is <code>-dev</code></th></tr></thead><tbody><tr><td>Missing, or its pid is not running</td><td class=\"r\">Older: line</td><td class=\"r\">Older: line</td></tr><tr><td>A lower release number</td><td class=\"r\">Older: line</td><td>Nothing</td></tr><tr><td>The same or a higher number</td><td>Nothing</td><td>Nothing</td></tr><tr><td>A <code>-dev</code> version</td><td>Nothing</td><td>Nothing</td></tr></tbody></table></div>",
+   "The change also marks the <code>releases</code> plan completed. The first real release, and with it the first real <code>trip upgrade</code>, is still yours to cut."
+  ],
+  "cards": [
+   {
+    "id": "terms",
+    "title": "Terms on this page",
+    "html": "<ul class=\"tight\"><li><b>Daemon record</b>: <code>~/.trip/daemon.json</code>, one line of <code>{\"version\":\"…\",\"pid\":N}</code> that the running daemon writes.</li><li><b>Older-daemon line</b>: <code>the daemon still runs 0.2.0 with 4 sessions; it moves to 0.3.0 when its last session ends or you run trip shutdown --yes</code>.</li><li><b>From before releases</b>: a daemon that writes no record, which every daemon built before this change is.</li><li><b><code>-dev</code> build</b>: any build not made by the release installer. Its version ends in <code>-dev</code> and it never upgrades.</li></ul>"
+   },
+   {
+    "id": "review",
+    "title": "Review so far",
+    "html": "<ul class=\"tight\"><li>One Projector review at <code>355b2b2</code>: clean, with no finding threads and two suggestions.</li><li>CI's Check workflow passed on this head, including <code>tests/upgrade_e2e.py</code>.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "record",
+   "title": "The daemon's version record",
+   "kicker": "How the daemon says which version it runs, and when that record goes away",
+   "intro": [
+    "Before this change, nothing said which version the running daemon was. Now the daemon writes <code>~/.trip/daemon.json</code> as it starts, and removes it as it exits. A file was chosen over a new socket request because a daemon from before this change cannot answer a new request, while a missing file is unambiguous.",
+    "The record carries the daemon's pid as well as its version. A daemon that is killed or panics leaves its record behind, so a reader trusts the record only while that pid is still running. <code>install.sh</code> reads the same record with <code>sed</code>, so the format must stay one line of plain values."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "src/common.rs",
+     "note": "Defines <code>DaemonRecord</code> and <code>read_daemon_record</code>, shared by the daemon and the client, with tests that pin the one-line format <code>install.sh</code> reads."
+    },
+    {
+     "path": "src/daemon/mod.rs",
+     "note": "Writes the record after taking the daemon lock and before opening the socket, and replaces every exit path's socket removal with <code>remove_daemon_files</code>.",
+     "checks": [
+      {
+       "kind": "context",
+       "line": 153,
+       "text": "The record is written before the socket exists, so a client that reaches the daemon never finds the record missing and mistakes it for a daemon from before releases. A failure to write is only logged, and such a daemon then reads as from before releases."
+      },
+      {
+       "kind": "verify",
+       "line": 228,
+       "text": "Every <code>std::process::exit</code> in this file now calls <code>remove_daemon_files</code>, which removes the socket first and the record second, and removes the record only while it names this daemon's pid. Checked by reading each exit path at this head; the daemon's lock keeps a new daemon from writing its record until this one exits."
+      }
+     ]
+    },
+    {
+     "path": "src/cli.rs",
+     "note": "Makes <code>VERSION</code> public, so the daemon records and the client compares the full version with any <code>-dev</code> suffix, and adds the <code>upgrade</code> subcommand with <code>--check</code>."
+    }
+   ]
+  },
+  {
+   "id": "client",
+   "title": "The client names an older daemon",
+   "kicker": "Where the older-daemon line appears, and how failed requests map to it",
+   "intro": [
+    "The client reads the record and decides whether the daemon is older, using the table in the overview. When it is, <code>trip ls</code> prints the line after its list, and <code>trip attach</code> and <code>trip enter</code> print it when the attach ends. They print it at the end because the attach takes over the whole screen, and its repaint would erase a line printed before it.",
+    "A future client may send a request an older daemon cannot decode. The daemon then closes the connection, and the client sees <code>unexpected frame</code> or a decode error. <code>main</code> now runs every command that talks to the daemon through <code>explain_daemon_failure</code>, which replaces such an error with <code>the daemon could not answer this request:</code> and the line, but only when the daemon is older. Every other error passes through unchanged."
+   ],
+   "checks": [
+    {
+     "kind": "context",
+     "text": "Most of the line count in <code>src/client/mod.rs</code> is a move: the body of <code>list_sessions</code> that prints the session table became <code>print_sessions</code>, unchanged, so the older-daemon line can follow it. The <code>SwitchSession</code> path and the attach loop are not touched."
+    }
+   ],
+   "files": [
+    {
+     "path": "src/client/mod.rs",
+     "note": "Adds <code>DaemonVersion</code>, the version comparison, the line itself, and <code>explain_daemon_failure</code>; moves the session table into <code>print_sessions</code>.",
+     "checks": [
+      {
+       "kind": "context",
+       "line": 118,
+       "text": "A record whose pid is not running counts as no record, so it reads as a daemon from before releases. <code>pid_running</code> treats <code>EPERM</code> as running and refuses pid 0 and anything past <code>i32::MAX</code>, which would name process groups."
+      },
+      {
+       "kind": "context",
+       "line": 197,
+       "text": "The review's suggestion: this comment says every request reports a closed connection as <code>unexpected frame</code>, but <code>get_screen</code> and <code>get_log</code> read a closed connection as success, so <code>trip screen</code> and <code>trip log</code> would exit 0 with no output against a daemon that could not decode them. A daemon at the base decodes every current request, so this matters only after a protocol change."
+      }
+     ]
+    },
+    {
+     "path": "src/client/attach.rs",
+     "note": "Prints the older-daemon line after the attach restores the terminal and before the process exits.",
+     "checks": [
+      {
+       "kind": "context",
+       "line": 899,
+       "text": "This asks the daemon for its session count only when the record already says the daemon is older, so a current daemon costs one file read and one signal-0 check."
+      }
+     ]
+    },
+    {
+     "path": "src/main.rs",
+     "note": "Splits dispatch into <code>run</code>, and passes the errors of every command that talks to the daemon through <code>explain_daemon_failure</code>.",
+     "checks": [
+      {
+       "kind": "context",
+       "line": 21,
+       "text": "<code>current</code>, <code>on</code>, <code>env</code>, <code>daemon</code>, <code>upgrade</code>, and external subcommands never ask the daemon anything, so their errors are left alone. <code>enter</code>'s own match on <code>session '…' not found</code> runs inside <code>run</code>, before this mapping, so its create-or-attach path is unchanged."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "upgrade",
+   "title": "trip upgrade",
+   "kicker": "Find the newest release, run its installer, and check what it installed",
+   "intro": [
+    "<code>trip upgrade</code> works in four steps:",
+    "<ol><li><b>Refuse a <code>-dev</code> build.</b> A checkout install follows its checkout, so the command points you to <code>./install.sh</code> and changes nothing, including a <code>--dev</code> link.</li><li><b>Find the newest release.</b> It asks <code>gh api repos/&lt;repo&gt;/releases/latest</code>, then the same API anonymously through <code>curl</code>. It reads <code>&lt;repo&gt;</code> from <code>~/.local/share/trip/release.json</code>, so a fork upgrades from the fork.</li><li><b>Run that tag's installer.</b> It downloads <code>install.sh</code> from <code>raw.githubusercontent.com</code> at the tag into a fresh private directory, and runs it with <code>TRIP_REPO</code> and <code>TRIP_REF</code> set, so the installer and the source it builds come from one tag.</li><li><b>Check the result.</b> It runs the new <code>~/.local/bin/trip --version</code>. A version other than the tag's prints both and exits 1. Otherwise it prints the older-daemon line if the daemon still runs the old version.</li></ol>",
+    "It installs nothing when the installed version is already the newest release or past it. <code>trip upgrade --check</code> only reports the installed version and the newest release."
+   ],
+   "checks": [
+    {
+     "kind": "context",
+     "text": "Releases publish no binaries, so the download's integrity rests on HTTPS and the release tag. The plan chose that when it decided to build from source."
+    }
+   ],
+   "files": [
+    {
+     "path": "src/client/upgrade.rs",
+     "note": "New. The whole upgrade flow, with the three test overrides <code>TRIP_GH</code>, <code>TRIP_GITHUB_API</code>, and <code>TRIP_RAW_URL</code>.",
+     "checks": [
+      {
+       "kind": "context",
+       "line": 18,
+       "text": "The dev check runs before <code>release.json</code> is read or anything is looked up, so a <code>-dev</code> install makes no network request unless you pass <code>--check</code>."
+      },
+      {
+       "kind": "verify",
+       "line": 161,
+       "text": "Tags and repositories must be plain <code>[A-Za-z0-9._-]</code> names, starting with a letter or digit, before they reach a URL, and every command gets them as separate arguments, so nothing passes through a shell. Checked by reading every <code>Command</code> in this file and the unit tests of <code>plain_ref</code>."
+      },
+      {
+       "kind": "context",
+       "line": 63,
+       "text": "The review's other suggestion: by the time this check runs, the installer has already switched <code>current</code> to the build that reported the wrong version, and the error does not say so or name the way back through <code>previous</code>."
+      },
+      {
+       "kind": "context",
+       "line": 225,
+       "text": "The scratch directory is created with mode <code>0700</code> and fails if the name already exists, so no other user can swap the installer between the download and the run. It is removed afterwards whether or not the install succeeded."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "tests",
+   "title": "End-to-end test",
+   "kicker": "Real daemons and a fake GitHub, each in its own temporary home",
+   "intro": [
+    "<code>tests/upgrade_e2e.py</code> builds a release-marked <code>trip</code> into <code>target/upgrade-e2e</code>, because a <code>-dev</code> build refuses to upgrade and never calls a release daemon older. It answers for GitHub with a stand-in <code>gh</code> and <code>file://</code> copies of the API and the installer, so it reaches no network. The Check workflow already runs every <code>tests/*_e2e.py</code>, so it runs on each pull request."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "tests/upgrade_e2e.py",
+     "note": "Covers the upgrade, the <code>-dev</code> refusal, the mismatch exit, the record's lifecycle and a dead pid, and the older-daemon line in <code>ls</code>, <code>attach</code>, <code>enter</code>, and a failed request."
+    }
+   ]
+  },
+  {
+   "id": "docs",
+   "title": "Documentation and the plan",
+   "kicker": "The README's upgrading section and the completed releases plan",
+   "intro": [
+    "The README gains an Upgrading section and a <code>trip upgrade</code> entry in the command list. The plan records what implementing this step settled in § 9, adds § 10 with the outcome and the test behind each acceptance row of § 4, and marks the project completed."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "README.md",
+     "note": "Adds the Upgrading section and the <code>trip upgrade</code> command entry."
+    },
+    {
+     "path": "docs/projects/releases/readme.md",
+     "note": "§ 9 gains this step's settled decisions, § 10 maps each § 4 row to its test, and the status moves to <code>completed</code>."
+    }
+   ]
+  }
+ ]
+}
