@@ -194,9 +194,11 @@ pub async fn warn_if_daemon_older(version: &str) {
 
 /// Explain a request that failed because the daemon is older than this
 /// client. An older daemon closes the connection on a request it cannot
-/// decode, which every request reports as `unexpected frame`, and a reply
-/// this client cannot decode fails in `serde_json`. Any other failure, or
-/// one from a daemon that is not older, stays as it was.
+/// decode, which every request but `trip log` reports as `unexpected frame`,
+/// and a reply this client cannot decode fails in `serde_json`. `trip log`
+/// exits with no output instead, because a daemon sends nothing for a log
+/// with no events, and that close looks the same. Any other failure, or one
+/// from a daemon that is not older, stays as it was.
 pub async fn explain_daemon_failure(error: anyhow::Error) -> anyhow::Error {
     let undecoded = error.to_string() == "unexpected frame"
         || error.chain().any(|cause| {
@@ -858,6 +860,8 @@ pub async fn get_screen(name: String, watch: bool) -> Result<()> {
                     _ => anyhow::bail!("unexpected response"),
                 }
             }
+            // The daemon answers every screen request before it closes.
+            None if first => anyhow::bail!("unexpected frame"),
             None => return Ok(()),
             _ => anyhow::bail!("unexpected frame"),
         }

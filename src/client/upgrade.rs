@@ -61,11 +61,21 @@ pub async fn upgrade(check: bool) -> Result<()> {
 
     let installed = installed_version().await?;
     if installed != newest {
+        let switch_back = match previous_version() {
+            Some(previous) if previous != installed => format!(
+                "; run ln -sfn {0} ~/.local/share/trip/current to switch back to {0}",
+                previous
+            ),
+            _ => String::new(),
+        };
         bail!(
-            "the upgrade installed trip {}, but the newest release, {}, is {}",
+            "the upgrade installed trip {}, but the newest release, {}, is {}; \
+             trip {} is now current{}",
             installed,
             tag,
-            newest
+            newest,
+            installed,
+            switch_back
         );
     }
     println!("upgraded trip {} to {}", VERSION, installed);
@@ -89,6 +99,13 @@ fn share_dir() -> PathBuf {
         .join(".local")
         .join("share")
         .join("trip")
+}
+
+/// The version the installer's `previous` link names, which it switched
+/// `current` away from. A link switched by hand can hold an absolute path.
+fn previous_version() -> Option<String> {
+    let target = std::fs::read_link(share_dir().join("previous")).ok()?;
+    Some(target.file_name()?.to_str()?.to_string())
 }
 
 /// The repository the release install came from, as `release.json` records

@@ -272,10 +272,26 @@ def test_gh_answers_before_the_anonymous_api(version):
 def test_mismatched_version_exits_1(version):
     home = Home()
     home.publish("v9.0.0", installs="8.0.0")
+    # The installer keeps the version it switched away from as `previous`.
+    share = os.path.join(home.dir, ".local", "share", "trip")
+    os.makedirs(os.path.join(share, "0.0.9"))
+    os.symlink("0.0.9", os.path.join(share, "previous"))
     result = home.run("upgrade")
     check(result.returncode == 1, "an install that reports another version exits 1", outputs(result))
-    check("8.0.0" in result.stderr and "v9.0.0" in result.stderr and "upgraded" not in result.stdout,
-          "and names both versions instead of reporting success", outputs(result))
+    check(result.stderr.endswith("\nError: the upgrade installed trip 8.0.0, but the newest release, v9.0.0, "
+                                 "is 9.0.0; trip 8.0.0 is now current; run ln -sfn 0.0.9 "
+                                 "~/.local/share/trip/current to switch back to 0.0.9\n")
+          and "upgraded" not in result.stdout,
+          "and names both versions, the build now current, and how to switch back to the previous one",
+          outputs(result))
+
+    home = Home()
+    home.publish("v9.0.0", installs="8.0.0")
+    result = home.run("upgrade")
+    check(result.returncode == 1
+          and result.stderr.endswith("\nError: the upgrade installed trip 8.0.0, but the newest release, "
+                                     "v9.0.0, is 9.0.0; trip 8.0.0 is now current\n"),
+          "with no previous version it gives no command to switch back", outputs(result))
 
 
 def test_check_installs_nothing(version):
@@ -421,6 +437,23 @@ def test_dead_pid_record_is_ignored(version):
     home.stop()
 
 
+def test_screen_and_log_against_a_current_daemon(version):
+    """A current daemon answers every `trip screen` before it closes, but
+    sends nothing for a log with no events, so only `trip screen` can read a
+    close with no reply as a failure."""
+    home = Home()
+    home.start_daemon("work")
+    screen = home.run("screen", "work")
+    check(screen.returncode == 0 and screen.stderr == "", "trip screen of a session succeeds", outputs(screen))
+    missing = home.run("screen", "nothing")
+    check(missing.returncode == 1 and "session 'nothing' not found" in missing.stderr,
+          "trip screen of a missing session names it", outputs(missing))
+    empty = home.run("log", "nothing")
+    check(empty.returncode == 0 and empty.stdout == "" and empty.stderr == "",
+          "trip log with no events prints nothing and succeeds", outputs(empty))
+    home.stop()
+
+
 class OlderDaemon:
     """A daemon that lists sessions but closes the connection on any other
     request, as an older daemon does on a request it cannot decode."""
@@ -469,6 +502,10 @@ def test_older_daemon_failing_a_request(version):
               and f"the daemon could not answer this request: {older('0.0.9', version, 3)}" in result.stderr
               and "unexpected frame" not in result.stderr,
               "a request an older daemon cannot decode fails with the older-daemon line", outputs(result))
+        result = home.run("screen", "anything")
+        check(result.returncode != 0
+              and f"the daemon could not answer this request: {older('0.0.9', version, 3)}" in result.stderr,
+              "and so does trip screen, though it closes with no reply at all", outputs(result))
         write(home.record, json.dumps({"version": version, "pid": os.getpid()}))
         result = home.run("kill", "anything")
         check("unexpected frame" in result.stderr and "older" not in result.stderr
@@ -494,6 +531,7 @@ def main():
             test_older_daemon_line,
             test_missing_record_is_from_before_releases,
             test_dead_pid_record_is_ignored,
+            test_screen_and_log_against_a_current_daemon,
             test_older_daemon_failing_a_request,
         ):
             print(f"-- {test.__name__}")
