@@ -1,0 +1,102 @@
+{
+ "version": 1,
+ "name": "Ghostty and mosh setup docs",
+ "project": "",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 35,
+  "title": "Add Ghostty setup and a mosh example to the README and site",
+  "head": "8346a52f1c6690d0511b4fa12d17d065cdddc11d",
+  "headRef": "ghostty-mosh",
+  "base": "94a5cf00ded13f70caa74b70438d768c571a7b05",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "trip keeps terminal sessions alive in a background daemon, and a terminal tab is a client that attaches to one. The README and the trip.here page explain how to set up a terminal so that every new tab starts in trip. Before this change they covered macOS Terminal and iTerm2 only.",
+   "This pull request changes documentation only, in two places:",
+   "<ol><li><b>Ghostty setup.</b> Ghostty is configured through a text file, not a settings window. The change gives two lines for that file: <code>command = ~/.local/bin/trip enter</code>, which starts every new tab in trip, and <code>confirm-close-surface = false</code>, which stops Ghostty from asking before it closes a tab. Closing a tab only detaches from the session, so the prompt protects nothing.</li><li><b>Remote sessions over mosh.</b> mosh is a remote shell that survives sleep and network changes. The new section gives one command that runs trip on another machine, and it explains why each part of the command is there: <code>--</code> so mosh stops reading options, <code>sh -c</code> so <code>~</code> expands, and <code>TRIP_DETACH_KEY=\"^-\"</code> so the remote trip doesn't compete with a local trip for Ctrl-\\. The README also covers keeping 24-bit color through mosh.</li></ol>",
+   "The review left one finding open. On Linux, Ghostty binds Ctrl+- to shrink the font, so the remote detach key the mosh example picks never reaches trip there."
+  ],
+  "cards": [
+   {
+    "id": "terms",
+    "title": "Terms",
+    "html": "<ul class=\"tight\"><li><b>Detach key:</b> the keystroke trip intercepts to open its session chooser. A second press detaches. The default is Ctrl-\\, and <code>TRIP_DETACH_KEY</code> changes it.</li><li><b>Surface:</b> Ghostty's name for one terminal, such as a tab or a split.</li><li><b>mosh-server:</b> the program mosh starts on the remote machine over SSH. It runs the command you give mosh.</li><li><b>CSI u:</b> an escape-sequence spelling of a keystroke. Ghostty sends plain Ctrl+- as <code>ESC [ 45 ; 5 u</code> rather than the byte <code>0x1f</code>, and trip recognizes both.</li></ul>"
+   },
+   {
+    "id": "checked",
+    "title": "What the review checked",
+    "html": "<ul class=\"tight\"><li>Both Ghostty options exist in Ghostty 1.4.0 and do what the docs say, according to its built-in docs, and <code>+validate-config</code> accepts them.</li><li>mosh 1.4.0 needs the <code>--</code>, shell-quotes the command, and runs it without a shell.</li><li><code>^-</code> parses to <code>0x1f</code>, and trip also matches Ghostty's CSI u spelling of that key.</li><li><code>trip enter main</code> creates or attaches, and the daemon outlives mosh.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "readme",
+   "title": "README: Ghostty setup and the mosh section",
+   "kicker": "The full text that readers copy commands from",
+   "intro": [
+    "The README carries every detail. The Ghostty subsection sits under <b>Terminal setup</b>, beside the macOS Terminal and iTerm2 entries. The new <b>Remote sessions with mosh</b> section follows <b>Switching and detaching</b>, because its key advice builds on <code>TRIP_DETACH_KEY</code>, which that section introduces.",
+    "Read the commands and config lines as code: a reader pastes them as they are. Prose around them explains each choice, so a reader can adapt the command, for example to another detach key or another host."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "README.md",
+     "note": "Adds the Ghostty subsection and the mosh section, including the advice on 24-bit color.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "Ghostty 1.4.0's own docs (<code>ghostty +show-config --default --docs</code>) say that a <code>command</code> with arguments runs through <code>/bin/sh -c</code> and applies to every new surface, and that <code>confirm-close-surface = false</code> closes surfaces without asking. <code>super+shift+,</code> is <code>reload_config</code> on macOS.",
+       "line": 101
+      },
+      {
+       "kind": "verify",
+       "text": "mosh 1.4.0 parses options in Getopt::Long's default mode, so the <code>--</code> is what stops it from reading <code>-c</code> as an option of its own. It passes the command to <code>mosh-server new ... --</code>, which runs it without a shell. Running <code>sh -c 'TRIP_DETACH_KEY=\"^-\" exec env'</code> under <code>sh</code> and <code>dash</code> printed the variable.",
+       "line": 173
+      },
+      {
+       "kind": "flag",
+       "text": "On Linux, Ghostty binds <code>ctrl+-</code> to <code>decrease_font_size</code>, and a bound key never reaches the program. A Linux user who follows both new sections sees the font shrink, and the remote trip never detaches. Say so here and on the site, and give <code>keybind = ctrl+-=unbind</code> as the way to free the key.",
+       "line": 178
+      },
+      {
+       "kind": "context",
+       "text": "trip passes the client's <code>COLORTERM</code> into a session when it creates one and again on each attach, through the <code>trip env</code> shell hook. That's why setting it on <code>mosh-server</code> is enough. A Homebrew Mac needs the full <code>mosh-server</code> path even without the color option, and a suggestion asks to say that outside this paragraph.",
+       "line": 180
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "site",
+   "title": "trip.here page: the short version",
+   "kicker": "The same two additions in the page's own markup",
+   "intro": [
+    "The page adds a Ghostty entry to its setup list and a new <b>Remote sessions with mosh</b> section. It reuses the README's wording but leaves out the color detail. A new <code>pre.snippet</code> style shows config lines and commands in the page's terminal colors, which the page defines for both its light and dark themes.",
+    "The new section follows the page's existing pattern of a <code>section</code> labeled by its <code>h2</code>. The only new external reference is a link to mosh.org."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "site/index.html",
+     "note": "Adds the <code>pre.snippet</code> style, the Ghostty entry in the setup list, and the mosh section.",
+     "checks": [
+      {
+       "kind": "flag",
+       "text": "This repeats the README's Ctrl+- advice, which fails in Ghostty on Linux, where Ctrl+- shrinks the font. It needs the same fix as <code>README.md:178</code>.",
+       "line": 267
+      },
+      {
+       "kind": "context",
+       "text": "<b>Cmd+Shift+,</b> is the macOS shortcut. Ghostty on Linux reloads its config with Ctrl+Shift+,.",
+       "line": 253
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
