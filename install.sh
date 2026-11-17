@@ -2,7 +2,7 @@
 #
 # Build trip with cargo and install it into ~/.local, without sudo.
 #
-#   curl -fsSL https://raw.githubusercontent.com/ninjudd/trip/v0/install.sh | bash
+#   curl -fsSL https://trip.here/install.sh | bash
 #   ./install.sh          from a checkout: build the checkout as <version>-dev
 #   ./install.sh --dev    from a checkout: link ~/.local/bin/trip to target/debug
 #

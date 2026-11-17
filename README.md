@@ -19,10 +19,10 @@ Trip separates the terminal viewport from the runtime session. This means:
 trip builds from source, so you need Rust's `cargo`; install it with [rustup](https://rustup.rs) if you don't have it. Install the newest release with:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/ninjudd/trip/v0/install.sh | bash
+curl -fsSL https://trip.here/install.sh | bash
 ```
 
-This command works once the first release is tagged. It downloads the release's source, builds it, and installs it into `~/.local`, without `sudo`. The build takes about 10 seconds on an Apple M2 Max once its dependencies are downloaded, and longer on a slower machine or the first time.
+It downloads the release's source, builds it, and installs it into `~/.local`, without `sudo`. The build takes about 10 seconds on an Apple M2 Max once its dependencies are downloaded, and longer on a slower machine or the first time.
 
 The installer puts each version in its own directory and switches to it only when the build succeeds:
 
