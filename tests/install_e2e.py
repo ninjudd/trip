@@ -321,19 +321,23 @@ def test_shell_hook():
 
     # A session started as ~/.local/bin/trip enter can run a shell whose PATH
     # lacks ~/.local/bin, where the old hook failed before every command.
-    for hook, guarded in ((OLD_HOOK, False), (bashrc, True)):
-        rc = os.path.join(home.dir, "hook-guarded" if guarded else "hook-old")
-        with open(rc, "w") as f:
-            f.write(hook)
-        shell = subprocess.run(
-            ["bash", "-c", f'TRIP_SESSION=demo; . "{rc}"; echo ran'],
-            capture_output=True, text=True, env={"PATH": "/usr/bin:/bin", "HOME": home.dir}, timeout=20,
-        )
-        if guarded:
-            check(shell.stdout.strip() == "ran" and "not found" not in shell.stderr,
-                  "the hook stays quiet in a shell where trip does not resolve", shell.stderr)
-        else:
-            check("not found" in shell.stderr, "the old hook fails there, which the guard prevents", shell.stderr)
+    old = source_without_trip(home, OLD_HOOK)
+    check("not found" in old.stderr, "the old hook fails there, which the guard prevents", old.stderr)
+    guarded = source_without_trip(home, bashrc)
+    check((guarded.stdout, guarded.stderr) == ("ran\n", ""),
+          "the hook stays quiet in a shell where trip does not resolve", f"{guarded.stdout!r} {guarded.stderr!r}")
+
+
+def source_without_trip(home, startup):
+    """Source a startup file in a trip session's bash whose PATH lacks trip,
+    then run one command."""
+    path = os.path.join(home.dir, "startup-under-test")
+    with open(path, "w") as f:
+        f.write(startup)
+    return subprocess.run(
+        ["bash", "-c", f'TRIP_SESSION=demo; . "{path}"; echo ran'],
+        capture_output=True, text=True, env={"PATH": "/usr/bin:/bin", "HOME": home.dir}, timeout=20,
+    )
 
 
 def test_checkout_installs_dev_version():
