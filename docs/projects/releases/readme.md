@@ -1,5 +1,5 @@
 ---
-status: ready
+status: in-progress
 priority: now
 ---
 
@@ -166,3 +166,9 @@ Steps 1 to 4 can ship as one stack. The first release waits for all of them, so 
 
 - **Projector's release system**, the model for § 2.1: `.github/workflows/release.yml` (the propose and publish jobs), `.github/scripts/release.py` (the version files, the bump, and the idempotent publish steps, with `v0` moved last), `install.sh` (two modes chosen by what sits beside it, `PROJECTOR_REF` defaulting to `v0`), and `project upgrade` in `src/projector/cli.py` (the newest release's tag, that tag's installer, and the check of what it installed). Its "Release an update" section in `docs/plugins.md` describes the process.
 - **`trip` today**: `Cargo.toml` at `0.1.0` with no metadata and no `LICENSE`; no tags; one workflow, the project site; `install.sh` building `--release` and copying to `/usr/local/bin` with `sudo` by a rename that leaves a running daemon on the old file; no `--version`. The client starts the daemon from `current_exe()` (`src/client/launch.rs`), and the daemon owns each session's terminal (`src/daemon/session.rs`), so a restart ends them. `trip shutdown` ends every session (`README.md`).
+
+## 9. What implementation settled
+
+- **The minimum Rust version is 1.85.** `clap` 4.6 and `vt100` 0.18 use the 2024 edition and declare `rust-version = "1.85"`, the first release with that edition, and nothing in `trip`'s own code needs newer than 1.82 (`Option::is_none_or`). `check.yml` has an `msrv` job that reads `rust-version` from `Cargo.toml` and runs `cargo check --locked --all-targets` on that toolchain, so a dependency bump or newer API that raises it fails a pull request. With `rust-version` set, clippy's `incompatible_msrv` lint also flags a standard library API newer than it.
+- **Only `TRIP_RELEASE=1` marks a release.** Any other value, `0` included, builds `<version>-dev`. `tests/version.rs` runs the built binary's `--version` and `-V` and expects the version its own build's `TRIP_RELEASE` calls for, so `check.yml` runs it twice: in `cargo test`, and again as `TRIP_RELEASE=1 cargo test --test version`. Cargo tracks the variable, so a build after a change to it recompiles `trip` and reports the new answer.
+- **Linux stays deferred** (§ 7). `check.yml` runs on `macos-latest` only.

@@ -2,8 +2,15 @@ use std::ffi::OsString;
 
 use clap::{Parser, Subcommand};
 
+/// The bare version only for a build made with `TRIP_RELEASE=1`, as the
+/// release installer makes one, so any other build says it is not a release.
+const VERSION: &str = match option_env!("TRIP_RELEASE") {
+    Some(flag) if matches!(flag.as_bytes(), [b'1']) => env!("CARGO_PKG_VERSION"),
+    _ => concat!(env!("CARGO_PKG_VERSION"), "-dev"),
+};
+
 #[derive(Parser)]
-#[command(name = "trip", about = "Persistent terminal sessions")]
+#[command(name = "trip", version = VERSION, about = "Persistent terminal sessions")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,

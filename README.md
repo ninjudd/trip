@@ -202,6 +202,8 @@ whatever it said before rather than keeping the session's last title.
 
 **`trip current`** — Print the current session name (exit 1 if not in a session).
 
+**`trip --version`** — Print the version. Only a build made with `TRIP_RELEASE=1` set prints the bare version, such as `trip 0.1.0`. Every other build, including a plain `cargo build`, prints `trip 0.1.0-dev`, so a binary always says whether it is a release.
+
 ### Agent integration
 
 **`trip on`** — Register a running AI agent (Claude Code, Codex) with the current trip session. Reads `CLAUDE_CODE_SESSION_ID` or `CODEX_THREAD_ID` from the environment, locates the agent's JSONL log file, and tells the daemon to tail it for structured events. Raw terminal output is suppressed while agent logging is active.
@@ -344,7 +346,7 @@ The core primitive is a **persistent PTY-backed session**. Everything else is op
 ## Requirements
 
 - macOS or Linux
-- Rust 2021 edition
+- Rust 1.85 or newer
 
 ## License
 
