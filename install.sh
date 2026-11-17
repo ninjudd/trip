@@ -218,13 +218,16 @@ install_release() {
   mv -f "$SHARE_DIR/.release.json.new" "$SHARE_DIR/release.json"
 }
 
-# The checkout's target directory, where `cargo build` there writes.
+# The checkout's target directory, where `cargo build` there writes. Cargo
+# reports it, so CARGO_TARGET_DIR and a cargo config's build.target-dir both
+# count.
 target_dir() {
-  case "${CARGO_TARGET_DIR:-}" in
-    "") printf '%s\n' "$REPO/target" ;;
-    /*) printf '%s\n' "$CARGO_TARGET_DIR" ;;
-    *) printf '%s\n' "$REPO/$CARGO_TARGET_DIR" ;;
-  esac
+  local metadata dir
+  metadata="$(cd "$REPO" && cargo metadata --format-version 1 --no-deps)" \
+    || die "cargo metadata failed in $REPO, so the build's directory is unknown."
+  dir="$(printf '%s\n' "$metadata" | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
+  [ -n "$dir" ] || die "cargo metadata in $REPO named no target directory."
+  printf '%s\n' "$dir"
 }
 
 install_checkout() {

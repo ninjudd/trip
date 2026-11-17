@@ -105,6 +105,8 @@ class Home:
 
     def version(self):
         """What ~/.local/bin/trip says it is."""
+        if not os.path.exists(self.bin):
+            return f"no {self.bin}"
         result = subprocess.run([self.bin, "--version"], capture_output=True, text=True, timeout=20)
         return result.stdout.strip()
 
@@ -380,6 +382,23 @@ def test_checkout_installs_dev_version():
     check(not os.path.exists(os.path.join(home.share, "release.json")), "a checkout records no release")
 
 
+def test_checkout_finds_a_cargo_config_target_dir():
+    """A checkout whose cargo config sets build.target-dir builds there, not
+    in target/, and both checkout modes install what that build wrote."""
+    home = Home()
+    checkout = stand_in("0.7.0")
+    os.makedirs(os.path.join(checkout, ".cargo"))
+    with open(os.path.join(checkout, ".cargo", "config.toml"), "w") as f:
+        f.write('[build]\ntarget-dir = "elsewhere"\n')
+    result = home.checkout(checkout)
+    check(result.returncode == 0, "./install.sh with a configured target-dir succeeds", outputs(result))
+    check(home.version() == "trip 0.7.0-dev", "it installs the build from that directory", home.version())
+    dev = home.checkout(checkout, "--dev")
+    check(dev.returncode == 0, "./install.sh --dev with a configured target-dir succeeds", outputs(dev))
+    check(os.readlink(home.bin) == os.path.join(checkout, "elsewhere", "debug", "trip"),
+          "--dev links the debug build in that directory", str(os.path.islink(home.bin) and os.readlink(home.bin)))
+
+
 def test_dev_links_debug_build():
     home = Home()
     home.release(release("0.2.0"))
@@ -421,6 +440,7 @@ def main():
             test_shell_hook,
             test_hook_without_its_closing_fi_is_left_unchanged,
             test_checkout_installs_dev_version,
+            test_checkout_finds_a_cargo_config_target_dir,
             test_dev_links_debug_build,
             test_refuses_without_cargo,
             test_release_of_trip_itself,
