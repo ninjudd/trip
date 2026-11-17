@@ -11,7 +11,9 @@ The Release workflow runs these. Started by hand with patch, minor, or major,
 it runs `bump` and `check-commit` on a release/vX.Y.Z branch and opens the
 release pull request. When that pull request merges, it runs `tag` on the
 merge commit, with --since naming main's previous head, so a push that
-leaves the version alone releases nothing. `tag` pushes the immutable vX.Y.Z
+leaves the version alone or lowers it, as a revert does, releases nothing.
+`tag` also refuses a new version below the newest vX.Y.Z tag, and never moves
+the major tag back to an older version. `tag` pushes the immutable vX.Y.Z
 tag, creates the GitHub release for it with generated notes (--no-release
 skips that step), and then force-moves the major tag that the installer
 follows. The major tag moves last because `trip upgrade` reads the newest
@@ -185,6 +187,7 @@ class Merged(NamedTuple):
     commit: str
     tagged: bool
     major_moved: bool
+    major_version: str | None
 
 
 def remote_tags(root: Path, remote: str, *names: str) -> dict[str, str]:
@@ -199,6 +202,16 @@ def remote_tags(root: Path, remote: str, *names: str) -> dict[str, str]:
         else:
             commits.setdefault(name, sha)
     return commits
+
+
+def tagged_versions(root: Path, remote: str) -> list[str]:
+    """The versions the remote's vX.Y.Z tags name."""
+    found = []
+    for line in git(root, "ls-remote", "--tags", "--refs", remote, "refs/tags/v*").splitlines():
+        version = line.split("\t")[1].removeprefix("refs/tags/v")
+        if SEMVER.match(version):
+            found.append(version)
+    return found
 
 
 def is_ancestor(root: Path, commit: str, head: str) -> bool:
@@ -241,16 +254,27 @@ def merged(root: Path, remote: str, branch: str, commit: str | None) -> Merged:
     release_commit = tags.get(name, head)
     if name in tags:
         check_tagged(root, head, version, release_commit)
+    else:
+        # A version below a released one would move the major tag back to older code.
+        newest = max(tagged_versions(root, remote), key=parse, default=None)
+        if newest is not None and parse(newest) > parse(version):
+            raise ReleaseError(f"v{newest} is already released, so {version} cannot be; "
+                               f"set a version above {newest}")
+    major_version = version_at(root, tags[major]) if major in tags else None
     return Merged(version, name, major, release_commit, tagged=name in tags,
-                  major_moved=tags.get(major) == release_commit)
+                  major_moved=tags.get(major) == release_commit, major_version=major_version)
 
 
 def tag(root: Path, remote: str = "origin", branch: str = "main", commit: str | None = None,
         since: str | None = None, github_release: bool = True) -> str:
     if since is not None and commit is not None:
-        version = version_at(root, commit)
-        if version_at(root, since) == version:
+        # Only a push that raises the version is a release; a revert lowers it.
+        version, before = version_at(root, commit), version_at(root, since)
+        if before == version:
             return f"{since[:9]}..{commit[:9]} leaves the version at {version}, so there is nothing to release"
+        if parse(before) > parse(version):
+            return (f"{since[:9]}..{commit[:9]} lowers the version from {before} to {version}, "
+                    "so there is nothing to release")
     state = merged(root, remote, branch, commit)
     did: list[str] = []
     found: list[str] = []
@@ -271,6 +295,9 @@ def tag(root: Path, remote: str = "origin", branch: str = "main", commit: str | 
                 did.append("published the GitHub release")
         if state.major_moved:
             found.append(state.major)
+        elif state.major_version is not None and parse(state.major_version) > parse(state.version):
+            # Finishing an older release after a newer one must not take the installer back.
+            did.append(f"left {state.major} on the newer {state.major_version}")
         else:
             git(root, "tag", "--force", "-a", state.major, state.commit, "-m", f"trip {state.version}")
             git(root, "push", "--quiet", "--force", remote, f"refs/tags/{state.major}")
@@ -296,7 +323,7 @@ def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
     t.add_argument("--remote", default="origin")
     t.add_argument("--branch", default="main")
     t.add_argument("--commit", help="the release commit, which must be on the branch (default: the branch's head)")
-    t.add_argument("--since", help="release nothing when this commit names the same version as --commit")
+    t.add_argument("--since", help="release nothing unless --commit names a higher version than this commit")
     t.add_argument("--no-release", action="store_true", help="push the tags without creating the GitHub release")
     args = parser.parse_args(argv)
     try:

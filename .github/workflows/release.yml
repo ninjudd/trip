@@ -81,10 +81,11 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      # A Cargo.toml change that leaves the version alone releases nothing, so
-      # an unreleased version such as 0.1.0 is never published by a dependency
-      # bump. `tag` releases the commit this push made, and does only the steps
-      # still missing, so re-running a failed job finishes the release.
+      # A Cargo.toml change that leaves the version alone or lowers it releases
+      # nothing, so an unreleased version such as 0.1.0 is never published by a
+      # dependency bump or a revert. `tag` releases the commit this push made,
+      # and does only the steps still missing, so re-running a failed job
+      # finishes the release.
       - name: Tag and publish the merged version
         env:
           BEFORE: ${{ github.event.before }}

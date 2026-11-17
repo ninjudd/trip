@@ -348,6 +348,62 @@ class TagTests(unittest.TestCase):
         self.assertEqual([], self.remote_tags())
         self.assertEqual([], self.gh_calls())
 
+    def test_reverting_the_first_release_publishes_nothing(self) -> None:
+        # 0.5.0 was never released, like trip's 0.1.0, so reverting the first
+        # release pull request must not publish it or move v0 onto the revert.
+        before = self.head()
+        bump = commit_version(self.repo, "0.6.0")
+        self.tag(commit=bump, since=before)
+        calls = self.gh_calls()
+        revert = commit_version(self.repo, "0.5.0")
+        self.assertEqual(f"{bump[:9]}..{revert[:9]} lowers the version from 0.6.0 to 0.5.0, "
+                         "so there is nothing to release", self.tag(commit=revert, since=bump))
+        self.assertEqual(["v0", "v0.6.0"], self.remote_tags())
+        self.assertEqual(bump, self.remote_tag("v0"))
+        self.assertEqual(calls, self.gh_calls())
+
+    def test_reverting_a_later_release_publishes_nothing_and_leaves_v0(self) -> None:
+        self.tag()
+        bump = commit_version(self.repo, "0.6.0")
+        self.tag()
+        tags = {name: self.remote_tag_object(name) for name in self.remote_tags()}
+        revert = commit_version(self.repo, "0.5.0")
+        self.assertIn("lowers the version from 0.6.0 to 0.5.0", self.tag(commit=revert, since=bump))
+        self.assertEqual(tags, {name: self.remote_tag_object(name) for name in self.remote_tags()})
+        self.assertEqual(bump, self.remote_tag("v0"))
+
+    def test_refuses_a_new_version_below_the_newest_release(self) -> None:
+        # After a revert to 0.5.0, the next release pull request bumps to
+        # 0.5.1, which is older than the released 0.6.0.
+        self.tag()
+        bump = commit_version(self.repo, "0.6.0")
+        self.tag()
+        revert = commit_version(self.repo, "0.5.0")
+        self.tag(commit=revert, since=bump)
+        calls = self.gh_calls()
+        lower = commit_version(self.repo, "0.5.1")
+        with self.assertRaisesRegex(release.ReleaseError,
+                                    r"v0\.6\.0 is already released, so 0\.5\.1 cannot be; set a version above 0\.6\.0"):
+            self.tag(commit=lower, since=revert)
+        self.assertEqual(["v0", "v0.5.0", "v0.6.0"], self.remote_tags())
+        self.assertEqual(bump, self.remote_tag("v0"))
+        self.assertEqual(calls, self.gh_calls())
+
+    def test_finishing_an_older_release_leaves_v0_on_a_newer_one(self) -> None:
+        self.tag()
+        first = self.head()
+        older = commit_version(self.repo, "0.5.1")
+        os.environ["FAKE_GH_FAIL"] = "release create"
+        with self.assertRaises(release.ReleaseError):
+            self.tag(commit=older, since=first)
+        del os.environ["FAKE_GH_FAIL"]
+        newer = commit_version(self.repo, "0.5.2")
+        self.tag(commit=newer, since=older)
+        self.assertEqual(f"v0.5.1 at {older[:9]}: published the GitHub release, left v0 on the newer 0.5.2 "
+                         "(already done: the v0.5.1 tag)", self.tag(commit=older, since=first))
+        self.assertEqual(newer, self.remote_tag("v0"))
+        self.assertEqual(["v0.5.0", "v0.5.2", "v0.5.1"], self.releases())
+
     def test_tags_the_release_commit_even_after_the_branch_moves_past_it(self) -> None:
         before = self.head()
         bump = commit_version(self.repo, "0.5.1")
