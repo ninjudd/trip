@@ -1,0 +1,120 @@
+{
+ "version": 1,
+ "name": "Older daemon and upgrade messages",
+ "project": "releases",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 33,
+  "title": "Name an older daemon from `trip screen`, and say how to switch back after a mismatched upgrade",
+  "head": "2d2bbd3f3b7d8f27d1d602359dc23330db3ccc5b",
+  "headRef": "upgrade-messages",
+  "base": "cd7f57bbf939f50589f21db9ca2efbaf1926d029",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "<code>trip</code> runs a long-lived daemon that holds every terminal session, and the <code>trip</code> command is a client that sends it one request per invocation. Because <code>trip upgrade</code> never restarts the daemon, a newer client often talks to an older daemon. When that daemon cannot decode a request, it closes the connection without replying. The previous pull request, #31, taught the client to turn that close into one line naming the older daemon and saying when it moves to the new version.",
+   "This pull request follows up two suggestions from that review:",
+   "<ol><li><b><code>trip screen</code> now reports an older daemon.</b> It used to treat a close before any reply as success, so against an older daemon it printed nothing and exited 0. A current daemon always replies to a screen request before it closes, so a close before the first reply is now an error, and the older-daemon line explains it. <code>trip log</code> keeps the old behavior, because a current daemon also closes without replying when a log has no events.</li><li><b>A mismatched upgrade says how to switch back.</b> When <code>trip upgrade</code> installs a build that reports a version other than the release tag's, the installer has already made that build current. The error now says so and, when the installer kept a <code>previous</code> link, gives the <code>ln -sfn</code> command that points <code>current</code> back at it.</li></ol>"
+  ],
+  "cards": [
+   {
+    "id": "terms",
+    "title": "Terms",
+    "html": "<ul class=\"tight\"><li><b>Older daemon:</b> a running daemon whose version, recorded in <code>~/.trip/daemon.json</code>, is lower than the client's.</li><li><b><code>current</code> and <code>previous</code>:</b> symlinks in <code>~/.local/share/trip</code>. <code>current</code> names the installed version, and <code>~/.local/bin/trip</code> runs through it. <code>previous</code> names the version <code>current</code> named before the installer last switched it to a different version.</li><li><b>Mismatch:</b> the release tag says one version and the build it installs reports another.</li></ul>"
+   },
+   {
+    "id": "review",
+    "title": "Review so far",
+    "html": "<ul class=\"tight\"><li>One open P2 finding: when the mismatched build reports the version that was already running, the installer leaves <code>previous</code> on an older version, and the suggested command would downgrade.</li><li>Two suggestions: explain an empty <code>trip log</code> against an older daemon on stderr, and test <code>trip screen --watch</code> of a session that ends.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "screen",
+   "title": "trip screen and an older daemon",
+   "kicker": "A close before the first reply is now an error for <code>trip screen</code>, but not for <code>trip log</code>.",
+   "intro": [
+    "<code>get_screen</code> reads replies from the daemon until the connection closes. In watch mode it prints each new screen, so a close after a reply means the session ended and is a normal exit. A close before any reply only happens when the daemon refused the request, so that case now fails with <code>unexpected frame</code>. <code>main.rs</code> already passes every request's error through <code>explain_daemon_failure</code>, which turns <code>unexpected frame</code> into the older-daemon line when the daemon is older.",
+    "<code>get_log</code> cannot make the same change. The daemon's <code>GetLog</code> handler writes nothing when there are no events to show and then closes, so an empty log and a refusal look identical to the client."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "src/client/mod.rs",
+     "note": "Adds the close-before-first-reply branch to <code>get_screen</code>, and rewrites the comment on <code>explain_daemon_failure</code> to name <code>trip log</code> as the exception.",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 864,
+       "text": "Read the daemon's <code>GetScreen</code> handler: in both modes it writes <code>ScreenData</code> or <code>Error</code> before it closes, and in watch mode it writes the first screen before it subscribes, so <code>first</code> is false by the time a session ends."
+      },
+      {
+       "kind": "context",
+       "line": 201,
+       "text": "<code>trip shutdown</code> also treats a close as success, printing <code>daemon stopped</code>, but <code>Shutdown</code> is a unit variant every daemon decodes, so the comment's claim holds for requests an older daemon can refuse."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "upgrade",
+   "title": "Switching back after a mismatched upgrade",
+   "kicker": "The mismatch error says the build is current and gives the way back.",
+   "intro": [
+    "<code>trip upgrade</code> runs the release's own <code>install.sh</code> and then checks what <code>~/.local/bin/trip --version</code> reports. By the time that check fails, the installer has already switched <code>current</code> to the new build. The new <code>previous_version</code> reads the installer's <code>previous</code> link, and the error appends <code>run ln -sfn &lt;previous&gt; ~/.local/share/trip/current to switch back</code> when that link names a different version from the one installed."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "src/client/upgrade.rs",
+     "note": "Builds the switch-back clause from <code>previous_version()</code> and adds it to the mismatch error.",
+     "checks": [
+      {
+       "kind": "flag",
+       "line": 65,
+       "text": "When the mismatched build reports the version already running, the installer reinstalls over that version and leaves <code>previous</code> on the version before it. The message then says to \"switch back\" to that older version, which is a downgrade. Offering the command only when <code>previous</code> names <code>VERSION</code> would fix it."
+      },
+      {
+       "kind": "verify",
+       "line": 108,
+       "text": "Compared with <code>link_version</code> in <code>install.sh</code>: both reduce an absolute target to its last path component, and the installer keeps the directory <code>previous</code> names, so the suggested target exists."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "tests-docs",
+   "title": "Tests and documentation",
+   "kicker": "End-to-end checks for both messages, and the README's Upgrading section.",
+   "intro": [
+    "<code>tests/upgrade_e2e.py</code> runs the release binary in a temporary HOME. It now checks that <code>trip screen</code> against its fake older daemon prints the older-daemon line, and that a real current daemon still answers <code>trip screen</code> and returns an empty <code>trip log</code> with exit 0. It also pins the exact mismatch message with and without a <code>previous</code> link."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "tests/upgrade_e2e.py",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 451,
+       "text": "Ran <code>python3 tests/upgrade_e2e.py</code> on the head: it ends with <code>all upgrade checks passed</code>."
+      },
+      {
+       "kind": "context",
+       "line": 278,
+       "text": "The fixture points <code>previous</code> at <code>0.0.9</code>, a version the client never ran. A real installer would point it at the version the upgrade switched away from."
+      }
+     ]
+    },
+    {
+     "path": "README.md",
+     "note": "Describes the switch-back command and names <code>trip log</code> as the request that cannot report an older daemon."
+    }
+   ]
+  }
+ ]
+}
