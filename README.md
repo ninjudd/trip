@@ -180,10 +180,18 @@ This enters the session `main` on `myserver`, and creates it if it doesn't
 exist. Run the same command again to reattach. mosh runs its command directly
 rather than through a shell, so `sh -c` is what expands `~`.
 
-If the remote machine is a Mac with Homebrew, add
-`--server=/opt/homebrew/bin/mosh-server` to the command. mosh starts its
-server through an SSH login that doesn't have Homebrew on its `PATH`, so
-without the full path it fails with `mosh-server: command not found`.
+If the remote machine is a Mac with Homebrew, name its server with
+`--server`, before the host name:
+
+```
+mosh --server=/opt/homebrew/bin/mosh-server myserver -- \
+  sh -c 'TRIP_DETACH_KEY="^]" exec ~/.local/bin/trip enter main'
+```
+
+mosh starts its server through an SSH login that doesn't have Homebrew on its
+`PATH`, so without the full path it fails with `mosh-server: command not
+found`. A mosh option goes before `--`, because everything after it is the
+remote command.
 
 When the terminal you run mosh from is itself a trip session, that local trip
 catches Ctrl-\ before mosh sees it. So the command gives the remote trip a
