@@ -1,0 +1,276 @@
+diff --git a/README.md b/README.md
+index e5d186b..3fa9f8c 100644
+--- a/README.md
++++ b/README.md
+@@ -55,7 +55,7 @@ Upgrade a release install to the newest release with:
+ trip upgrade
+ ```
+ 
+-It asks GitHub for the newest release, through `gh` when it is signed in and anonymously otherwise, downloads that release's `install.sh`, and runs it for that release's tag. It then runs the new `~/.local/bin/trip --version`, and if that does not report the release's version, it prints both and exits 1. It upgrades from the repository the install came from, which `~/.local/share/trip/release.json` records, so a fork upgrades from the fork. To see whether there is anything to upgrade to, without installing anything, run `trip upgrade --check`.
++It asks GitHub for the newest release, through `gh` when it is signed in and anonymously otherwise, downloads that release's `install.sh`, and runs it for that release's tag. It then runs the new `~/.local/bin/trip --version`, and if that does not report the release's version, it prints both and exits 1. By then the installer has already made that build `current`, so the message says so and gives the command that switches back to the version it replaced, such as `ln -sfn 0.2.0 ~/.local/share/trip/current`. When that build reports the version you already ran, the installer reinstalled it over itself, so the message says it is still current and gives no command. It upgrades from the repository the install came from, which `~/.local/share/trip/release.json` records, so a fork upgrades from the fork. To see whether there is anything to upgrade to, without installing anything, run `trip upgrade --check`.
+ 
+ A checkout install, whose version ends in `-dev`, follows its checkout rather than releases, so `trip upgrade` refuses it and points you to `./install.sh`.
+ 
+@@ -65,7 +65,7 @@ The upgrade never restarts the daemon, because the daemon holds every session's
+ the daemon still runs 0.2.0 with 4 sessions; it moves to 0.3.0 when its last session ends or you run trip shutdown --yes
+ ```
+ 
+-A request that the older daemon cannot understand fails with the same line. A daemon from an install made before releases existed is named as "a trip from before releases".
++A request that the older daemon cannot understand fails with the same line. `trip log` is the exception: it prints the line to stderr, prints no log, and exits 0, because a daemon also closes without a reply when a log has no events, and the client cannot tell the two apart. A daemon from an install made before releases existed is named as "a trip from before releases".
+ 
+ ## Terminal setup
+ 
+diff --git a/src/client/mod.rs b/src/client/mod.rs
+index b2ffb47..34509a5 100644
+--- a/src/client/mod.rs
++++ b/src/client/mod.rs
+@@ -194,9 +194,12 @@ pub async fn warn_if_daemon_older(version: &str) {
+ 
+ /// Explain a request that failed because the daemon is older than this
+ /// client. An older daemon closes the connection on a request it cannot
+-/// decode, which every request reports as `unexpected frame`, and a reply
+-/// this client cannot decode fails in `serde_json`. Any other failure, or
+-/// one from a daemon that is not older, stays as it was.
++/// decode, which every request but `trip log` reports as `unexpected frame`,
++/// and a reply this client cannot decode fails in `serde_json`. `trip log`
++/// names the older daemon itself and exits 0 with no output, because a
++/// daemon sends nothing for a log with no events, and that close looks the
++/// same. Any other failure, or one
++/// from a daemon that is not older, stays as it was.
+ pub async fn explain_daemon_failure(error: anyhow::Error) -> anyhow::Error {
+     let undecoded = error.to_string() == "unexpected frame"
+         || error.chain().any(|cause| {
+@@ -858,6 +861,8 @@ pub async fn get_screen(name: String, watch: bool) -> Result<()> {
+                     _ => anyhow::bail!("unexpected response"),
+                 }
+             }
++            // The daemon answers every screen request before it closes.
++            None if first => anyhow::bail!("unexpected frame"),
+             None => return Ok(()),
+             _ => anyhow::bail!("unexpected frame"),
+         }
+@@ -888,6 +893,7 @@ pub async fn get_log(
+     )
+     .await?;
+ 
++    let mut first = true;
+     loop {
+         match read_frame(&mut reader).await? {
+             Some(Frame::Control(payload)) => {
+@@ -896,6 +902,7 @@ pub async fn get_log(
+                     Response::LogData { content } => {
+                         print!("{}", content);
+                         std::io::Write::flush(&mut std::io::stdout())?;
++                        first = false;
+                         if !follow {
+                             return Ok(());
+                         }
+@@ -906,7 +913,15 @@ pub async fn get_log(
+                     _ => anyhow::bail!("unexpected response"),
+                 }
+             }
+-            None => return Ok(()),
++            // A daemon sends nothing for a log with no events, and an older
++            // one closes the same way on a request it cannot decode, so the
++            // empty log succeeds but names an older daemon.
++            None => {
++                if first {
++                    warn_if_daemon_older(crate::cli::VERSION).await;
++                }
++                return Ok(());
++            }
+             _ => anyhow::bail!("unexpected frame"),
+         }
+     }
+diff --git a/src/client/upgrade.rs b/src/client/upgrade.rs
+index 163b194..9cd526d 100644
+--- a/src/client/upgrade.rs
++++ b/src/client/upgrade.rs
+@@ -57,15 +57,31 @@ pub async fn upgrade(check: bool) -> Result<()> {
+         return Ok(());
+     }
+ 
++    // The installer moves `previous` only when it installs a version other
++    // than the current one, so what `current` named before it ran is the
++    // only version this upgrade can have switched away from.
++    let replaced = current_version();
+     run_installer(&repo, &tag).await?;
+ 
+     let installed = installed_version().await?;
+     if installed != newest {
++        let outcome = match replaced {
++            Some(replaced) if replaced == installed => {
++                format!("trip {} is still current", installed)
++            }
++            Some(replaced) if share_dir().join(&replaced).is_dir() => format!(
++                "trip {0} is now current; run ln -sfn {1} ~/.local/share/trip/current \
++                 to switch back to {1}",
++                installed, replaced
++            ),
++            _ => format!("trip {} is now current", installed),
++        };
+         bail!(
+-            "the upgrade installed trip {}, but the newest release, {}, is {}",
++            "the upgrade installed trip {}, but the newest release, {}, is {}; {}",
+             installed,
+             tag,
+-            newest
++            newest,
++            outcome
+         );
+     }
+     println!("upgraded trip {} to {}", VERSION, installed);
+@@ -91,6 +107,13 @@ fn share_dir() -> PathBuf {
+         .join("trip")
+ }
+ 
++/// The version the installer's `current` link names. A link switched by hand
++/// can hold an absolute path.
++fn current_version() -> Option<String> {
++    let target = std::fs::read_link(share_dir().join("current")).ok()?;
++    Some(target.file_name()?.to_str()?.to_string())
++}
++
+ /// The repository the release install came from, as `release.json` records
+ /// it, so a fork upgrades from the fork.
+ fn release_repo() -> Result<String> {
+diff --git a/tests/upgrade_e2e.py b/tests/upgrade_e2e.py
+index 60a08c8..08fe55c 100755
+--- a/tests/upgrade_e2e.py
++++ b/tests/upgrade_e2e.py
+@@ -154,17 +154,27 @@ def __init__(self):
+ 
+     def publish(self, tag, installs=None, repo="ninjudd/trip"):
+         """Make `tag` the newest release of `repo`, with an installer that
+-        installs a trip reporting `installs`, the tag's version by default."""
++        installs a trip reporting `installs`, the tag's version by default.
++        It moves the links as install.sh does: `previous` takes the version
++        `current` named only when that differs from the one it installs."""
+         installs = installs or tag.lstrip("v")
+         write(os.path.join(self.source, "api", "repos", repo, "releases", "latest"),
+               json.dumps({"tag_name": tag, "name": tag.lstrip("v")}))
+         write(os.path.join(self.source, "raw", repo, tag, "install.sh"), f"""#!/usr/bin/env bash
+ set -eu
+ printf '%s %s\\n' "$TRIP_REPO" "$TRIP_REF" > {self.installer_ran}
+-mkdir -p "$HOME/.local/bin"
++share="$HOME/.local/share/trip"
++mkdir -p "$HOME/.local/bin" "$share/{installs}"
++printf '#!/bin/sh\\necho "trip {installs}"\\n' > "$share/{installs}/trip"
++chmod +x "$share/{installs}/trip"
++current="$(readlink "$share/current" || true)"
++current="${{current##*/}}"
++if [ -n "$current" ] && [ "$current" != "{installs}" ]; then
++  ln -sfn "$current" "$share/previous"
++fi
++ln -sfn "{installs}" "$share/current"
+ rm -f "$HOME/.local/bin/trip"
+-printf '#!/bin/sh\\necho "trip {installs}"\\n' > "$HOME/.local/bin/trip"
+-chmod +x "$HOME/.local/bin/trip"
++ln -s "$share/current/trip" "$HOME/.local/bin/trip"
+ echo "Done."
+ """)
+ 
+@@ -269,13 +279,49 @@ def test_gh_answers_before_the_anonymous_api(version):
+           "the tag gh names wins over the anonymous API's", outputs(result) + f"\n{read(home.installer_ran)}")
+ 
+ 
++def release_install(home, version, previous=None):
++    """Lay out a release install of `version` as install.sh leaves it, with
++    `previous` naming the version before it."""
++    share = os.path.join(home.dir, ".local", "share", "trip")
++    for name in filter(None, (version, previous)):
++        os.makedirs(os.path.join(share, name))
++    os.symlink(version, os.path.join(share, "current"))
++    if previous:
++        os.symlink(previous, os.path.join(share, "previous"))
++
++
+ def test_mismatched_version_exits_1(version):
+     home = Home()
+     home.publish("v9.0.0", installs="8.0.0")
++    release_install(home, version, previous="0.0.9")
+     result = home.run("upgrade")
+     check(result.returncode == 1, "an install that reports another version exits 1", outputs(result))
+-    check("8.0.0" in result.stderr and "v9.0.0" in result.stderr and "upgraded" not in result.stdout,
+-          "and names both versions instead of reporting success", outputs(result))
++    check(result.stderr.endswith(f"\nError: the upgrade installed trip 8.0.0, but the newest release, v9.0.0, "
++                                 f"is 9.0.0; trip 8.0.0 is now current; run ln -sfn {version} "
++                                 f"~/.local/share/trip/current to switch back to {version}\n")
++          and "upgraded" not in result.stdout,
++          "and names both versions, the build now current, and how to switch back to the one it replaced",
++          outputs(result))
++
++    # A tag cut without a version bump builds the version already running.
++    # The installer reinstalls it and leaves `previous` at the version before,
++    # which is no way back.
++    home = Home()
++    home.publish("v9.0.0", installs=version)
++    release_install(home, version, previous="0.0.9")
++    result = home.run("upgrade")
++    check(result.returncode == 1
++          and result.stderr.endswith(f"\nError: the upgrade installed trip {version}, but the newest release, "
++                                     f"v9.0.0, is 9.0.0; trip {version} is still current\n"),
++          "a build of the running version is still current, with no command to switch back", outputs(result))
++
++    home = Home()
++    home.publish("v9.0.0", installs="8.0.0")
++    result = home.run("upgrade")
++    check(result.returncode == 1
++          and result.stderr.endswith("\nError: the upgrade installed trip 8.0.0, but the newest release, "
++                                     "v9.0.0, is 9.0.0; trip 8.0.0 is now current\n"),
++          "with no install before it gives no command to switch back", outputs(result))
+ 
+ 
+ def test_check_installs_nothing(version):
+@@ -421,6 +467,28 @@ def test_dead_pid_record_is_ignored(version):
+     home.stop()
+ 
+ 
++def test_screen_and_log_against_a_current_daemon(version):
++    """A current daemon answers every `trip screen` before it closes, but
++    sends nothing for a log with no events, so only `trip screen` can read a
++    close with no reply as a failure."""
++    home = Home()
++    home.start_daemon("work")
++    brief = home.run("create", "brief", "--", "/bin/sh", "-c", "sleep 2; echo bye")
++    check(brief.returncode == 0, "a session that ends soon starts", outputs(brief))
++    # The daemon closes a watch once its session ends, after the replies it
++    # sent, and that close is a success.
++    watched = home.run("screen", "--watch", "brief", timeout=20)
++    check(watched.returncode == 0 and watched.stderr == "",
++          "trip screen --watch of a session that ends succeeds", outputs(watched))
++    missing = home.run("screen", "nothing")
++    check(missing.returncode == 1 and "session 'nothing' not found" in missing.stderr,
++          "trip screen of a missing session names it", outputs(missing))
++    empty = home.run("log", "nothing")
++    check(empty.returncode == 0 and empty.stdout == "" and empty.stderr == "",
++          "trip log with no events prints nothing and succeeds", outputs(empty))
++    home.stop()
++
++
+ class OlderDaemon:
+     """A daemon that lists sessions but closes the connection on any other
+     request, as an older daemon does on a request it cannot decode."""
+@@ -469,6 +537,14 @@ def test_older_daemon_failing_a_request(version):
+               and f"the daemon could not answer this request: {older('0.0.9', version, 3)}" in result.stderr
+               and "unexpected frame" not in result.stderr,
+               "a request an older daemon cannot decode fails with the older-daemon line", outputs(result))
++        result = home.run("screen", "anything")
++        check(result.returncode != 0
++              and f"the daemon could not answer this request: {older('0.0.9', version, 3)}" in result.stderr,
++              "and so does trip screen, though it closes with no reply at all", outputs(result))
++        result = home.run("log", "anything")
++        check(result.returncode == 0 and result.stdout == "" and result.stderr == older("0.0.9", version, 3) + "\n",
++              "trip log, which cannot tell that close from an empty log, succeeds but names the older daemon",
++              outputs(result))
+         write(home.record, json.dumps({"version": version, "pid": os.getpid()}))
+         result = home.run("kill", "anything")
+         check("unexpected frame" in result.stderr and "older" not in result.stderr
+@@ -494,6 +570,7 @@ def main():
+             test_older_daemon_line,
+             test_missing_record_is_from_before_releases,
+             test_dead_pid_record_is_ignored,
++            test_screen_and_log_against_a_current_daemon,
+             test_older_daemon_failing_a_request,
+         ):
+             print(f"-- {test.__name__}")
