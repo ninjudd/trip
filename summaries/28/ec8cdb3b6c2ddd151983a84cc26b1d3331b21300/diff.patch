@@ -1,0 +1,857 @@
+diff --git a/README.md b/README.md
+index 434e7f1..8adb2f4 100644
+--- a/README.md
++++ b/README.md
+@@ -16,11 +16,32 @@ Trip separates the terminal viewport from the runtime session. This means:
+ 
+ ## Install
+ 
++trip builds from source, so you need Rust's `cargo`; install it with [rustup](https://rustup.rs) if you don't have it. Install the newest release with:
++
++```
++curl -fsSL https://raw.githubusercontent.com/ninjudd/trip/v0/install.sh | bash
++```
++
++This command works once the first release is tagged. It downloads the release's source, builds it, and installs it into `~/.local`, without `sudo`. The build takes about 10 seconds on an Apple M2 Max once its dependencies are downloaded, and longer on a slower machine or the first time.
++
++The installer puts each version in its own directory and switches to it only when the build succeeds:
++
++| Path | What it is |
++| --- | --- |
++| `~/.local/share/trip/<version>/trip` | The binary for one version |
++| `~/.local/share/trip/current` | A link to the version `trip` runs |
++| `~/.local/share/trip/previous` | A link to the version before it, kept so you can switch back |
++| `~/.local/bin/trip` | A link to `~/.local/share/trip/current/trip` |
++
++It keeps the current and previous versions, and the version a running daemon uses, and deletes older ones. When `~/.local/bin` is not on your `PATH`, it prints the `export PATH` line to add to your shell's startup file. When an earlier install left `/usr/local/bin/trip`, it prints the `sudo rm` that removes it.
++
++To install from a clone instead, run the installer there. It builds the checkout into the same layout, as version `<version>-dev`:
++
+ ```
+ ./install.sh
+ ```
+ 
+-For development (symlinks debug build so `cargo build` updates it instantly):
++For development, `--dev` links `~/.local/bin/trip` to the checkout's debug build, so each `cargo build` updates it, and leaves `~/.local/share/trip` as it is:
+ 
+ ```
+ ./install.sh --dev
+@@ -28,13 +49,13 @@ For development (symlinks debug build so `cargo build` updates it instantly):
+ 
+ ## Terminal setup
+ 
+-For the best experience, configure your terminal to run trip automatically on new tabs.
++For the best experience, configure your terminal to run trip automatically on new tabs. The commands below name `~/.local/bin/trip`, where the installer puts it. If your terminal does not expand `~` there, write your home directory out, as in `/Users/you/.local/bin/trip enter`.
+ 
+ ### macOS Terminal
+ 
+ Open **Settings → Profiles → Shell**:
+ 
+-- **Startup → Run command:** `/usr/local/bin/trip enter`
++- **Startup → Run command:** `~/.local/bin/trip enter`
+ - **When the shell exits:** Close if the shell exited cleanly
+ - **Ask before closing:** Only if there are processes other than the login shell and: add `trip` and `-trip` to the list
+ 
+@@ -42,7 +63,7 @@ Open **Settings → Profiles → Shell**:
+ 
+ Open **Settings → Profiles → General**:
+ 
+-- **Command:** choose **Custom Shell**, set to `/usr/local/bin/trip enter`
++- **Command:** choose **Custom Shell**, set to `~/.local/bin/trip enter`
+ 
+ Open **Settings → Profiles → Session**:
+ 
+@@ -290,7 +311,7 @@ Wrapped sessions are normal trip sessions. You can `trip attach`, `trip screen`,
+ 
+ ### Shell integration
+ 
+-`./install.sh` adds a shell hook to `.zshrc` and `.bashrc` that runs `trip env` before each command. This keeps terminal environment variables (`TERM_PROGRAM`, `COLORTERM`, etc.) in sync when you switch between different terminal apps while attached to the same session. It also cleans up agent and TUI markers when the user returns to a shell prompt.
++The installer adds a shell hook to `.zshrc` and `.bashrc` that runs `trip env` before each command, when `trip` is on the shell's `PATH`. This keeps terminal environment variables (`TERM_PROGRAM`, `COLORTERM`, etc.) in sync when you switch between different terminal apps while attached to the same session. It also cleans up agent and TUI markers when the user returns to a shell prompt.
+ 
+ ## How it works
+ 
+diff --git a/docs/projects/releases/readme.md b/docs/projects/releases/readme.md
+index 818117d..9fc400f 100644
+--- a/docs/projects/releases/readme.md
++++ b/docs/projects/releases/readme.md
+@@ -41,6 +41,7 @@ The repository has no CI either. Its only workflow publishes the project site, s
+ | --- | --- |
+ | `~/.local/share/trip/<version>/trip` | The binary built for one version |
+ | `~/.local/share/trip/current` | A symlink to the current version's directory, switched in one rename |
++| `~/.local/share/trip/previous` | A symlink to the version `current` named before it, the one the installer keeps for switching back (§ 9) |
+ | `~/.local/bin/trip` | A symlink to `~/.local/share/trip/current/trip`, or, after `./install.sh --dev`, to the checkout's `target/debug/trip` (§ 2.3) |
+ | `~/.local/share/trip/release.json` | The repository and ref the installer used, so `trip upgrade` follows the same fork |
+ 
+@@ -173,3 +174,9 @@ Steps 1 to 4 can ship as one stack. The first release waits for all of them, so
+ - **Only `TRIP_RELEASE=1` marks a release.** Any other value, `0` included, builds `<version>-dev`. `tests/version.rs` runs the built binary's `--version` and `-V` and expects the version its own build's `TRIP_RELEASE` calls for, so `check.yml` runs it three times: in `cargo test`, as `TRIP_RELEASE=1 cargo test --test version`, and as `TRIP_RELEASE=0 cargo test --test version`, so a change that let any value mark a release fails. Cargo tracks the variable, so a build after a change to it recompiles `trip` and reports the new answer.
+ - **The `check` job takes about 4 minutes**, well under § 5's budget of 10. Its first run, on `macos-latest`, took 4 minutes 4 seconds, end-to-end scripts included, and the `msrv` job beside it took under 30 seconds. A push to a pull request cancels that pull request's earlier run, but a push to `main` never cancels one, so every merged commit keeps its own result.
+ - **Linux stays deferred** (§ 7). `check.yml` runs on `macos-latest` only.
++- **The installer keeps a `previous` link.** `~/.local/share/trip/previous` names the version `current` named before the last switch to a different version. The installer keeps the versions those two links name, plus the one `~/.trip/daemon.json` names while its pid runs, and deletes the rest. Reinstalling the current version, as a checkout install does after each change, leaves `previous` alone, so the version before stays one link away. You switch back with `ln -sfn <version> ~/.local/share/trip/current`.
++- **A checkout install builds in the checkout's own target directory**, not a temporary one, so it reuses the checkout's incremental build. A failed build there leaves nothing under `~/.local/share/trip`. The release mode builds in a temporary directory and removes it whether or not the build succeeds. Both checkout modes build with `TRIP_RELEASE` removed from the environment, so a shell that exports it still installs `<version>-dev`.
++- **Two variables exist for tests.** `TRIP_ARCHIVE` replaces the release archive's URL, so `tests/install_e2e.py` installs from `file://` archives without the network. `TRIP_LEGACY_BIN` replaces `/usr/local/bin/trip` in the stale-binary warning, so the test needs no file there.
++- **The installer reads `daemon.json` with `sed`.** It takes the first `"version"` string and `"pid"` number it finds, so the record § 6 step 4 writes must keep both as plain JSON values.
++- **The installer is a bash script** whose body is a function called on its last line. `curl … | bash` runs it, and bash then has the whole script before any command it runs can read the rest of standard input. It treats the directory beside it as a checkout only when that directory's `Cargo.toml` names the package `trip`.
++- **A release build takes about 10 seconds** on an Apple M2 Max, well under § 3's estimate of a minute or two. `TRIP_RELEASE=1 cargo build --release --locked` took 8.6 seconds at `0.1.0`, from a clean target directory with the crates already in cargo's cache. The README gives that figure.
+diff --git a/install.sh b/install.sh
+index 9731d90..2a5bb49 100755
+--- a/install.sh
++++ b/install.sh
+@@ -1,27 +1,49 @@
+-#!/bin/sh
+-set -e
+-
+-if [ "$1" = "--dev" ]; then
+-    echo "Building trip (debug)..."
+-    cargo build
+-    echo "Linking to /usr/local/bin/trip..."
+-    sudo ln -sf "$(pwd)/target/debug/trip" /usr/local/bin/trip
+-else
+-    echo "Building trip..."
+-    cargo build --release
+-    echo "Installing to /usr/local/bin/trip..."
+-    # Copying onto the destination fails with ETXTBSY while a daemon or client
+-    # is executing it, and follows a --dev symlink back into target/ if one is
+-    # there. Write alongside and rename: rename is atomic, replaces a symlink
+-    # with a real file, and leaves running processes on the old inode.
+-    sudo cp target/release/trip /usr/local/bin/.trip.new
+-    sudo chmod 755 /usr/local/bin/.trip.new
+-    sudo mv -f /usr/local/bin/.trip.new /usr/local/bin/trip
++#!/usr/bin/env bash
++#
++# Build trip with cargo and install it into ~/.local, without sudo.
++#
++#   curl -fsSL https://raw.githubusercontent.com/ninjudd/trip/v0/install.sh | bash
++#   ./install.sh          from a checkout: build the checkout as <version>-dev
++#   ./install.sh --dev    from a checkout: link ~/.local/bin/trip to target/debug
++#
++# Without a checkout beside it, as when bash reads it from curl, the installer
++# builds the source archive of TRIP_REF (default v0, the tag every release
++# moves) from TRIP_REPO (default ninjudd/trip). TRIP_ARCHIVE, a URL such as
++# file:///tmp/trip.tar.gz, replaces that archive.
++#
++# Each version lives in ~/.local/share/trip/<version>/. The installer switches
++# ~/.local/share/trip/current to a version only once its build succeeds, keeps
++# the version before it, and never removes the one a running daemon uses.
++
++set -euo pipefail
++
++# The directory holding this script, or nothing when bash reads it from stdin.
++SCRIPT_DIR=""
++if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
++  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ fi
++# A checkout is this script with trip's Cargo.toml beside it. A copy of the
++# script on its own, such as the one `trip upgrade` downloads, is not one.
++REPO=""
++if [ -n "$SCRIPT_DIR" ] && grep -qs '^name = "trip"' "$SCRIPT_DIR/Cargo.toml"; then
++  REPO="$SCRIPT_DIR"
++fi
++TRIP_REPO="${TRIP_REPO:-ninjudd/trip}"
++TRIP_REF="${TRIP_REF:-v0}"
++SHARE_DIR="$HOME/.local/share/trip"
++BIN_DIR="$HOME/.local/bin"
++DAEMON_RECORD="$HOME/.trip/daemon.json"
++# Where install.sh used to put trip with sudo. Overridable so a test can check
++# the warning without that file.
++LEGACY_BIN="${TRIP_LEGACY_BIN:-/usr/local/bin/trip}"
+ 
++MARKER="# trip shell hook"
++# The hook asks `command -v` first: a terminal that starts the absolute path
++# ~/.local/bin/trip can run a shell whose PATH lacks ~/.local/bin, and an
++# unguarded hook would print `command not found: trip` before every command.
+ HOOK='# trip shell hook
+ if [ -n "$TRIP_SESSION" ]; then
+-  _trip_preexec() { eval "$(trip env)"; }
++  _trip_preexec() { if command -v trip >/dev/null 2>&1; then eval "$(trip env)"; fi; }
+   if [ -n "$ZSH_VERSION" ]; then
+     preexec_functions+=(_trip_preexec)
+   elif [ -n "$BASH_VERSION" ]; then
+@@ -29,35 +51,268 @@ if [ -n "$TRIP_SESSION" ]; then
+   fi
+ fi'
+ 
+-MARKER="# trip shell hook"
++TMP=""
++STAGED=""
++cleanup() {
++  [ -z "$TMP" ] || rm -rf "$TMP"
++  [ -z "$STAGED" ] || rm -rf "$STAGED"
++}
++trap cleanup EXIT
++
++die() {
++  printf 'install.sh: %s\n' "$1" >&2
++  exit 1
++}
++
++usage() {
++  printf 'usage: install.sh [--dev]\n' >&2
++  exit 2
++}
++
++require_cargo() {
++  command -v cargo >/dev/null 2>&1 && return 0
++  die "trip builds from source and needs cargo, which is not on PATH.
++Install Rust with rustup (https://rustup.rs), then run the installer again:
++  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
++}
++
++# The [package] version in a Cargo.toml, to name a build that never produced a
++# binary to ask.
++package_version() {
++  sed -n '/^\[package\]/,/^\[/s/^version *= *"\([^"]*\)".*/\1/p' "$1" | head -n 1
++}
++
++# The version the current install runs, or nothing when there is none.
++current_version() {
++  [ -L "$SHARE_DIR/current" ] && readlink "$SHARE_DIR/current" || true
++}
++
++# Point a symlink at a target with one rename, so it never goes missing and a
++# process running the old target keeps it. BSD mv spells "do not follow a link
++# to a directory" -h and GNU mv spells it -T.
++replace_link() {
++  local target="$1" link="$2" new="$2.new.$$"
++  rm -f "$new"
++  ln -s "$target" "$new"
++  mv -T -f "$new" "$link" 2>/dev/null || mv -h -f "$new" "$link"
++}
++
++# Say which version did not install and what still runs, then stop.
++fail_install() {
++  local label="$1" reason="$2" current
++  current="$(current_version)"
++  if [ -n "$current" ]; then
++    die "trip $label did not install: $reason. trip $current is still current."
++  fi
++  die "trip $label did not install: $reason. Nothing was installed."
++}
++
++# The version a running daemon reports in ~/.trip/daemon.json. A record whose
++# pid is not running is left over from a daemon that exited and vouches for
++# nothing.
++daemon_version() {
++  [ -f "$DAEMON_RECORD" ] || return 0
++  local pid version
++  pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$DAEMON_RECORD" | head -n 1)"
++  version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$DAEMON_RECORD" | head -n 1)"
++  [ -n "$pid" ] && [ -n "$version" ] || return 0
++  kill -0 "$pid" 2>/dev/null || return 0
++  printf '%s\n' "$version"
++}
++
++# Move a built binary into its version's directory, switch current to it, and
++# keep only the current version, the one before it, and a running daemon's.
++install_version() {
++  local built="$1" label="$2" output version previous daemon name dir
++  output="$("$built" --version 2>/dev/null)" || fail_install "$label" "the built binary does not run"
++  version="${output##* }"
++  case "$version" in
++    "" | *[!0-9A-Za-z.+-]* | [!0-9]*) fail_install "$label" "the built binary reports an unexpected version: $output" ;;
++  esac
++
++  mkdir -p "$SHARE_DIR"
++  if [ ! -d "$SHARE_DIR/$version" ]; then
++    STAGED="$SHARE_DIR/.$version.new.$$"
++    mkdir "$STAGED"
++    cp "$built" "$STAGED/trip"
++    chmod 755 "$STAGED/trip"
++    mv "$STAGED" "$SHARE_DIR/$version"
++    STAGED=""
++  else
++    # Reinstalling a version, as a checkout does after each change. A rename
++    # leaves a daemon that runs the old file on it.
++    cp "$built" "$SHARE_DIR/$version/.trip.new.$$"
++    chmod 755 "$SHARE_DIR/$version/.trip.new.$$"
++    mv -f "$SHARE_DIR/$version/.trip.new.$$" "$SHARE_DIR/$version/trip"
++  fi
++
++  previous="$(current_version)"
++  if [ -n "$previous" ] && [ "$previous" != "$version" ]; then
++    replace_link "$previous" "$SHARE_DIR/previous"
++  fi
++  replace_link "$version" "$SHARE_DIR/current"
++  mkdir -p "$BIN_DIR"
++  replace_link "$SHARE_DIR/current/trip" "$BIN_DIR/trip"
++  printf 'Installed trip %s to %s\n' "$version" "$SHARE_DIR/$version"
+ 
+-resolve_path() {
+-    # Follow symlinks portably (macOS lacks readlink -f)
+-    target="$1"
+-    while [ -L "$target" ]; do
+-        target="$(readlink "$target")"
+-    done
+-    echo "$target"
+-}
+-
+-remove_old_hook() {
+-    file="$(resolve_path "$1")"
+-    [ -f "$file" ] || return 0
+-    if grep -qF "$MARKER" "$file"; then
+-        # -i.suffix (attached) is the one in-place form both GNU and BSD sed accept
+-        sed -i.trip-bak "/$MARKER/,/^$/d" "$file"
+-        rm -f "$file.trip-bak"
++  previous="$( [ -L "$SHARE_DIR/previous" ] && readlink "$SHARE_DIR/previous" || true )"
++  daemon="$(daemon_version)"
++  for dir in "$SHARE_DIR"/[0-9]*/; do
++    dir="${dir%/}"
++    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
++    name="${dir##*/}"
++    if [ "$name" = "$version" ] || [ "$name" = "$previous" ]; then
++      continue
++    fi
++    if [ "$name" = "$daemon" ]; then
++      printf 'Kept trip %s, which the running daemon uses\n' "$name"
++      continue
+     fi
++    rm -rf "$dir"
++    printf 'Removed trip %s\n' "$name"
++  done
++}
++
++install_release() {
++  local url="${TRIP_ARCHIVE:-https://github.com/$TRIP_REPO/archive/$TRIP_REF.tar.gz}" label version
++  case "$TRIP_REPO" in
++    */*/* | *[!A-Za-z0-9._/-]* | /* | */) die "TRIP_REPO must be owner/name, not $TRIP_REPO" ;;
++    */*) ;;
++    *) die "TRIP_REPO must be owner/name, not $TRIP_REPO" ;;
++  esac
++  case "$TRIP_REF" in
++    "" | *[!A-Za-z0-9._/-]*) die "TRIP_REF is not a tag or branch name: $TRIP_REF" ;;
++  esac
++  command -v curl >/dev/null 2>&1 || die "the release installer needs curl to download trip's source."
++  require_cargo
++
++  TMP="$(mktemp -d "${TMPDIR:-/tmp}/trip-install.XXXXXX")"
++  printf 'Downloading %s\n' "$url"
++  curl -fsSL "$url" -o "$TMP/source.tar.gz" || fail_install "$TRIP_REF" "could not download $url"
++  mkdir "$TMP/src"
++  tar -xzf "$TMP/source.tar.gz" -C "$TMP/src" --strip-components 1 \
++    || fail_install "$TRIP_REF" "$url is not a source archive"
++  version="$(package_version "$TMP/src/Cargo.toml")"
++  label="${version:-$TRIP_REF} ($TRIP_REPO $TRIP_REF)"
++
++  printf 'Building trip %s, which takes a few minutes\n' "$label"
++  (cd "$TMP/src" && TRIP_RELEASE=1 CARGO_TARGET_DIR="$TMP/target" cargo build --release --locked) \
++    || fail_install "$label" "the build failed"
++  install_version "$TMP/target/release/trip" "$label"
++
++  printf '{"repo": "%s", "ref": "%s"}\n' "$TRIP_REPO" "$TRIP_REF" > "$SHARE_DIR/.release.json.new"
++  mv -f "$SHARE_DIR/.release.json.new" "$SHARE_DIR/release.json"
++}
++
++# The checkout's target directory, where `cargo build` there writes.
++target_dir() {
++  case "${CARGO_TARGET_DIR:-}" in
++    "") printf '%s\n' "$REPO/target" ;;
++    /*) printf '%s\n' "$CARGO_TARGET_DIR" ;;
++    *) printf '%s\n' "$REPO/$CARGO_TARGET_DIR" ;;
++  esac
++}
++
++install_checkout() {
++  local label target
++  require_cargo
++  label="$(package_version "$REPO/Cargo.toml")-dev"
++  target="$(target_dir)"
++  printf 'Building trip %s from %s\n' "$label" "$REPO"
++  # Only the release installer marks a build as a release.
++  (cd "$REPO" && env -u TRIP_RELEASE cargo build --release --locked) \
++    || fail_install "$label" "the build failed"
++  install_version "$target/release/trip" "$label"
++}
++
++install_dev() {
++  local target
++  require_cargo
++  target="$(target_dir)"
++  printf 'Building trip (debug) in %s\n' "$REPO"
++  (cd "$REPO" && env -u TRIP_RELEASE cargo build) || die "the debug build failed; $BIN_DIR/trip is unchanged."
++  mkdir -p "$BIN_DIR"
++  replace_link "$target/debug/trip" "$BIN_DIR/trip"
++  printf 'Linked %s to %s\n' "$BIN_DIR/trip" "$target/debug/trip"
++}
++
++# Drop any trip hook block, from its marker through the `fi` that closes it.
++remove_hook() {
++  local file="$1" stripped
++  stripped="$(awk -v marker="$MARKER" '
++    $0 == marker { skipping = 1; next }
++    skipping && $0 == "fi" { skipping = 0; next }
++    !skipping { print }
++  ' "$file")"
++  # Write through the file rather than replacing it, so a startup file that
++  # is a symlink, as dotfile managers make, stays one.
++  printf '%s\n' "$stripped" > "$file"
++}
++
++# Whether a startup file holds exactly one hook block, and it is this one.
++hook_current() {
++  [ -f "$1" ] && [ "$(grep -cxF "$MARKER" "$1")" = 1 ] || return 1
++  [ "$(awk -v marker="$MARKER" '
++    $0 == marker { on = 1 }
++    on { print }
++    on && $0 == "fi" { exit }
++  ' "$1")" = "$HOOK" ]
+ }
+ 
+ install_hook() {
+-    file="$1"
+-    remove_old_hook "$file"
++  local file="$1"
++  if hook_current "$file"; then
++    printf 'Shell hook already in %s\n' "$file"
++  elif [ -f "$file" ] && grep -qxF "$MARKER" "$file"; then
++    remove_hook "$file"
++    printf '\n%s\n' "$HOOK" >> "$file"
++    printf 'Updated shell hook in %s\n' "$file"
++  else
+     printf '\n%s\n' "$HOOK" >> "$file"
+-    echo "Added shell hook to $file"
++    printf 'Added shell hook to %s\n' "$file"
++  fi
++}
++
++warn_path() {
++  case ":$PATH:" in
++    *":$BIN_DIR:"* | *":$BIN_DIR/:"*) return ;;
++  esac
++  # shellcheck disable=SC2016 # the line to paste keeps $HOME and $PATH.
++  printf '\nwarning: %s is not on PATH. Add this line to your shell startup file:\n  export PATH="$HOME/.local/bin:$PATH"\n' "$BIN_DIR"
+ }
+ 
+-install_hook "$HOME/.zshrc"
+-install_hook "$HOME/.bashrc"
++warn_legacy() {
++  [ -e "$LEGACY_BIN" ] || [ -L "$LEGACY_BIN" ] || return 0
++  printf '\nwarning: %s is left from an earlier install, and a terminal that runs it\nruns that old trip. Remove it with:\n  sudo rm %s\n' "$LEGACY_BIN" "$LEGACY_BIN"
++}
++
++main() {
++  local dev=""
++  while [ $# -gt 0 ]; do
++    case "$1" in
++      --dev) dev=1 ;;
++      -h | --help) printf 'usage: install.sh [--dev]\n'; exit 0 ;;
++      *) usage ;;
++    esac
++    shift
++  done
++
++  if [ -n "$dev" ]; then
++    [ -n "$REPO" ] || die "--dev links a checkout's debug build; run ./install.sh --dev in a clone of trip."
++    install_dev
++  elif [ -n "$REPO" ]; then
++    install_checkout
++  else
++    install_release
++  fi
++
++  install_hook "$HOME/.zshrc"
++  install_hook "$HOME/.bashrc"
++  warn_path
++  warn_legacy
++  printf "\nDone. Run 'trip enter' to get started.\n"
++}
+ 
+-echo "Done. Run 'trip enter' to get started."
++# Everything above only defines functions, so bash reading this from curl has
++# the whole script before any of it runs.
++main "$@"
+diff --git a/tests/install_e2e.py b/tests/install_e2e.py
+new file mode 100755
+index 0000000..3f183e6
+--- /dev/null
++++ b/tests/install_e2e.py
+@@ -0,0 +1,391 @@
++#!/usr/bin/env python3
++"""End-to-end checks of install.sh, each in its own temporary HOME.
++
++The installer builds each version into ~/.local/share/trip/<version>/, switches
++`current` to it only once the build succeeds, links ~/.local/bin/trip through
++`current`, keeps the version before, and never removes the one a running
++daemon uses. Most cases install a tiny stand-in crate named trip, which builds
++in a second; one installs trip's own source, to show that a release build
++reports a bare version.
++
++Usage: tests/install_e2e.py [path to install.sh]
++"""
++import os
++import shutil
++import signal
++import subprocess
++import sys
++import tarfile
++import tempfile
++import time
++
++REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++INSTALL = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(REPO, "install.sh")
++MARKER = "# trip shell hook"
++
++CARGO = shutil.which("cargo")
++if not CARGO:
++    sys.exit("install_e2e: cargo is not on PATH")
++# Only cargo's directory and the system's, so ~/.local/bin is on PATH only
++# when a case puts it there.
++BASE_PATH = os.pathsep.join([os.path.dirname(CARGO), "/usr/bin", "/bin", "/usr/sbin", "/sbin"])
++# The temporary HOME would hide the toolchain and crate cache that cargo and
++# rustup find under the real one.
++TOOL_HOMES = {}
++for name, default in (("CARGO_HOME", "~/.cargo"), ("RUSTUP_HOME", "~/.rustup")):
++    path = os.environ.get(name) or os.path.expanduser(default)
++    if os.path.isdir(path):
++        TOOL_HOMES[name] = path
++
++ROOT = os.path.realpath(tempfile.mkdtemp(prefix="trip-install-"))
++failures = []
++children = []
++
++
++def check(ok, what, detail=""):
++    print(("ok   " if ok else "FAIL ") + what)
++    if not ok:
++        failures.append(what)
++        if detail:
++            print("     " + detail.replace("\n", "\n     "))
++
++
++class Home:
++    """A fresh HOME and TMPDIR, and the environment that confines the
++    installer to them."""
++
++    count = 0
++
++    def __init__(self):
++        Home.count += 1
++        self.dir = os.path.join(ROOT, f"home{Home.count}")
++        self.tmp = os.path.join(ROOT, f"tmp{Home.count}")
++        os.makedirs(self.dir)
++        os.makedirs(self.tmp)
++        self.share = os.path.join(self.dir, ".local", "share", "trip")
++        self.bin = os.path.join(self.dir, ".local", "bin", "trip")
++        self.legacy = os.path.join(self.dir, "usr-local-bin-trip")
++        self.env = {
++            "HOME": self.dir,
++            "TMPDIR": self.tmp,
++            "PATH": BASE_PATH,
++            "TRIP_LEGACY_BIN": self.legacy,
++            "LANG": "C",
++            **TOOL_HOMES,
++        }
++
++    def release(self, archive, *args, **env):
++        """Run the installer as `curl ... | bash` does, reading it from stdin."""
++        with open(INSTALL, "rb") as script:
++            return subprocess.run(
++                ["bash", "-s", "--", *args], stdin=script, capture_output=True, text=True,
++                env={**self.env, "TRIP_ARCHIVE": "file://" + archive, "TRIP_REF": "vtest", **env},
++                cwd=self.dir, timeout=900,
++            )
++
++    def checkout(self, checkout, *args, **env):
++        """Run ./install.sh in a checkout."""
++        return subprocess.run(
++            ["./install.sh", *args], capture_output=True, text=True,
++            env={**self.env, **env}, cwd=checkout, timeout=900,
++        )
++
++    def versions(self):
++        if not os.path.isdir(self.share):
++            return []
++        return sorted(
++            name for name in os.listdir(self.share)
++            if os.path.isdir(os.path.join(self.share, name))
++            and not os.path.islink(os.path.join(self.share, name))
++        )
++
++    def link(self, name):
++        path = os.path.join(self.share, name)
++        return os.readlink(path) if os.path.islink(path) else None
++
++    def version(self):
++        """What ~/.local/bin/trip says it is."""
++        result = subprocess.run([self.bin, "--version"], capture_output=True, text=True, timeout=20)
++        return result.stdout.strip()
++
++    def read(self, name):
++        with open(os.path.join(self.dir, name)) as f:
++            return f.read()
++
++
++def stand_in(version, broken=False):
++    """A checkout of a crate named trip that prints only its version, the way
++    trip does: bare only when TRIP_RELEASE=1 was set at build time."""
++    path = os.path.join(ROOT, f"src-{version}{'-broken' if broken else ''}")
++    if os.path.isdir(path):
++        return path
++    os.makedirs(os.path.join(path, "src"))
++    with open(os.path.join(path, "Cargo.toml"), "w") as f:
++        f.write(f'[package]\nname = "trip"\nversion = "{version}"\nedition = "2021"\n')
++    with open(os.path.join(path, "Cargo.lock"), "w") as f:
++        f.write(f'version = 3\n\n[[package]]\nname = "trip"\nversion = "{version}"\n')
++    with open(os.path.join(path, "src", "main.rs"), "w") as f:
++        f.write(
++            "fn main() {\n"
++            '    let release = option_env!("TRIP_RELEASE") == Some("1");\n'
++            '    if std::env::args().nth(1).as_deref() == Some("--version") {\n'
++            '        let suffix = if release { "" } else { "-dev" };\n'
++            '        println!("trip {}{}", env!("CARGO_PKG_VERSION"), suffix);\n'
++            "    }\n"
++            "}\n"
++        )
++        if broken:
++            f.write("this does not compile\n")
++    shutil.copy(INSTALL, os.path.join(path, "install.sh"))
++    return path
++
++
++def archive(source, names=None):
++    """The source as GitHub serves an archive: one top-level directory."""
++    name = os.path.basename(source)
++    path = os.path.join(ROOT, name + ".tar.gz")
++    with tarfile.open(path, "w:gz") as tar:
++        for entry in names or sorted(os.listdir(source)):
++            tar.add(os.path.join(source, entry), arcname=f"{name}/{entry}")
++    return path
++
++
++def release(version, broken=False):
++    """A stand-in's source archive."""
++    return archive(stand_in(version, broken))
++
++
++def outputs(result):
++    return result.stdout + result.stderr
++
++
++def test_release_of_trip_itself():
++    """The release mode builds trip's own source with TRIP_RELEASE=1, so the
++    installed trip reports the bare version, through `current`."""
++    home = Home()
++    source = archive(REPO, ["Cargo.toml", "Cargo.lock", "src"])
++    with open(os.path.join(REPO, "Cargo.toml")) as f:
++        version = next(line.split('"')[1] for line in f if line.startswith("version = "))
++    started = time.monotonic()
++    result = home.release(source)
++    elapsed = time.monotonic() - started
++    print(f"     release install of trip {version} took {elapsed:.0f}s")
++    check(result.returncode == 0, "release install of trip's source succeeds", outputs(result))
++    check(home.link("current") == version, f"current names {version}", str(home.link("current")))
++    check(os.readlink(home.bin) == os.path.join(home.share, "current", "trip"),
++          "~/.local/bin/trip links through current", str(os.path.islink(home.bin) and os.readlink(home.bin)))
++    check(home.version() == f"trip {version}", "the installed trip reports a bare version", home.version())
++    with open(os.path.join(home.share, "release.json")) as f:
++        record = f.read()
++    check('"repo": "ninjudd/trip"' in record and '"ref": "vtest"' in record,
++          "release.json records the repository and ref", record)
++
++
++def test_failed_build_keeps_current():
++    home = Home()
++    first = home.release(release("0.2.0"))
++    check(first.returncode == 0, "a stand-in release installs", outputs(first))
++    check(home.version() == "trip 0.2.0", "the stand-in release reports a bare version", home.version())
++    result = home.release(release("0.3.0", broken=True))
++    check(result.returncode != 0, "a failed build exits nonzero", outputs(result))
++    check("0.3.0" in result.stderr and "did not install" in result.stderr
++          and "0.2.0 is still current" in result.stderr,
++          "it says which version did not install and what is still current", result.stderr)
++    check(home.link("current") == "0.2.0", "current still names 0.2.0", str(home.link("current")))
++    check(home.versions() == ["0.2.0"] and not [n for n in os.listdir(home.share) if n.startswith(".")],
++          "no partial version directory remains", str(os.listdir(home.share)))
++    check(os.listdir(home.tmp) == [], "the temporary build directory is gone", str(os.listdir(home.tmp)))
++    check(home.version() == "trip 0.2.0", "~/.local/bin/trip still runs 0.2.0", home.version())
++
++
++def test_three_installs_keep_two():
++    home = Home()
++    # A binary copied there by hand, as trip was installed before releases.
++    os.makedirs(os.path.dirname(home.bin))
++    with open(home.bin, "w") as f:
++        f.write("hand-copied trip\n")
++    for version in ("0.2.0", "0.3.0", "0.4.0"):
++        result = home.release(release(version))
++        check(result.returncode == 0, f"release {version} installs", outputs(result))
++    check(os.path.islink(home.bin), "a hand-copied ~/.local/bin/trip becomes the link")
++    check(home.versions() == ["0.3.0", "0.4.0"], "three installs keep the last two", str(home.versions()))
++    check(home.link("current") == "0.4.0" and home.link("previous") == "0.3.0",
++          "current names 0.4.0 and previous names 0.3.0", f"{home.link('current')} {home.link('previous')}")
++    again = home.release(release("0.4.0"))
++    check(again.returncode == 0 and home.versions() == ["0.3.0", "0.4.0"] and home.link("previous") == "0.3.0",
++          "reinstalling the current version keeps the one before it", f"{home.versions()} {outputs(again)}")
++
++
++def daemon_record(home, version, pid):
++    os.makedirs(os.path.join(home.dir, ".trip"), exist_ok=True)
++    with open(os.path.join(home.dir, ".trip", "daemon.json"), "w") as f:
++        f.write(f'{{"version": "{version}", "pid": {pid}}}\n')
++
++
++def test_live_daemon_version_is_kept():
++    home = Home()
++    for version in ("0.2.0", "0.3.0"):
++        home.release(release(version))
++    daemon = subprocess.Popen(["sleep", "300"])
++    children.append(daemon)
++    daemon_record(home, "0.2.0", daemon.pid)
++    result = home.release(release("0.4.0"))
++    check(result.returncode == 0, "an install beside a live daemon succeeds", outputs(result))
++    check(home.versions() == ["0.2.0", "0.3.0", "0.4.0"],
++          "the version a live daemon runs is kept", str(home.versions()))
++    check("Kept trip 0.2.0" in result.stdout, "it says why it kept that version", result.stdout)
++    daemon.kill()
++    daemon.wait()
++
++
++def test_stale_daemon_record_is_ignored():
++    home = Home()
++    for version in ("0.2.0", "0.3.0"):
++        home.release(release(version))
++    exited = subprocess.Popen(["true"])
++    exited.wait()
++    daemon_record(home, "0.2.0", exited.pid)
++    result = home.release(release("0.4.0"))
++    check(result.returncode == 0, "an install beside a stale daemon record succeeds", outputs(result))
++    check(home.versions() == ["0.3.0", "0.4.0"],
++          "a record whose pid is not running keeps nothing", str(home.versions()))
++
++
++def test_warnings():
++    home = Home()
++    quiet = home.release(release("0.2.0"),
++                         PATH=os.pathsep.join([os.path.dirname(home.bin), BASE_PATH]))
++    check("warning" not in outputs(quiet), "no warning with ~/.local/bin on PATH and no old binary", outputs(quiet))
++
++    with open(home.legacy, "w") as f:
++        f.write("old trip\n")
++    result = home.release(release("0.2.0"))
++    out = outputs(result)
++    check(f"{os.path.dirname(home.bin)} is not on PATH" in out
++          and 'export PATH="$HOME/.local/bin:$PATH"' in out,
++          "it warns that ~/.local/bin is not on PATH and prints the export line", out)
++    check(f"sudo rm {home.legacy}" in out, "it warns about the old binary and prints the sudo rm", out)
++    check(os.path.exists(home.legacy), "the old binary is left in place")
++    rc = home.read(".zshrc") + home.read(".bashrc")
++    check("export PATH" not in rc, "no startup file's PATH changed", rc)
++
++
++OLD_HOOK = """# trip shell hook
++if [ -n "$TRIP_SESSION" ]; then
++  _trip_preexec() { eval "$(trip env)"; }
++  if [ -n "$ZSH_VERSION" ]; then
++    preexec_functions+=(_trip_preexec)
++  elif [ -n "$BASH_VERSION" ]; then
++    trap '_trip_preexec' DEBUG
++  fi
++fi
++"""
++
++
++def test_shell_hook():
++    home = Home()
++    dotfiles = os.path.join(home.dir, "dotfiles")
++    os.makedirs(dotfiles)
++    with open(os.path.join(dotfiles, "bashrc"), "w") as f:
++        f.write("alias ll='ls -l'\n")
++    os.symlink(os.path.join(dotfiles, "bashrc"), os.path.join(home.dir, ".bashrc"))
++    with open(os.path.join(home.dir, ".zshrc"), "w") as f:
++        f.write("export EDITOR=vi\n\n" + OLD_HOOK + "setopt autocd\n")
++
++    for _ in range(2):
++        result = home.release(release("0.2.0"))
++        check(result.returncode == 0, "an install with existing startup files succeeds", outputs(result))
++    zshrc, bashrc = home.read(".zshrc"), home.read(".bashrc")
++    for name, text in ((".zshrc", zshrc), (".bashrc", bashrc)):
++        check(text.count(MARKER) == 1, f"{name} has one hook after two installs", text)
++        check("command -v trip" in text, f"{name}'s hook runs only when trip resolves", text)
++    check("export EDITOR=vi" in zshrc and "setopt autocd" in zshrc and "eval \"$(trip env)\"; }" not in zshrc,
++          "the old unguarded hook is replaced and the lines around it kept", zshrc)
++    check("alias ll" in bashrc and os.path.islink(os.path.join(home.dir, ".bashrc")),
++          "a symlinked .bashrc stays a symlink and keeps its lines", bashrc)
++
++    # A session started as ~/.local/bin/trip enter can run a shell whose PATH
++    # lacks ~/.local/bin, where the old hook failed before every command.
++    for hook, guarded in ((OLD_HOOK, False), (bashrc, True)):
++        rc = os.path.join(home.dir, "hook-guarded" if guarded else "hook-old")
++        with open(rc, "w") as f:
++            f.write(hook)
++        shell = subprocess.run(
++            ["bash", "-c", f'TRIP_SESSION=demo; . "{rc}"; echo ran'],
++            capture_output=True, text=True, env={"PATH": "/usr/bin:/bin", "HOME": home.dir}, timeout=20,
++        )
++        if guarded:
++            check(shell.stdout.strip() == "ran" and "not found" not in shell.stderr,
++                  "the hook stays quiet in a shell where trip does not resolve", shell.stderr)
++        else:
++            check("not found" in shell.stderr, "the old hook fails there, which the guard prevents", shell.stderr)
++
++
++def test_checkout_installs_dev_version():
++    home = Home()
++    checkout = stand_in("0.5.0")
++    result = home.checkout(checkout, TRIP_RELEASE="1")
++    check(result.returncode == 0, "./install.sh in a checkout succeeds", outputs(result))
++    check(home.link("current") == "0.5.0-dev", "a checkout installs as <version>-dev", str(home.link("current")))
++    check(home.version() == "trip 0.5.0-dev", "even with TRIP_RELEASE=1 in the environment", home.version())
++    check(not os.path.exists(os.path.join(home.share, "release.json")), "a checkout records no release")
++
++
++def test_dev_links_debug_build():
++    home = Home()
++    home.release(release("0.2.0"))
++    before = (home.versions(), home.link("current"), sorted(os.listdir(home.share)))
++    checkout = stand_in("0.6.0")
++    result = home.checkout(checkout, "--dev")
++    check(result.returncode == 0, "./install.sh --dev succeeds", outputs(result))
++    target = os.path.join(checkout, "target", "debug", "trip")
++    check(os.readlink(home.bin) == target, "--dev links ~/.local/bin/trip to target/debug/trip",
++          str(os.path.islink(home.bin) and os.readlink(home.bin)))
++    check(home.version() == "trip 0.6.0-dev", "the linked build reports <version>-dev", home.version())
++    after = (home.versions(), home.link("current"), sorted(os.listdir(home.share)))
++    check(after == before, "--dev leaves ~/.local/share/trip as it was", f"{before} -> {after}")
++
++    piped = home.release(release("0.2.0"), "--dev")
++    check(piped.returncode != 0 and "checkout" in piped.stderr, "--dev without a checkout refuses", outputs(piped))
++
++
++def test_refuses_without_cargo():
++    home = Home()
++    result = home.release(release("0.2.0"), PATH="/usr/bin:/bin")
++    check(result.returncode != 0 and "cargo" in result.stderr and "rustup" in result.stderr,
++          "without cargo it refuses and says how to install Rust", outputs(result))
++    check(not os.path.exists(os.path.join(home.dir, ".local")), "and installs nothing")
++
++
++def main():
++    if shutil.which("cargo", path="/usr/bin:/bin"):
++        sys.exit("install_e2e: cargo in /usr/bin or /bin defeats the no-cargo case")
++    try:
++        for test in (
++            test_failed_build_keeps_current,
++            test_three_installs_keep_two,
++            test_live_daemon_version_is_kept,
++            test_stale_daemon_record_is_ignored,
++            test_warnings,
++            test_shell_hook,
++            test_checkout_installs_dev_version,
++            test_dev_links_debug_build,
++            test_refuses_without_cargo,
++            test_release_of_trip_itself,
++        ):
++            print(f"-- {test.__name__}")
++            test()
++    finally:
++        for child in children:
++            if child.poll() is None:
++                os.kill(child.pid, signal.SIGKILL)
++                child.wait()
++        shutil.rmtree(ROOT, ignore_errors=True)
++    if failures:
++        print(f"\n{len(failures)} check(s) failed")
++        sys.exit(1)
++    print("\nall install checks passed")
++
++
++if __name__ == "__main__":
++    main()
