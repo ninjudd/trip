@@ -1,0 +1,132 @@
+{
+ "version": 1,
+ "name": "Releases and trip upgrade",
+ "project": "releases",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 28,
+  "title": "Install each version under `~/.local/share/trip` without `sudo`, and switch to it only once it builds",
+  "head": "4b41a6106f0cb2cff25e2394348b3554079daf40",
+  "headRef": "releases/installer",
+  "base": "a6f0895045cceaeac81ebabba2fa065d00fefc29",
+  "baseRef": "releases/check",
+  "basePr": 27
+ },
+ "overview": {
+  "summary": [
+   "<code>install.sh</code> is how you put <code>trip</code> on a machine. Before this change it built whatever a checkout held and copied the binary to <code>/usr/local/bin/trip</code> with <code>sudo</code>. The machines that run trip use <code>~/.local/bin/trip</code> instead, and a failed or interrupted install left nothing to fall back on.",
+   "This pull request is step 2 of the <code>releases</code> plan. The installer now builds each version into its own directory under <code>~/.local/share/trip/</code>, without <code>sudo</code>, and switches to it only once the whole build succeeds. A failed build leaves the version you had in place and tells you which version did not install.",
+   "<div class=\"tblwrap\"><table class=\"tbl\"><thead><tr><th>Mode</th><th>How you run it</th><th>What it installs</th></tr></thead><tbody><tr><td>Release</td><td><code>curl … | bash</code>, with no checkout beside the script</td><td>The source archive of <code>TRIP_REF</code> (default <code>v0</code>) from <code>TRIP_REPO</code>, built with <code>TRIP_RELEASE=1</code> in a temporary directory</td></tr><tr><td>Checkout</td><td><code>./install.sh</code> in a clone</td><td>The checkout, built where cargo builds it, installed as <code>&lt;version&gt;-dev</code> in the same layout</td></tr><tr><td>Linked</td><td><code>./install.sh --dev</code> in a clone</td><td>No copy: <code>~/.local/bin/trip</code> links to the checkout's debug build</td></tr></tbody></table></div>",
+   "In every mode the installer then adds the shell hook to <code>~/.zshrc</code> and <code>~/.bashrc</code>. The hook now runs <code>trip env</code> only when <code>command -v trip</code> finds <code>trip</code>. The installer also warns when <code>~/.local/bin</code> is not on <code>PATH</code> or an old <code>/usr/local/bin/trip</code> remains, and prints the line that fixes each without running it."
+  ],
+  "cards": [
+   {
+    "id": "terms",
+    "title": "Terms on this page",
+    "html": "<ul class=\"tight\"><li><b>Version directory</b>: <code>~/.local/share/trip/&lt;version&gt;/</code>, holding one build's <code>trip</code> binary.</li><li><b><code>current</code></b>: a symlink naming the version directory that <code>~/.local/bin/trip</code> runs, through <code>current/trip</code>.</li><li><b><code>previous</code></b>: a symlink naming the version <code>current</code> named before the last switch, kept so you can switch back.</li><li><b>Daemon record</b>: <code>~/.trip/daemon.json</code>, the version and pid of a running daemon. A later step of the plan makes the daemon write it.</li><li><b><code>TRIP_RELEASE</code></b>: a compile-time variable. Only a build with <code>TRIP_RELEASE=1</code> reports a bare version instead of <code>&lt;version&gt;-dev</code>.</li></ul>"
+   },
+   {
+    "id": "review",
+    "title": "Review so far",
+    "html": "<p>The first Projector review, of <code>ec8cdb3</code>, requested changes with two findings and listed three suggestions. Since then, the branch was rebased onto #27's new head and gained five commits:</p><ul class=\"tight\"><li>The release mode checks that the archive's <code>Cargo.toml</code> names <code>trip</code>, so another repository's archive fails with the installer's own message. This fixes the first finding.</li><li><code>test_shell_hook</code> checks the old and the guarded hook in two straight runs. This fixes the second finding.</li><li><code>current</code> and <code>previous</code> are read by their last path component, a hook with no closing <code>fi</code> is left alone with a warning, and <code>cargo metadata</code> names the checkout's target directory. These take up the three suggestions.</li></ul><p class=\"note\">The review of this head settled both findings as fixed.</p>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "installer",
+   "title": "The installer",
+   "kicker": "Three modes, a versioned layout, and a switch that happens only after a successful build",
+   "intro": [
+    "The script picks its mode first. It treats the directory beside it as a checkout only when that directory's <code>Cargo.toml</code> names the package <code>trip</code>. So a copy downloaded on its own, as <code>curl … | bash</code> or a later <code>trip upgrade</code> runs it, takes the release mode. Everything above the last line only defines functions, so bash has read the whole script from <code>curl</code> before any of it runs.",
+    "Every mode that copies a binary ends in <code>install_version</code>. It asks the built binary for its version, copies it into a staging directory, and renames that into place. Then it switches <code>previous</code>, <code>current</code>, and <code>~/.local/bin/trip</code>, each with one rename, so a running daemon keeps the file it already has open. Last, it deletes old versions, keeping the current one, the previous one, and the one a live daemon record names."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "install.sh",
+     "note": "Rewritten from <code>sh</code> to <code>bash</code> with <code>set -euo pipefail</code>. Read <code>install_version</code> for the switch and pruning, <code>install_release</code> and <code>install_checkout</code> for the builds, <code>target_dir</code> for where a checkout build lands, and <code>remove_hook</code> for how an old hook is replaced.",
+     "checks": [
+      {
+       "kind": "context",
+       "line": 88,
+       "text": "<code>link_version</code> returns a link's last path component. The installer writes bare version names, but a link someone switched back by hand, such as <code>ln -sfn ~/.local/share/trip/0.2.0 current</code>, holds an absolute path. Reading only the name keeps that version from being pruned."
+      },
+      {
+       "kind": "verify",
+       "line": 108,
+       "text": "On macOS, <code>mv -T</code> is refused as an illegal option, and the <code>mv -h</code> fallback replaced a symlink to a directory in place, without moving the new link into the old target. Checked by hand in a scratch directory."
+      },
+      {
+       "kind": "context",
+       "line": 171,
+       "text": "The pruning loop deletes only real directories under <code>~/.local/share/trip</code> whose names start with a digit. The version pattern above rejects <code>/</code> and a leading non-digit, so a version name cannot reach outside that directory."
+      },
+      {
+       "kind": "context",
+       "line": 208,
+       "text": "<code>tar</code> extracts any repository's archive, so this check is what tells a <code>TRIP_REPO</code> typo apart from trip's source. Without it, a missing <code>Cargo.toml</code> stopped the script with a bare <code>sed</code> error."
+      },
+      {
+       "kind": "verify",
+       "line": 228,
+       "text": "With cargo 1.100, <code>cargo metadata --format-version 1 --no-deps</code> prints one line of JSON with a single <code>\"target_directory\":</code> key, beside a separate <code>build_directory</code>, and this <code>sed</code> expression extracted exactly that path. Checked by running it in a checkout of this head."
+      },
+      {
+       "kind": "verify",
+       "line": 265,
+       "text": "The <code>END</code> rule makes <code>awk</code> exit 1 when a marker has no closing <code>fi</code>, so <code>remove_hook</code> returns before it writes the file. Run here, an edited hook gave status 1, and an intact one gave status 0 with the lines around it kept."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "tests",
+   "title": "The end-to-end test",
+   "kicker": "Each case runs the real installer in its own temporary HOME",
+   "intro": [
+    "<code>tests/install_e2e.py</code> gives each case a fresh <code>HOME</code> and <code>TMPDIR</code> and a <code>PATH</code> of only cargo's directory and the system's, passed as a complete environment. Most cases install a stand-in crate named <code>trip</code> from local <code>file://</code> archives, so they need no network and build in about a second. One case builds trip's own source, to show that a release build reports a bare version. <code>check.yml</code> already runs every <code>tests/*_e2e.py</code>, so CI picks it up."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "tests/install_e2e.py",
+     "note": "Fourteen cases: a failed build, an archive that is not trip, pruning, a hand-made absolute <code>current</code> link, the daemon record (live and stale), the warnings, the shell hook, an edited hook, both checkout modes, a configured <code>target-dir</code>, no <code>cargo</code>, and a release build of trip itself.",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 68,
+       "text": "The environment each case passes the installer is complete, not merged with the caller's, so no real <code>HOME</code>, XDG variable, or <code>PATH</code> entry reaches it."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "docs",
+   "title": "README and plan",
+   "kicker": "The install instructions and what implementation settled",
+   "intro": [
+    "The README gives the release command, which works once the first release is tagged, the checkout and <code>--dev</code> modes, the layout, and a terminal setup that names <code>~/.local/bin/trip enter</code>. The plan adds the <code>previous</code> link to its layout table in § 2.2 and records the decisions this step settled in § 9."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "README.md",
+     "note": "The install section, the layout table, and the terminal setup now name <code>~/.local</code>."
+    },
+    {
+     "path": "docs/projects/releases/readme.md",
+     "note": "§ 2.2 gains <code>previous</code>. § 9 records the build time, the test-only variables, and that a checkout install builds in the checkout's own target directory, which § 2.3 step 2 still describes as a temporary directory.",
+     "checks": [
+      {
+       "kind": "context",
+       "text": "The plan stays <code>in-progress</code>. This change adds no open question, and the questions in § 7 are all deferred or owned."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
