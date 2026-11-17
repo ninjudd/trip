@@ -1,0 +1,157 @@
+{
+ "version": 1,
+ "name": "Releases and trip upgrade",
+ "project": "releases",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 27,
+  "title": "Check every pull request, license the crate, and add `trip --version`",
+  "head": "a0ec8154c8ae1627241a7409a06c39c3ec820a7f",
+  "headRef": "releases/check",
+  "base": "650482652f142e9553bfff58a606a0c27dc0ce51",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "<code>trip</code> is a terminal session manager: a daemon owns each session's terminal, and the <code>trip</code> client attaches to it. The <code>releases</code> plan gives it numbered releases, an installer that builds a tagged release from source, and <code>trip upgrade</code>. This pull request is the plan's first step, the bottom of the stack that builds it. It adds the two things every later step depends on: a CI workflow that checks each pull request, and a <code>--version</code> flag that says whether a binary is a release.",
+   "Before this change, the repository's only workflow published its project site, so nothing checked a pull request before it merged. And no <code>trip</code> binary could name its version. A release pull request needs passing checks before you merge it, and <code>trip upgrade</code> will compare the version a binary reports with the release tag.",
+   "<ul><li><b>A version that says whether the build is a release.</b> <code>trip --version</code> and <code>-V</code> print <code>trip 0.1.0</code> only when <code>TRIP_RELEASE=1</code> was set at compile time, which the release installer in a later layer will set. Every other build prints <code>trip 0.1.0-dev</code>.</li><li><b>Crate metadata and a license.</b> <code>Cargo.toml</code> gains <code>description</code>, <code>license</code>, <code>repository</code>, and <code>rust-version = \"1.85\"</code>, and the repository gains the MIT <code>LICENSE</code> text the README already named.</li><li><b>CI.</b> <code>check.yml</code> runs formatting, clippy, the tests, and the end-to-end scripts on every pull request, on pushes to <code>main</code>, and by dispatch, plus a job that checks the build on the minimum Rust version.</li><li><b>The plan.</b> <code>releases</code> moves to <code>in-progress</code> and records what implementation settled in a new § 9.</li></ul>"
+  ],
+  "cards": [
+   {
+    "id": "terms",
+    "title": "Terms",
+    "html": "<ul class=\"tight\"><li><b><code>TRIP_RELEASE</code></b>: an environment variable read when <code>trip</code> compiles, not when it runs. Only the value <code>1</code> marks a release build.</li><li><b>MSRV</b>: minimum supported Rust version, the <code>rust-version</code> field in <code>Cargo.toml</code>.</li><li><b><code>workflow_dispatch</code></b>: a GitHub Actions trigger that starts a workflow on request, on a branch you name.</li></ul>"
+   },
+   {
+    "id": "review",
+    "title": "Review so far",
+    "html": "<p>One Projector review of this head found no blocking problems and suggested three small changes: keep pushes to <code>main</code> from cancelling each other's runs, run the version test with <code>TRIP_RELEASE=0</code> too, and record the measured CI time in the plan. CI passed on this head: <code>check</code> in 4m 4s and <code>msrv</code> in 23s.</p>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "version",
+   "title": "trip --version",
+   "kicker": "A version flag that tells a release build from every other build",
+   "intro": [
+    "<code>trip upgrade</code>, a later step, compares the version an installed binary reports with the release tag, and refuses to touch a checkout install. So the binary has to say both its version and whether it is a release. The release installer will build with <code>TRIP_RELEASE=1</code> in the environment. <code>trip</code> reads that variable when it compiles, with <code>option_env!</code>, and appends <code>-dev</code> unless it is exactly <code>1</code>.",
+    "Cargo records that the crate read the variable, so changing it between builds recompiles <code>trip</code>. A binary therefore never keeps the answer from an earlier build."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "src/cli.rs",
+     "note": "Adds the <code>VERSION</code> constant and passes it to clap's <code>version</code> attribute, which adds <code>--version</code> and <code>-V</code>.",
+     "checks": [
+      {
+       "kind": "context",
+       "line": 8,
+       "text": "The match compares bytes, <code>[b'1']</code>, instead of the string pattern <code>Some(\"1\")</code>. That is necessary: Rust refuses a <code>str</code> pattern in a constant with <code>E0658</code>, which a test compile confirmed."
+      },
+      {
+       "kind": "verify",
+       "line": 7,
+       "text": "Builds of this head print <code>trip 0.1.0-dev</code> with no <code>TRIP_RELEASE</code>, <code>trip 0.1.0</code> with <code>TRIP_RELEASE=1</code>, and <code>trip 0.1.0-dev</code> with <code>0</code> and with <code>11</code>. Cargo rebuilt <code>trip</code> after each change to the variable."
+      }
+     ]
+    },
+    {
+     "path": "tests/version.rs",
+     "note": "Runs the built binary with <code>--version</code> and <code>-V</code> and expects the answer its own build's <code>TRIP_RELEASE</code> calls for. CI runs it once plain and once with <code>TRIP_RELEASE=1</code>.",
+     "checks": [
+      {
+       "kind": "context",
+       "text": "CI runs this test with the variable unset and with <code>1</code>, but never with another value. So the rule that only <code>1</code> marks a release is checked by hand, not in CI."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "crate",
+   "title": "Crate metadata and license",
+   "kicker": "What a public release needs in Cargo.toml and the repository root",
+   "intro": [
+    "A release needs a license and a stated minimum Rust version. The README's License section already said MIT, but the repository had no <code>LICENSE</code> file. <code>rust-version = \"1.85\"</code> is the floor because <code>clap</code> 4.6 and <code>vt100</code> 0.18 use Rust's 2024 edition and declare 1.85 themselves. <code>trip</code>'s own code needs only 1.82. Setting <code>rust-version</code> also makes clippy flag any standard library API newer than it."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "Cargo.toml",
+     "note": "Adds <code>rust-version</code>, <code>description</code>, <code>license</code>, and <code>repository</code>. No dependency changes.",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 5,
+       "text": "The locked <code>clap</code> 4.6.1, <code>clap_builder</code> 4.6.0, and <code>vt100</code> 0.18.1 each declare <code>edition = \"2024\"</code> and <code>rust-version = \"1.85\"</code>, and CI's <code>msrv</code> job passed on 1.85."
+      }
+     ]
+    },
+    {
+     "path": "LICENSE",
+     "note": "The standard MIT license text."
+    },
+    {
+     "path": "README.md",
+     "note": "Documents <code>trip --version</code> and changes the Rust requirement from the 2021 edition to 1.85 or newer."
+    }
+   ]
+  },
+  {
+   "id": "ci",
+   "title": "CI on every pull request",
+   "kicker": "check.yml, the workflow every later step relies on",
+   "intro": [
+    "<code>check.yml</code> runs on each pull request, on each push to <code>main</code>, and by <code>workflow_dispatch</code>. The dispatch trigger exists for the release workflow in a later layer: GitHub starts no workflow for a pull request that a workflow's own token opened, so that workflow will dispatch this one onto the release branch.",
+    "<ol><li><b>The <code>check</code> job</b> runs on macOS: <code>cargo fmt --check</code>, clippy with warnings as errors, <code>cargo test</code>, the version test again with <code>TRIP_RELEASE=1</code>, a plain rebuild, and each <code>tests/*_e2e.py</code> script. Each script starts its own daemon in its own temporary home directory.</li><li><b>The <code>msrv</code> job</b> reads <code>rust-version</code> from <code>Cargo.toml</code>, installs that toolchain, and runs <code>cargo check --locked --all-targets</code>.</li></ol>"
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": ".github/workflows/check.yml",
+     "note": "New workflow with the <code>check</code> and <code>msrv</code> jobs, read-only permissions, and one concurrency group per ref.",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 2,
+       "text": "The workflow triggers on <code>pull_request</code>, not <code>pull_request_target</code>, grants only <code>contents: read</code>, uses no secrets, and interpolates no <code>${{ }}</code> expression into a <code>run:</code> step."
+      },
+      {
+       "kind": "context",
+       "line": 14,
+       "text": "<code>cancel-in-progress: true</code> applies to pushes to <code>main</code> too. When two merges land close together, the first merge's run is cancelled, and that commit keeps no check result."
+      },
+      {
+       "kind": "verify",
+       "line": 34,
+       "text": "The <code>cargo build --locked</code> after the release-mode test rebuilds <code>target/debug/trip</code> as <code>-dev</code>, because Cargo tracks <code>TRIP_RELEASE</code>. All three end-to-end scripts passed locally against that build."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "plan",
+   "title": "The releases plan",
+   "kicker": "The plan moves to in-progress and records what step 1 settled",
+   "intro": [
+    "The plan was at <code>ready</code>. Starting its first step moves it to <code>in-progress</code>. Its new § 9 records three decisions: the minimum Rust version and why, that only <code>TRIP_RELEASE=1</code> marks a release, and that Linux CI stays deferred, as § 7 allowed."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "docs/projects/releases/readme.md",
+     "note": "Changes the status to <code>in-progress</code> and adds § 9, \"What implementation settled\".",
+     "checks": [
+      {
+       "kind": "context",
+       "text": "§ 5 asks for the CI job's time to be measured against a 10-minute budget. The first run on this head took 4m 4s, but § 9 does not record it yet."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
