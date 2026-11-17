@@ -1,6 +1,7 @@
 pub mod attach;
 pub mod chooser;
 pub mod launch;
+pub mod upgrade;
 pub mod wrap;
 
 use std::collections::HashMap;
@@ -79,24 +80,142 @@ pub fn derive_session_name() -> Result<String> {
 }
 
 pub async fn get_session_list() -> Result<Vec<crate::daemon::protocol::SessionInfo>> {
-    match launch::try_connect().await {
-        Ok(stream) => {
-            let (reader, writer) = stream.into_split();
-            let mut reader = BufReader::new(reader);
-            let mut writer = BufWriter::new(writer);
-            write_control(&mut writer, &Request::ListSessions).await?;
-            match read_frame(&mut reader).await? {
-                Some(Frame::Control(payload)) => {
-                    let response: Response = serde_json::from_slice(&payload)?;
-                    match response {
-                        Response::SessionList { sessions } => Ok(sessions),
-                        _ => Ok(Vec::new()),
-                    }
-                }
-                _ => Ok(Vec::new()),
+    Ok(running_sessions().await?.unwrap_or_default())
+}
+
+/// The running daemon's sessions, or None when no daemon answers the socket.
+async fn running_sessions() -> Result<Option<Vec<crate::daemon::protocol::SessionInfo>>> {
+    let Ok(stream) = launch::try_connect().await else {
+        return Ok(None);
+    };
+    let (reader, writer) = stream.into_split();
+    let mut reader = BufReader::new(reader);
+    let mut writer = BufWriter::new(writer);
+    write_control(&mut writer, &Request::ListSessions).await?;
+    match read_frame(&mut reader).await? {
+        Some(Frame::Control(payload)) => {
+            let response: Response = serde_json::from_slice(&payload)?;
+            match response {
+                Response::SessionList { sessions } => Ok(Some(sessions)),
+                _ => Ok(Some(Vec::new())),
             }
         }
-        Err(_) => Ok(Vec::new()),
+        _ => Ok(Some(Vec::new())),
+    }
+}
+
+/// The running daemon's version, as far as the client can tell.
+#[derive(Debug, PartialEq)]
+pub enum DaemonVersion {
+    Recorded(String),
+    /// No record whose daemon still runs: a daemon from before releases,
+    /// which writes none, or one whose record was left by a daemon since gone.
+    BeforeReleases,
+}
+
+/// What `~/.trip/daemon.json` says about the running daemon. It says nothing
+/// about whether one runs; only the socket answers that.
+pub fn daemon_version() -> DaemonVersion {
+    match crate::common::read_daemon_record() {
+        Some(record) if pid_running(record.pid) => DaemonVersion::Recorded(record.version),
+        _ => DaemonVersion::BeforeReleases,
+    }
+}
+
+fn pid_running(pid: u32) -> bool {
+    use nix::errno::Errno;
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+    // Signal 0 only asks. Pid 0 and negative pids name process groups, which
+    // a record never means.
+    match i32::try_from(pid) {
+        Ok(pid) if pid > 0 => matches!(kill(Pid::from_raw(pid), None), Ok(()) | Err(Errno::EPERM)),
+        _ => false,
+    }
+}
+
+/// A release version's numbers. A `-dev` build, or anything else that is not
+/// `X.Y.Z`, has none, so it is never older or newer than a release.
+pub fn release_numbers(version: &str) -> Option<[u64; 3]> {
+    let mut parts = version.split('.').map(|part| part.parse::<u64>().ok());
+    let numbers = [parts.next()??, parts.next()??, parts.next()??];
+    parts.next().is_none().then_some(numbers)
+}
+
+/// Whether the daemon runs an older trip than `version`. A daemon from before
+/// releases is older than anything.
+pub fn daemon_is_older(daemon: &DaemonVersion, version: &str) -> bool {
+    match daemon {
+        DaemonVersion::BeforeReleases => true,
+        DaemonVersion::Recorded(running) => {
+            matches!((release_numbers(running), release_numbers(version)), (Some(a), Some(b)) if a < b)
+        }
+    }
+}
+
+/// The line that says the daemon is older than `version` and how it moves.
+/// `sessions` is None when the daemon would not say how many it holds.
+pub fn older_daemon_line(daemon: &DaemonVersion, version: &str, sessions: Option<usize>) -> String {
+    let runs = match daemon {
+        DaemonVersion::Recorded(running) => format!("the daemon still runs {}", running),
+        DaemonVersion::BeforeReleases => "the daemon still runs a trip from before releases".into(),
+    };
+    let holding = match sessions {
+        Some(1) => " with 1 session".to_string(),
+        Some(n) => format!(" with {} sessions", n),
+        None => String::new(),
+    };
+    format!(
+        "{}{}; it moves to {} when its last session ends or you run trip shutdown --yes",
+        runs, holding, version
+    )
+}
+
+/// The older-daemon line when a running daemon is older than `version`,
+/// asking it how many sessions it holds. No daemon, no line.
+async fn older_daemon_note(version: &str) -> Option<String> {
+    let daemon = daemon_version();
+    if !daemon_is_older(&daemon, version) {
+        return None;
+    }
+    let sessions = match running_sessions().await {
+        Ok(None) => return None,
+        Ok(Some(sessions)) => Some(sessions.len()),
+        Err(_) => None,
+    };
+    Some(older_daemon_line(&daemon, version, sessions))
+}
+
+pub async fn warn_if_daemon_older(version: &str) {
+    if let Some(line) = older_daemon_note(version).await {
+        eprintln!("{}", line);
+    }
+}
+
+/// Explain a request that failed because the daemon is older than this
+/// client. An older daemon closes the connection on a request it cannot
+/// decode, which every request reports as `unexpected frame`, and a reply
+/// this client cannot decode fails in `serde_json`. Any other failure, or
+/// one from a daemon that is not older, stays as it was.
+pub async fn explain_daemon_failure(error: anyhow::Error) -> anyhow::Error {
+    let undecoded = error.to_string() == "unexpected frame"
+        || error.chain().any(|cause| {
+            cause.is::<serde_json::Error>()
+                || cause.downcast_ref::<std::io::Error>().is_some_and(|e| {
+                    matches!(
+                        e.kind(),
+                        std::io::ErrorKind::UnexpectedEof
+                            | std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::BrokenPipe
+                    )
+                })
+        });
+    if !undecoded {
+        return error;
+    }
+    match older_daemon_note(crate::cli::VERSION).await {
+        Some(line) => anyhow::anyhow!("the daemon could not answer this request: {}", line),
+        None => error,
     }
 }
 
@@ -571,99 +690,13 @@ pub async fn list_sessions(scope: Scope, attached_only: bool) -> Result<()> {
             let response: Response = serde_json::from_slice(&payload)?;
             match response {
                 Response::SessionList { sessions } => {
-                    // Headers earn their place only across workspaces.
-                    let grouped = scope == Scope::All;
-                    let workspace = match scope {
-                        Scope::Pwd => Some(derive_session_name()?),
-                        Scope::All => None,
-                    };
-                    let mut sessions: Vec<_> = sessions
-                        .into_iter()
-                        .filter(|s| !attached_only || s.attached)
-                        .filter(|s| {
-                            workspace
-                                .as_deref()
-                                .is_none_or(|base| session_base(&s.name) == base)
-                        })
-                        .collect();
-                    if sessions.is_empty() {
-                        match &workspace {
-                            Some(base) => {
-                                println!("no sessions for '{}' (try: trip ls)", base)
-                            }
-                            None if attached_only => println!("no attached sessions"),
-                            None => println!("no sessions"),
-                        }
-                        return Ok(());
-                    }
-                    sessions.sort_by(|a, b| {
-                        (session_base(&a.name), group_order(&a.name))
-                            .cmp(&(session_base(&b.name), group_order(&b.name)))
-                    });
-
-                    let current = std::env::var("TRIP_SESSION").ok();
-                    let home = std::env::var("HOME").unwrap_or_default();
-                    let rows: Vec<_> = sessions
-                        .iter()
-                        .map(|s| {
-                            let is_current = current.as_deref() == Some(&s.name);
-                            let marker = if is_current {
-                                "*"
-                            } else if s.attached {
-                                "+"
-                            } else {
-                                match s.state {
-                                    SessionState::Exited(_) => "✕",
-                                    _ => "-",
-                                }
-                            };
-                            let cmd = s
-                                .title
-                                .as_deref()
-                                .or(s.fg_command.as_deref())
-                                .unwrap_or(&s.command);
-                            let branch = s.git_branch.as_deref().unwrap_or("-");
-                            let cwd = s.cwd.as_deref().unwrap_or("");
-                            let cwd = if !home.is_empty() && cwd.starts_with(&home) {
-                                format!("~{}", &cwd[home.len()..])
-                            } else {
-                                cwd.to_string()
-                            };
-                            (
-                                session_base(&s.name).to_string(),
-                                marker.to_string(),
-                                s.name.clone(),
-                                cmd.to_string(),
-                                branch.to_string(),
-                                cwd,
-                            )
-                        })
-                        .collect();
-
-                    let nw = rows.iter().map(|r| r.2.len()).max().unwrap_or(0);
-                    let cw = rows.iter().map(|r| r.3.len()).max().unwrap_or(0);
-                    let bw = rows.iter().map(|r| r.4.len()).max().unwrap_or(0);
-
-                    let indent = if grouped { "  " } else { "" };
-                    let mut last_base: Option<&str> = None;
-                    for (base, marker, name, cmd, branch, cwd) in &rows {
-                        if grouped && last_base != Some(base.as_str()) {
-                            if last_base.is_some() {
-                                println!();
-                            }
-                            println!("{}", base);
-                            last_base = Some(base);
-                        }
-                        println!(
-                            "{indent}{} {:<nw$}  {:<cw$}  {:<bw$}  {}",
-                            marker,
-                            name,
-                            cmd,
-                            branch,
-                            cwd,
-                            nw = nw,
-                            cw = cw,
-                            bw = bw,
+                    let total = sessions.len();
+                    print_sessions(sessions, scope, attached_only)?;
+                    let daemon = daemon_version();
+                    if daemon_is_older(&daemon, crate::cli::VERSION) {
+                        eprintln!(
+                            "{}",
+                            older_daemon_line(&daemon, crate::cli::VERSION, Some(total))
                         );
                     }
                 }
@@ -676,6 +709,109 @@ pub async fn list_sessions(scope: Scope, attached_only: bool) -> Result<()> {
         _ => anyhow::bail!("unexpected frame"),
     }
 
+    Ok(())
+}
+
+fn print_sessions(
+    sessions: Vec<crate::daemon::protocol::SessionInfo>,
+    scope: Scope,
+    attached_only: bool,
+) -> Result<()> {
+    // Headers earn their place only across workspaces.
+    let grouped = scope == Scope::All;
+    let workspace = match scope {
+        Scope::Pwd => Some(derive_session_name()?),
+        Scope::All => None,
+    };
+    let mut sessions: Vec<_> = sessions
+        .into_iter()
+        .filter(|s| !attached_only || s.attached)
+        .filter(|s| {
+            workspace
+                .as_deref()
+                .is_none_or(|base| session_base(&s.name) == base)
+        })
+        .collect();
+    if sessions.is_empty() {
+        match &workspace {
+            Some(base) => {
+                println!("no sessions for '{}' (try: trip ls)", base)
+            }
+            None if attached_only => println!("no attached sessions"),
+            None => println!("no sessions"),
+        }
+        return Ok(());
+    }
+    sessions.sort_by(|a, b| {
+        (session_base(&a.name), group_order(&a.name))
+            .cmp(&(session_base(&b.name), group_order(&b.name)))
+    });
+
+    let current = std::env::var("TRIP_SESSION").ok();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let rows: Vec<_> = sessions
+        .iter()
+        .map(|s| {
+            let is_current = current.as_deref() == Some(&s.name);
+            let marker = if is_current {
+                "*"
+            } else if s.attached {
+                "+"
+            } else {
+                match s.state {
+                    SessionState::Exited(_) => "✕",
+                    _ => "-",
+                }
+            };
+            let cmd = s
+                .title
+                .as_deref()
+                .or(s.fg_command.as_deref())
+                .unwrap_or(&s.command);
+            let branch = s.git_branch.as_deref().unwrap_or("-");
+            let cwd = s.cwd.as_deref().unwrap_or("");
+            let cwd = if !home.is_empty() && cwd.starts_with(&home) {
+                format!("~{}", &cwd[home.len()..])
+            } else {
+                cwd.to_string()
+            };
+            (
+                session_base(&s.name).to_string(),
+                marker.to_string(),
+                s.name.clone(),
+                cmd.to_string(),
+                branch.to_string(),
+                cwd,
+            )
+        })
+        .collect();
+
+    let nw = rows.iter().map(|r| r.2.len()).max().unwrap_or(0);
+    let cw = rows.iter().map(|r| r.3.len()).max().unwrap_or(0);
+    let bw = rows.iter().map(|r| r.4.len()).max().unwrap_or(0);
+
+    let indent = if grouped { "  " } else { "" };
+    let mut last_base: Option<&str> = None;
+    for (base, marker, name, cmd, branch, cwd) in &rows {
+        if grouped && last_base != Some(base.as_str()) {
+            if last_base.is_some() {
+                println!();
+            }
+            println!("{}", base);
+            last_base = Some(base);
+        }
+        println!(
+            "{indent}{} {:<nw$}  {:<cw$}  {:<bw$}  {}",
+            marker,
+            name,
+            cmd,
+            branch,
+            cwd,
+            nw = nw,
+            cw = cw,
+            bw = bw,
+        );
+    }
     Ok(())
 }
 
@@ -1310,5 +1446,81 @@ mod tests {
         ]);
         assert_eq!(rows[0], "a    zsh  (current)");
         assert_eq!(rows[1], "bbb  vim");
+    }
+}
+
+#[cfg(test)]
+mod daemon_version_tests {
+    use super::{daemon_is_older, older_daemon_line, pid_running, release_numbers, DaemonVersion};
+
+    fn recorded(version: &str) -> DaemonVersion {
+        DaemonVersion::Recorded(version.into())
+    }
+
+    #[test]
+    fn versions_compare_by_number_not_by_text() {
+        assert_eq!(release_numbers("0.10.2"), Some([0, 10, 2]));
+        assert!(daemon_is_older(&recorded("0.9.0"), "0.10.0"));
+        assert!(daemon_is_older(&recorded("0.2.9"), "0.3.0"));
+        assert!(daemon_is_older(&recorded("1.2.3"), "1.2.4"));
+        assert!(!daemon_is_older(&recorded("0.3.0"), "0.3.0"));
+        assert!(!daemon_is_older(&recorded("0.10.0"), "0.9.0"));
+    }
+
+    #[test]
+    fn a_dev_version_is_never_older_or_newer_than_a_release() {
+        assert_eq!(release_numbers("0.2.0-dev"), None);
+        assert!(!daemon_is_older(&recorded("0.1.0-dev"), "0.3.0"));
+        assert!(!daemon_is_older(&recorded("0.1.0"), "0.3.0-dev"));
+        assert!(!daemon_is_older(&recorded("0.1.0-dev"), "0.3.0-dev"));
+    }
+
+    #[test]
+    fn anything_but_three_numbers_is_not_a_release() {
+        for version in ["", "0.2", "0.2.0.1", "v0.2.0", "0.2.x", "0..2"] {
+            assert_eq!(release_numbers(version), None, "{:?}", version);
+            assert!(
+                !daemon_is_older(&recorded(version), "9.9.9"),
+                "{:?}",
+                version
+            );
+        }
+    }
+
+    #[test]
+    fn a_daemon_from_before_releases_is_older_than_anything() {
+        assert!(daemon_is_older(&DaemonVersion::BeforeReleases, "0.2.0"));
+        assert!(daemon_is_older(&DaemonVersion::BeforeReleases, "0.2.0-dev"));
+    }
+
+    #[test]
+    fn the_line_names_both_versions_and_the_sessions() {
+        assert_eq!(
+            older_daemon_line(&recorded("0.2.0"), "0.3.0", Some(4)),
+            "the daemon still runs 0.2.0 with 4 sessions; it moves to 0.3.0 \
+             when its last session ends or you run trip shutdown --yes"
+        );
+        assert_eq!(
+            older_daemon_line(&DaemonVersion::BeforeReleases, "0.3.0", Some(1)),
+            "the daemon still runs a trip from before releases with 1 session; \
+             it moves to 0.3.0 when its last session ends or you run trip shutdown --yes"
+        );
+        assert_eq!(
+            older_daemon_line(&recorded("0.2.0"), "0.3.0", None),
+            "the daemon still runs 0.2.0; it moves to 0.3.0 \
+             when its last session ends or you run trip shutdown --yes"
+        );
+    }
+
+    #[test]
+    fn only_a_running_pid_vouches_for_a_record() {
+        assert!(pid_running(std::process::id()));
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let exited = child.id();
+        child.wait().unwrap();
+        assert!(!pid_running(exited));
+        // 0 and anything past i32::MAX would signal a process group.
+        assert!(!pid_running(0));
+        assert!(!pid_running(u32::MAX));
     }
 }

@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: completed
 priority: now
 ---
 
@@ -187,3 +187,35 @@ Steps 1 to 4 can ship as one stack. The first release waits for all of them, so 
 - **`check-commit` checks what the release commit changes, not only which files.** It refuses a commit unless it changes exactly `Cargo.toml` and `Cargo.lock`, raises the version, and leaves both files as they were apart from `[package]`'s version and `trip`'s entry in `Cargo.lock`. Projector's propose job compares only the list of changed files, in shell. Here the check is a `release.py` subcommand, so `tests/release_test.py` covers it.
 - **The version is bumped as text, and checked as TOML.** `release.py` reads both versions with `tomllib` and refuses files that disagree or a `Cargo.lock` without exactly one `trip` package. It rewrites only the `version` line of Cargo.toml's `[package]` table and the one that follows `name = "trip"` in `Cargo.lock`, so every other byte, including another package at the same version, stays as it was. `--locked` builds in the Check workflow fail on a `Cargo.lock` left at the old version, which the release branch's dispatched check would show.
 - **`check.yml` runs `python3 tests/release_test.py`** as a step of its own after `cargo fmt --check`, rather than naming it `*_e2e.py`: it tests a script, needs no `trip` build, and runs in about 8 seconds. It needs Python 3.11 or newer for `tomllib`, which the `macos-latest` and `ubuntu-latest` runners have. The release jobs run on `ubuntu-latest`, since they build nothing.
+- **The daemon writes its record before it opens its socket**, so a client that reaches a daemon never finds the record missing and takes it for one from before releases. The record is one line, `{"version":"0.2.0","pid":42}`, written to `daemon.json.<pid>` and renamed over `daemon.json`, and it carries the daemon's full version, `-dev` included, so a checkout's daemon is never called older. Every path on which the daemon exits removes the socket and then the record, and removes the record only while it still names the daemon's own pid. A daemon that is killed or panics leaves its record, which the dead pid then disqualifies. `tests/upgrade_e2e.py` reads the record a real daemon wrote with install.sh's own `daemon_version` function, so the format and the installer's `sed` stay in step.
+- **A missing record counts as older even for a `-dev` client.** It means a daemon from before releases, which is older than anything this project builds, so the line appears whichever build asks. A recorded `-dev` version, on either side, is never older or newer.
+- **`trip enter` and `trip attach` print the line when the attach ends**, on detach or when the session ends, because the attach takes the whole screen and its repaint would erase a line printed first. `trip enter` from inside a session switches the terminal rather than attaching, and prints nothing. `trip ls` prints the line after its list. Each reads `daemon.json` and asks the daemon for its session count only when the record is missing or older.
+- **Only a request the daemon could not answer maps to the line.** An older daemon closes the connection on a request it cannot decode, which the client reports as `unexpected frame`, and a reply the client cannot decode fails in `serde_json`. When a command that talks to the daemon fails either way, or on a reset connection, and the daemon is older, the error becomes `the daemon could not answer this request:` followed by the line. Any other error, or any error from a daemon that is not older, stays as it was.
+- **`trip upgrade` installs only a newer release.** When the installed version is already the newest release or past it, it says so, runs no installer, and prints the older-daemon line if it applies. When neither `gh` nor the anonymous API names a tag, it fails with each lookup's reason, rather than falling back to `v0` as Projector's does, because it has no tag to check the install against. It downloads the installer into a fresh directory only the user can enter, under `TMPDIR`, and removes it afterwards.
+- **Three variables exist for tests.** `TRIP_GH` names the `gh` command, `TRIP_GITHUB_API` replaces `https://api.github.com`, and `TRIP_RAW_URL` replaces `https://raw.githubusercontent.com`, where the installer comes from. `tests/upgrade_e2e.py` points them at a stand-in `gh` and `file://` copies, so it never reaches GitHub. It builds a release-marked trip, with `TRIP_RELEASE=1`, into `target/upgrade-e2e`, because `trip upgrade` refuses a `-dev` build and a `-dev` client never calls a release daemon older. That build took 6 seconds from a clean target directory on an Apple M2 Max, and the whole script under 15 seconds.
+
+## 10. Outcome
+
+Shipped, as the four pull requests that § 6 steps 1 to 4 describe: the Check workflow and `trip --version`, the installer, and the release workflow, which merged together as one stack, then `trip upgrade` with the daemon's version record. The first release, § 6 step 5, is yours, and it is tracked outside this plan. Turn on "Allow GitHub Actions to create and approve pull requests" in the repository settings, cut the release with `gh workflow run release.yml -f bump=minor`, which publishes `0.2.0`, and install it on each machine with the release command once. You can cut it before or after the `trip upgrade` pull request merges. A release cut before that merge has no `trip upgrade` and no daemon record, so its daemon reads as from before releases to the next release's client.
+
+Each § 4 row and what shows it:
+
+| Row | Evidence |
+| --- | --- |
+| `release.py bump minor` | `tests/release_test.py`: `test_bumps_the_repository_version_files_and_nothing_else`, `test_bumps_only_trips_entry_in_the_lock` |
+| The release check refuses a commit touching `src/` | `tests/release_test.py`: `test_refuses_a_commit_that_also_touches_src` |
+| Publish twice, after a failure between the tag and the release | `tests/release_test.py`: `test_a_rerun_after_a_failure_between_the_tag_and_the_release_finishes_it` |
+| The release installer against a local archive | `tests/install_e2e.py`: `test_release_of_trip_itself` |
+| `cargo build`, then `trip --version` | `tests/version.rs`, run by `check.yml` with `TRIP_RELEASE` unset, `1`, and `0` |
+| `./install.sh --dev` over a release install, then `trip upgrade` | `tests/install_e2e.py`: `test_dev_links_debug_build`; `tests/upgrade_e2e.py`: `test_dev_install_is_refused` |
+| A failed build | `tests/install_e2e.py`: `test_failed_build_keeps_current` |
+| Three versions in turn | `tests/install_e2e.py`: `test_three_installs_keep_two` |
+| An install beside a daemon of the oldest version | `tests/install_e2e.py`: `test_live_daemon_version_is_kept`, with `tests/upgrade_e2e.py`'s check that install.sh reads a real daemon's record |
+| A `PATH` without `~/.local/bin` | `tests/install_e2e.py`: `test_warnings` |
+| A shell whose `PATH` lacks `~/.local/bin` | `tests/install_e2e.py`: `test_shell_hook` |
+| `trip upgrade` when the installed version is not the tag's | `tests/upgrade_e2e.py`: `test_mismatched_version_exits_1` |
+| An older daemon, then `trip ls` | `tests/upgrade_e2e.py`: `test_older_daemon_line`, which also covers `attach` and `enter` |
+| A daemon with no version record | `tests/upgrade_e2e.py`: `test_missing_record_is_from_before_releases` |
+| A stopped daemon, and a record naming a dead pid | `tests/upgrade_e2e.py`: `test_record_written_and_removed`, `test_dead_pid_record_is_ignored` |
+| `/usr/local/bin/trip` present | `tests/install_e2e.py`: `test_warnings` |
+| Open a pull request | `check.yml` ran and passed on each pull request of the stack. GitHub does not enforce the "must pass": the `main` ruleset requires no status check (§ 9) |
