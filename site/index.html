@@ -192,23 +192,31 @@
 
   <section aria-labelledby="how">
     <h2 id="how">Close the window. Keep the session.</h2>
-    <p>Run <code>trip enter</code> in a project, and you're in that workspace's session, created if it didn't exist. Start a build, an editor, or an agent, then close the tab. Tomorrow, open a new one and run <code>trip enter</code> again.</p>
-    <div class="terminal" role="img" aria-label="A terminal transcript: trip enter in a project starts cargo test; the window closes; a new window runs trip enter and reattaches to the same screen, with the tests finished.">
+    <p>Run <code>trip enter</code> in a project and press Enter. The chooser starts on that workspace's session, and creates it if it doesn't exist yet. Start a build, an editor, or an agent, then close the tab. Later, open a new one, run <code>trip enter</code> in the same project, and press Enter again.</p>
+    <div class="terminal" role="img" aria-label="A terminal transcript: in a project, trip enter opens the session chooser on a new session for that workspace, and Enter creates it; cargo test starts; the window closes mid-run; in a new window, trip enter in the same project starts on the running session, and Enter brings back its screen with the tests finished.">
       <div class="bar" aria-hidden="true"><span></span><span></span><span></span></div>
 <pre><span class="t-muted">~/acme/webapp $</span> trip enter
+sessions:  <span class="t-muted">↑/↓ + enter · 0-9 · q cancels</span>
+&gt; <span class="t-sel">0) acme/webapp        (new session)</span>
+  1) notes        nvim
+
+<span class="t-accent"># enter creates the session and attaches</span>
 <span class="t-muted">~/acme/webapp $</span> cargo test
 <span class="t-muted">   Compiling webapp v0.4.1</span>
 <span class="t-muted">     Running unittests src/lib.rs</span>
 
-<span class="t-accent"># close the window, go home, open a new one</span>
+<span class="t-accent"># close the window mid-run, then open a new one</span>
+<span class="t-muted">~ $</span> cd acme/webapp
+<span class="t-muted">~/acme/webapp $</span> trip enter
+sessions:  <span class="t-muted">↑/↓ + enter · 0-9 · q cancels</span>
+  0) acme/webapp.1         (new session)
+&gt; <span class="t-sel">1) acme/webapp    cargo</span>
+  2) notes          nvim
 
-<span class="t-muted">~ $</span> trip enter
-<span class="t-muted">sessions:  ↑/↓ + enter · 0-9 · esc back</span>
-  0) acme/webapp.1                (new session)
-<span class="t-sel">&gt; 1) acme/webapp    cargo test             </span>
-  2) trip           nvim
-  3) notes          claude
-
+<span class="t-accent"># enter reattaches, and trip redraws the session's screen</span>
+<span class="t-muted">~/acme/webapp $</span> cargo test
+<span class="t-muted">   Compiling webapp v0.4.1</span>
+<span class="t-muted">     Running unittests src/lib.rs</span>
 <span class="t-muted">test result:</span> <span class="t-ok">ok</span><span class="t-muted">. 214 passed; 0 failed; finished in 48.20s</span>
 <span class="t-muted">~/acme/webapp $</span> <span class="t-accent">▍</span></pre>
     </div>
