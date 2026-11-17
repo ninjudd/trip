@@ -154,17 +154,27 @@ exit 1
 
     def publish(self, tag, installs=None, repo="ninjudd/trip"):
         """Make `tag` the newest release of `repo`, with an installer that
-        installs a trip reporting `installs`, the tag's version by default."""
+        installs a trip reporting `installs`, the tag's version by default.
+        It moves the links as install.sh does: `previous` takes the version
+        `current` named only when that differs from the one it installs."""
         installs = installs or tag.lstrip("v")
         write(os.path.join(self.source, "api", "repos", repo, "releases", "latest"),
               json.dumps({"tag_name": tag, "name": tag.lstrip("v")}))
         write(os.path.join(self.source, "raw", repo, tag, "install.sh"), f"""#!/usr/bin/env bash
 set -eu
 printf '%s %s\\n' "$TRIP_REPO" "$TRIP_REF" > {self.installer_ran}
-mkdir -p "$HOME/.local/bin"
+share="$HOME/.local/share/trip"
+mkdir -p "$HOME/.local/bin" "$share/{installs}"
+printf '#!/bin/sh\\necho "trip {installs}"\\n' > "$share/{installs}/trip"
+chmod +x "$share/{installs}/trip"
+current="$(readlink "$share/current" || true)"
+current="${{current##*/}}"
+if [ -n "$current" ] && [ "$current" != "{installs}" ]; then
+  ln -sfn "$current" "$share/previous"
+fi
+ln -sfn "{installs}" "$share/current"
 rm -f "$HOME/.local/bin/trip"
-printf '#!/bin/sh\\necho "trip {installs}"\\n' > "$HOME/.local/bin/trip"
-chmod +x "$HOME/.local/bin/trip"
+ln -s "$share/current/trip" "$HOME/.local/bin/trip"
 echo "Done."
 """)
 
@@ -269,21 +279,41 @@ def test_gh_answers_before_the_anonymous_api(version):
           "the tag gh names wins over the anonymous API's", outputs(result) + f"\n{read(home.installer_ran)}")
 
 
+def release_install(home, version, previous=None):
+    """Lay out a release install of `version` as install.sh leaves it, with
+    `previous` naming the version before it."""
+    share = os.path.join(home.dir, ".local", "share", "trip")
+    for name in filter(None, (version, previous)):
+        os.makedirs(os.path.join(share, name))
+    os.symlink(version, os.path.join(share, "current"))
+    if previous:
+        os.symlink(previous, os.path.join(share, "previous"))
+
+
 def test_mismatched_version_exits_1(version):
     home = Home()
     home.publish("v9.0.0", installs="8.0.0")
-    # The installer keeps the version it switched away from as `previous`.
-    share = os.path.join(home.dir, ".local", "share", "trip")
-    os.makedirs(os.path.join(share, "0.0.9"))
-    os.symlink("0.0.9", os.path.join(share, "previous"))
+    release_install(home, version, previous="0.0.9")
     result = home.run("upgrade")
     check(result.returncode == 1, "an install that reports another version exits 1", outputs(result))
-    check(result.stderr.endswith("\nError: the upgrade installed trip 8.0.0, but the newest release, v9.0.0, "
-                                 "is 9.0.0; trip 8.0.0 is now current; run ln -sfn 0.0.9 "
-                                 "~/.local/share/trip/current to switch back to 0.0.9\n")
+    check(result.stderr.endswith(f"\nError: the upgrade installed trip 8.0.0, but the newest release, v9.0.0, "
+                                 f"is 9.0.0; trip 8.0.0 is now current; run ln -sfn {version} "
+                                 f"~/.local/share/trip/current to switch back to {version}\n")
           and "upgraded" not in result.stdout,
-          "and names both versions, the build now current, and how to switch back to the previous one",
+          "and names both versions, the build now current, and how to switch back to the one it replaced",
           outputs(result))
+
+    # A tag cut without a version bump builds the version already running.
+    # The installer reinstalls it and leaves `previous` at the version before,
+    # which is no way back.
+    home = Home()
+    home.publish("v9.0.0", installs=version)
+    release_install(home, version, previous="0.0.9")
+    result = home.run("upgrade")
+    check(result.returncode == 1
+          and result.stderr.endswith(f"\nError: the upgrade installed trip {version}, but the newest release, "
+                                     f"v9.0.0, is 9.0.0; trip {version} is still current\n"),
+          "a build of the running version is still current, with no command to switch back", outputs(result))
 
     home = Home()
     home.publish("v9.0.0", installs="8.0.0")
@@ -291,7 +321,7 @@ def test_mismatched_version_exits_1(version):
     check(result.returncode == 1
           and result.stderr.endswith("\nError: the upgrade installed trip 8.0.0, but the newest release, "
                                      "v9.0.0, is 9.0.0; trip 8.0.0 is now current\n"),
-          "with no previous version it gives no command to switch back", outputs(result))
+          "with no install before it gives no command to switch back", outputs(result))
 
 
 def test_check_installs_nothing(version):

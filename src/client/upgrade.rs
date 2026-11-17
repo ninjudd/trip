@@ -57,25 +57,31 @@ pub async fn upgrade(check: bool) -> Result<()> {
         return Ok(());
     }
 
+    // The installer moves `previous` only when it installs a version other
+    // than the current one, so what `current` named before it ran is the
+    // only version this upgrade can have switched away from.
+    let replaced = current_version();
     run_installer(&repo, &tag).await?;
 
     let installed = installed_version().await?;
     if installed != newest {
-        let switch_back = match previous_version() {
-            Some(previous) if previous != installed => format!(
-                "; run ln -sfn {0} ~/.local/share/trip/current to switch back to {0}",
-                previous
+        let outcome = match replaced {
+            Some(replaced) if replaced == installed => {
+                format!("trip {} is still current", installed)
+            }
+            Some(replaced) if share_dir().join(&replaced).is_dir() => format!(
+                "trip {0} is now current; run ln -sfn {1} ~/.local/share/trip/current \
+                 to switch back to {1}",
+                installed, replaced
             ),
-            _ => String::new(),
+            _ => format!("trip {} is now current", installed),
         };
         bail!(
-            "the upgrade installed trip {}, but the newest release, {}, is {}; \
-             trip {} is now current{}",
+            "the upgrade installed trip {}, but the newest release, {}, is {}; {}",
             installed,
             tag,
             newest,
-            installed,
-            switch_back
+            outcome
         );
     }
     println!("upgraded trip {} to {}", VERSION, installed);
@@ -101,10 +107,10 @@ fn share_dir() -> PathBuf {
         .join("trip")
 }
 
-/// The version the installer's `previous` link names, which it switched
-/// `current` away from. A link switched by hand can hold an absolute path.
-fn previous_version() -> Option<String> {
-    let target = std::fs::read_link(share_dir().join("previous")).ok()?;
+/// The version the installer's `current` link names. A link switched by hand
+/// can hold an absolute path.
+fn current_version() -> Option<String> {
+    let target = std::fs::read_link(share_dir().join("current")).ok()?;
     Some(target.file_name()?.to_str()?.to_string())
 }
 
