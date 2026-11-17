@@ -472,14 +472,16 @@ pub async fn enter(name: Option<String>, scope: Scope, command: Option<Vec<Strin
 
     // A name with no session and a session that went away before we reached it
     // are the same situation here: the attach says it is not there, so create
-    // it and attach. Deciding that from the list instead would decide it on an
-    // older round trip, and that gap is what made `enter` report "not found"
-    // instead of honouring its create-or-attach contract.
+    // it and attach. So is a session whose command has exited: the attach asks
+    // for a live one, and the daemon clears the corpse and says it is missing.
+    // Deciding that from the list instead would decide it on an older round
+    // trip, and that gap is what made `enter` report "not found" instead of
+    // honouring its create-or-attach contract.
     //
     // Matched by message because the daemon reports errors as strings; keep in
     // step with the Attach handler in daemon/mod.rs. A drift in wording gives
     // back the old error rather than misfiring.
-    match attach::attach(name.clone()).await {
+    match attach::attach(name.clone(), true).await {
         Err(e) if e.to_string() == missing => {
             // It can equally appear between that failed attach and this
             // create — another `enter`, or the switch path — and the daemon
@@ -490,7 +492,9 @@ pub async fn enter(name: Option<String>, scope: Scope, command: Option<Vec<Strin
                 Err(e) if e.to_string() == exists => {}
                 Err(e) => return Err(e),
             }
-            attach::attach(name).await
+            // Whatever is there now is what this create asked for, even if
+            // its command has already exited, so show it.
+            attach::attach(name, false).await
         }
         other => other,
     }
@@ -506,7 +510,7 @@ pub async fn new_session(name: Option<String>, command: Option<Vec<String>>) -> 
     let name = next_available_name(&sessions, &base);
 
     create_session(name.clone(), command).await?;
-    attach::attach(name).await?;
+    attach::attach(name, false).await?;
     Ok(())
 }
 

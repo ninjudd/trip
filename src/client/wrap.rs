@@ -237,6 +237,7 @@ pub async fn wrap(base_name: String, command: Option<Vec<String>>) -> Result<()>
                     cols: 80,
                     rows: 24,
                     env: super::terminal_env(),
+                    live: false,
                 },
             )
             .await?;
