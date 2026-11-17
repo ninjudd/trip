@@ -473,8 +473,13 @@ def test_screen_and_log_against_a_current_daemon(version):
     close with no reply as a failure."""
     home = Home()
     home.start_daemon("work")
-    screen = home.run("screen", "work")
-    check(screen.returncode == 0 and screen.stderr == "", "trip screen of a session succeeds", outputs(screen))
+    brief = home.run("create", "brief", "--", "/bin/sh", "-c", "sleep 2; echo bye")
+    check(brief.returncode == 0, "a session that ends soon starts", outputs(brief))
+    # The daemon closes a watch once its session ends, after the replies it
+    # sent, and that close is a success.
+    watched = home.run("screen", "--watch", "brief", timeout=20)
+    check(watched.returncode == 0 and watched.stderr == "",
+          "trip screen --watch of a session that ends succeeds", outputs(watched))
     missing = home.run("screen", "nothing")
     check(missing.returncode == 1 and "session 'nothing' not found" in missing.stderr,
           "trip screen of a missing session names it", outputs(missing))
