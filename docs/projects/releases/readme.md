@@ -41,7 +41,7 @@ The repository has no CI either. Its only workflow publishes the project site, s
 | --- | --- |
 | `~/.local/share/trip/<version>/trip` | The binary built for one version |
 | `~/.local/share/trip/current` | A symlink to the current version's directory, switched in one rename |
-| `~/.local/bin/trip` | A symlink to `~/.local/share/trip/current/trip` |
+| `~/.local/bin/trip` | A symlink to `~/.local/share/trip/current/trip`, or, after `./install.sh --dev`, to the checkout's `target/debug/trip` (§ 2.3) |
 | `~/.local/share/trip/release.json` | The repository and ref the installer used, so `trip upgrade` follows the same fork |
 
 The installer keeps the current version and the one before it, so you can switch back by hand, and deletes older ones. It never deletes the version a running daemon runs, which it learns from the daemon's version record (§ 2.5).
