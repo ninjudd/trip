@@ -137,6 +137,19 @@ try:
     check("and logging out of that one releases its client too", second.wait(10) == 0,
           str(second.proc.returncode))
 
+    # From inside another session, `enter` switches this terminal rather than
+    # attaching a new one, and that path has to skip the corpse too.
+    work = Term("enter", "work")
+    clients.append(work)
+    work.wait_for(b"$")
+    work.send(TRIP.encode() + b" enter shell\r")
+    time.sleep(1)
+    work.drain()
+    work.send(b"echo inside-$((6*7))\r")
+    screen = wait_for_screen("shell", "inside-42")
+    check("entering it from inside a session gives a live shell", "inside-42" in screen.stdout,
+          (screen.stdout + screen.stderr).strip())
+
     # `trip attach` still shows a corpse on purpose. Input sent to one has
     # nowhere to go, so say so instead of reporting success.
     trip("create", "dead", "--", "/bin/sh", "-c", "echo last words; sleep 1")

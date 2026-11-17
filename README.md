@@ -162,7 +162,7 @@ whatever it said before rather than keeping the session's last title.
 
 **`trip enter`** — Choose a session from every workspace and enter it, ordered by when you last opened each, newest first. Arrow keys (or j/k) move, 1-9 jump to a visible row, 0 creates the next session in your workspace (row 0 of the list), Enter selects, q/Esc cancels. Your workspace's canonical session starts highlighted, so plain Enter still takes you where it always did. With stdin redirected there is nothing to choose with, so it takes the canonical session.
 
-**`trip enter <name>`** — Enter that session directly, no chooser. Creates it if missing, attaches if it exists. A session whose command has exited counts as missing, so after you log out of a session, entering it again starts a fresh one.
+**`trip enter <name>`** — Enter that session directly, no chooser. Creates it if missing, attaches if it exists. A session whose command has exited counts as missing, so after you log out of a session, entering it again starts a fresh one, whether you run `trip enter` from a plain terminal or from inside another session.
 
 **`trip enter --pwd`** — Only this workspace, derived from your git repo root. Skips the chooser entirely when there is nothing to choose between — one canonical session and no numbered ones — which is what the flag is for.
 
