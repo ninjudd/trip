@@ -82,9 +82,20 @@ package_version() {
   sed -n '/^\[package\]/,/^\[/s/^version *= *"\([^"]*\)".*/\1/p' "$1" | head -n 1
 }
 
+# The version a link in ~/.local/share/trip names, or nothing when there is no
+# link. The installer writes a bare version, but a link switched by hand, as
+# `ln -sfn ~/.local/share/trip/0.2.0 current` makes, holds an absolute path.
+link_version() {
+  local target
+  [ -L "$SHARE_DIR/$1" ] || return 0
+  target="$(readlink "$SHARE_DIR/$1")"
+  target="${target%/}"
+  printf '%s\n' "${target##*/}"
+}
+
 # The version the current install runs, or nothing when there is none.
 current_version() {
-  [ -L "$SHARE_DIR/current" ] && readlink "$SHARE_DIR/current" || true
+  link_version current
 }
 
 # Point a symlink at a target with one rename, so it never goes missing and a
@@ -155,7 +166,7 @@ install_version() {
   replace_link "$SHARE_DIR/current/trip" "$BIN_DIR/trip"
   printf 'Installed trip %s to %s\n' "$version" "$SHARE_DIR/$version"
 
-  previous="$( [ -L "$SHARE_DIR/previous" ] && readlink "$SHARE_DIR/previous" || true )"
+  previous="$(link_version previous)"
   daemon="$(daemon_version)"
   for dir in "$SHARE_DIR"/[0-9]*/; do
     dir="${dir%/}"

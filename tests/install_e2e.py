@@ -231,6 +231,22 @@ def test_three_installs_keep_two():
           "reinstalling the current version keeps the one before it", f"{home.versions()} {outputs(again)}")
 
 
+def test_current_switched_by_hand_to_an_absolute_path_is_kept():
+    """A user who rolls back with `ln -sfn ~/.local/share/trip/0.2.0 current`
+    leaves current naming an absolute path rather than a version."""
+    home = Home()
+    for version in ("0.2.0", "0.3.0"):
+        home.release(release(version))
+    current = os.path.join(home.share, "current")
+    os.remove(current)
+    os.symlink(os.path.join(home.share, "0.2.0"), current)
+    result = home.release(release("0.4.0"))
+    check(result.returncode == 0, "an install after a hand-made current link succeeds", outputs(result))
+    check((home.versions(), home.link("current"), home.link("previous")) == (["0.2.0", "0.4.0"], "0.4.0", "0.2.0"),
+          "the version the hand-made link named becomes previous and is kept",
+          f"{home.versions()} {home.link('current')} {home.link('previous')}")
+
+
 def daemon_record(home, version, pid):
     os.makedirs(os.path.join(home.dir, ".trip"), exist_ok=True)
     with open(os.path.join(home.dir, ".trip", "daemon.json"), "w") as f:
@@ -384,6 +400,7 @@ def main():
             test_failed_build_keeps_current,
             test_archive_without_cargo_toml_names_the_ref,
             test_three_installs_keep_two,
+            test_current_switched_by_hand_to_an_absolute_path_is_kept,
             test_live_daemon_version_is_kept,
             test_stale_daemon_record_is_ignored,
             test_warnings,
