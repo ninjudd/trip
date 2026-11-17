@@ -1,0 +1,166 @@
+mod cli;
+mod client;
+mod common;
+mod daemon;
+
+use clap::Parser;
+use cli::{Cli, Command};
+
+/// `--pwd` is the only narrowing there is; everything else spans workspaces.
+fn scope(pwd: bool) -> client::Scope {
+    if pwd {
+        client::Scope::Pwd
+    } else {
+        client::Scope::All
+    }
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    match cli.command {
+        Command::Enter { name, pwd, command } => {
+            let cmd = if command.is_empty() {
+                None
+            } else {
+                Some(command)
+            };
+            client::enter(name, scope(pwd), cmd).await?;
+        }
+        Command::New { name, command } => {
+            let cmd = if command.is_empty() {
+                None
+            } else {
+                Some(command)
+            };
+            client::new_session(name, cmd).await?;
+        }
+        Command::Wrap { name, command } => {
+            let name = match name {
+                Some(n) => n,
+                None => client::derive_session_name()?,
+            };
+            let cmd = if command.is_empty() {
+                None
+            } else {
+                Some(command)
+            };
+            client::wrap::wrap(name, cmd).await?;
+        }
+        Command::Create { name, command } => {
+            let cmd = if command.is_empty() {
+                None
+            } else {
+                Some(command)
+            };
+            client::create_session(name, cmd).await?;
+        }
+        Command::Ls { pwd, attached } => {
+            client::list_sessions(scope(pwd), attached).await?;
+        }
+        Command::Attach { name } => {
+            client::attach::attach(name, false).await?;
+        }
+        Command::Current => match std::env::var("TRIP_SESSION") {
+            Ok(name) => println!("{}", name),
+            Err(_) => std::process::exit(1),
+        },
+        Command::Screen { name, watch } => {
+            client::get_screen(name, watch).await?;
+        }
+        Command::Log {
+            name,
+            raw,
+            verbose,
+            follow,
+            since,
+        } => {
+            let since_ts = match since {
+                Some(ref s) => {
+                    let secs = cli::parse_duration(s)?;
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs_f64();
+                    Some(now - secs)
+                }
+                None => None,
+            };
+            client::get_log(name, raw, verbose, follow, since_ts).await?;
+        }
+        Command::Send { name, input, raw } => {
+            client::send_input(name, input, raw).await?;
+        }
+        Command::Return => {
+            let name = std::env::var("TRIP_SESSION")
+                .map_err(|_| anyhow::anyhow!("not in a trip session"))?;
+            client::return_session(name).await?;
+        }
+        Command::Detach { name } => {
+            let name = match name {
+                Some(n) => n,
+                None => std::env::var("TRIP_SESSION").map_err(|_| {
+                    anyhow::anyhow!("not in a trip session (use: trip detach <name>)")
+                })?,
+            };
+            client::detach_session(name).await?;
+        }
+        Command::Kill { name } => {
+            client::kill_session(name).await?;
+        }
+        Command::Shutdown { yes } => {
+            client::shutdown(yes).await?;
+        }
+        Command::On => {
+            client::agent_on()?;
+        }
+        Command::Env => {
+            if let Ok(name) = std::env::var("TRIP_SESSION") {
+                let path = common::terminal_env_path(&name);
+                if path.exists() {
+                    let content = std::fs::read_to_string(&path).unwrap_or_default();
+                    print!("{}", content);
+                }
+                // Clean up agent.json if no agent is running
+                if std::env::var("CLAUDE_CODE_SESSION_ID").is_err()
+                    && std::env::var("CODEX_THREAD_ID").is_err()
+                {
+                    let agent_path = common::session_dir(&name).join("agent.json");
+                    if agent_path.exists() {
+                        let _ = std::fs::remove_file(&agent_path);
+                    }
+                }
+                // Reset TUI mode (user is back at shell prompt)
+                let tui_path = common::session_dir(&name).join("tui_mode");
+                if tui_path.exists() {
+                    let _ = std::fs::remove_file(&tui_path);
+                }
+            }
+        }
+        Command::External(args) => {
+            use std::os::unix::process::CommandExt;
+            let mut bin = std::ffi::OsString::from("trip-");
+            bin.push(&args[0]);
+            let err = std::process::Command::new(&bin).args(&args[1..]).exec();
+            // exec only returns on failure
+            let name = args[0].to_string_lossy();
+            let bin = bin.to_string_lossy();
+            if err.kind() == std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "trip: '{}' is not a trip command, and no {} on PATH",
+                    name, bin
+                );
+                std::process::exit(127);
+            } else {
+                eprintln!("trip: failed to exec {}: {}", bin, err);
+                std::process::exit(126);
+            }
+        }
+        Command::Daemon => {
+            daemon::run().await?;
+        }
+    }
+
+    Ok(())
+}
