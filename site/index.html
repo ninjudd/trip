@@ -262,8 +262,21 @@ sessions:  <span class="t-muted">↑/↓ + enter · 0-9 · q cancels</span>
         button.textContent = "Copied";
         setTimeout(function () { button.textContent = "Copy"; }, 1600);
       };
+      // Without clipboard access, select the command so it is ready to copy by hand.
+      var select = function () {
+        var target = document.getElementById("install-cmd");
+        var range = document.createRange();
+        range.selectNodeContents(target);
+        var prompt = target.querySelector(".prompt");
+        if (prompt) range.setStartAfter(prompt);
+        var selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+      };
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(done, function () {});
+        navigator.clipboard.writeText(text).then(done, select);
+      } else {
+        select();
       }
     });
   });
