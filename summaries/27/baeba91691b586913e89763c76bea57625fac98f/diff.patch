@@ -1,0 +1,214 @@
+diff --git a/.github/workflows/check.yml b/.github/workflows/check.yml
+new file mode 100644
+index 0000000..cfeff3a
+--- /dev/null
++++ b/.github/workflows/check.yml
+@@ -0,0 +1,66 @@
++name: Check
++on:
++  pull_request:
++  push:
++    branches: [main]
++  # GitHub starts no workflow for a pull request that a workflow's own token
++  # opened, and workflow_dispatch is the exception it allows, so a release
++  # workflow can dispatch this on the release branch it pushes.
++  workflow_dispatch:
++permissions:
++  contents: read
++# A new push to a pull request replaces its earlier run. A push to main never
++# cancels one, so every merged commit keeps its own result.
++concurrency:
++  group: check-${{ github.ref }}
++  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
++jobs:
++  check:
++    runs-on: macos-latest
++    timeout-minutes: 15
++    steps:
++      - uses: actions/checkout@v5
++      - uses: dtolnay/rust-toolchain@stable
++        with:
++          components: rustfmt, clippy
++      - uses: Swatinem/rust-cache@v2
++      - run: cargo fmt --check
++      - run: cargo clippy --locked --all-targets -- -D warnings
++      - run: cargo test --locked
++      # The release installer builds with TRIP_RELEASE=1, and only that build
++      # may report a bare version. Any other value, 0 included, builds -dev.
++      - run: cargo test --locked --test version
++        env:
++          TRIP_RELEASE: '1'
++      - run: cargo test --locked --test version
++        env:
++          TRIP_RELEASE: '0'
++      # The end-to-end scripts drive target/debug/trip, each with its own
++      # temporary HOME and daemon. Build it again without TRIP_RELEASE.
++      - run: cargo build --locked
++      - name: End-to-end scripts
++        run: |
++          status=0
++          for script in tests/*_e2e.py; do
++            echo "::group::$script"
++            if python3 "$script"; then
++              echo "::endgroup::"
++            else
++              echo "::endgroup::"
++              echo "::error::$script failed"
++              status=1
++            fi
++          done
++          exit $status
++  msrv:
++    runs-on: macos-latest
++    timeout-minutes: 15
++    steps:
++      - uses: actions/checkout@v5
++      - id: msrv
++        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
++      - uses: dtolnay/rust-toolchain@master
++        with:
++          toolchain: ${{ steps.msrv.outputs.version }}
++      - uses: Swatinem/rust-cache@v2
++      - run: cargo check --locked --all-targets
+diff --git a/Cargo.toml b/Cargo.toml
+index 26fe581..f096434 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -2,6 +2,10 @@
+ name = "trip"
+ version = "0.1.0"
+ edition = "2021"
++rust-version = "1.85"
++description = "Persistent terminal sessions"
++license = "MIT"
++repository = "https://github.com/ninjudd/trip"
+ 
+ [dependencies]
+ tokio = { version = "1", features = ["full"] }
+diff --git a/LICENSE b/LICENSE
+new file mode 100644
+index 0000000..9fa2819
+--- /dev/null
++++ b/LICENSE
+@@ -0,0 +1,21 @@
++MIT License
++
++Copyright (c) 2026 Justin Balthrop
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in all
++copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++SOFTWARE.
+diff --git a/README.md b/README.md
+index e49667f..434e7f1 100644
+--- a/README.md
++++ b/README.md
+@@ -202,6 +202,8 @@ whatever it said before rather than keeping the session's last title.
+ 
+ **`trip current`** — Print the current session name (exit 1 if not in a session).
+ 
++**`trip --version`** — Print the version. Only a build made with `TRIP_RELEASE=1` set prints the bare version, such as `trip 0.1.0`. Every other build, including a plain `cargo build`, prints `trip 0.1.0-dev`, so a binary always says whether it is a release.
++
+ ### Agent integration
+ 
+ **`trip on`** — Register a running AI agent (Claude Code, Codex) with the current trip session. Reads `CLAUDE_CODE_SESSION_ID` or `CODEX_THREAD_ID` from the environment, locates the agent's JSONL log file, and tells the daemon to tail it for structured events. Raw terminal output is suppressed while agent logging is active.
+@@ -344,7 +346,7 @@ The core primitive is a **persistent PTY-backed session**. Everything else is op
+ ## Requirements
+ 
+ - macOS or Linux
+-- Rust 2021 edition
++- Rust 1.85 or newer
+ 
+ ## License
+ 
+diff --git a/docs/projects/releases/readme.md b/docs/projects/releases/readme.md
+index c3ff4d2..818117d 100644
+--- a/docs/projects/releases/readme.md
++++ b/docs/projects/releases/readme.md
+@@ -1,5 +1,5 @@
+ ---
+-status: ready
++status: in-progress
+ priority: now
+ ---
+ 
+@@ -166,3 +166,10 @@ Steps 1 to 4 can ship as one stack. The first release waits for all of them, so
+ 
+ - **Projector's release system**, the model for § 2.1: `.github/workflows/release.yml` (the propose and publish jobs), `.github/scripts/release.py` (the version files, the bump, and the idempotent publish steps, with `v0` moved last), `install.sh` (two modes chosen by what sits beside it, `PROJECTOR_REF` defaulting to `v0`), and `project upgrade` in `src/projector/cli.py` (the newest release's tag, that tag's installer, and the check of what it installed). Its "Release an update" section in `docs/plugins.md` describes the process.
+ - **`trip` today**: `Cargo.toml` at `0.1.0` with no metadata and no `LICENSE`; no tags; one workflow, the project site; `install.sh` building `--release` and copying to `/usr/local/bin` with `sudo` by a rename that leaves a running daemon on the old file; no `--version`. The client starts the daemon from `current_exe()` (`src/client/launch.rs`), and the daemon owns each session's terminal (`src/daemon/session.rs`), so a restart ends them. `trip shutdown` ends every session (`README.md`).
++
++## 9. What implementation settled
++
++- **The minimum Rust version is 1.85.** `clap` 4.6 and `vt100` 0.18 use the 2024 edition and declare `rust-version = "1.85"`, the first release with that edition, and nothing in `trip`'s own code needs newer than 1.82 (`Option::is_none_or`). `check.yml` has an `msrv` job that reads `rust-version` from `Cargo.toml` and runs `cargo check --locked --all-targets` on that toolchain, so a dependency bump or newer API that raises it fails a pull request. With `rust-version` set, clippy's `incompatible_msrv` lint also flags a standard library API newer than it.
++- **Only `TRIP_RELEASE=1` marks a release.** Any other value, `0` included, builds `<version>-dev`. `tests/version.rs` runs the built binary's `--version` and `-V` and expects the version its own build's `TRIP_RELEASE` calls for, so `check.yml` runs it three times: in `cargo test`, as `TRIP_RELEASE=1 cargo test --test version`, and as `TRIP_RELEASE=0 cargo test --test version`, so a change that let any value mark a release fails. Cargo tracks the variable, so a build after a change to it recompiles `trip` and reports the new answer.
++- **The `check` job takes about 4 minutes**, well under § 5's budget of 10. Its first run, on `macos-latest`, took 4 minutes 4 seconds, end-to-end scripts included, and the `msrv` job beside it took under 30 seconds. A push to a pull request cancels that pull request's earlier run, but a push to `main` never cancels one, so every merged commit keeps its own result.
++- **Linux stays deferred** (§ 7). `check.yml` runs on `macos-latest` only.
+diff --git a/src/cli.rs b/src/cli.rs
+index 36c0d63..9c2c575 100644
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@ -2,8 +2,15 @@ use std::ffi::OsString;
+ 
+ use clap::{Parser, Subcommand};
+ 
++/// The bare version only for a build made with `TRIP_RELEASE=1`, as the
++/// release installer makes one, so any other build says it is not a release.
++const VERSION: &str = match option_env!("TRIP_RELEASE") {
++    Some(flag) if matches!(flag.as_bytes(), [b'1']) => env!("CARGO_PKG_VERSION"),
++    _ => concat!(env!("CARGO_PKG_VERSION"), "-dev"),
++};
++
+ #[derive(Parser)]
+-#[command(name = "trip", about = "Persistent terminal sessions")]
++#[command(name = "trip", version = VERSION, about = "Persistent terminal sessions")]
+ pub struct Cli {
+     #[command(subcommand)]
+     pub command: Command,
+diff --git a/tests/version.rs b/tests/version.rs
+new file mode 100644
+index 0000000..36fe423
+--- /dev/null
++++ b/tests/version.rs
+@@ -0,0 +1,29 @@
++use std::process::Command;
++
++/// The version a build of this test's own environment should report: bare
++/// only when `TRIP_RELEASE=1` was set at compile time, as the release
++/// installer sets it, and `-dev` for every other build. Run the test under
++/// `TRIP_RELEASE=1 cargo test --test version` to check the release side.
++fn expected() -> String {
++    let version = env!("CARGO_PKG_VERSION");
++    match option_env!("TRIP_RELEASE") {
++        Some("1") => format!("trip {version}\n"),
++        _ => format!("trip {version}-dev\n"),
++    }
++}
++
++#[test]
++fn version_says_whether_the_build_is_a_release() {
++    for flag in ["--version", "-V"] {
++        let out = Command::new(env!("CARGO_BIN_EXE_trip"))
++            .arg(flag)
++            .output()
++            .expect("run trip");
++        assert!(out.status.success(), "trip {flag} failed: {out:?}");
++        assert_eq!(
++            String::from_utf8_lossy(&out.stdout),
++            expected(),
++            "trip {flag}"
++        );
++    }
++}
