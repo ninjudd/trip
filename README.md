@@ -98,7 +98,7 @@ command = ~/.local/bin/trip enter
 confirm-close-surface = false
 ```
 
-Ghostty runs a `command` that has arguments through `/bin/sh -c`, so `~` expands. A tab closes when trip exits, and closing a tab only detaches, so `confirm-close-surface = false` stops Ghostty from asking first. Reload the config with **Cmd+Shift+,**, and new tabs start in trip.
+Ghostty runs a `command` that has arguments through `/bin/sh -c`, so `~` expands. A tab closes when trip exits, and closing a tab only detaches, so `confirm-close-surface = false` stops Ghostty from asking first. Reload the config with **Cmd+Shift+,** on macOS or **Ctrl+Shift+,** on Linux, and new tabs start in trip.
 
 This way every tab is a trip session. Close the tab to detach, open a new tab to reattach.
 
