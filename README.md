@@ -65,7 +65,7 @@ The upgrade never restarts the daemon, because the daemon holds every session's 
 the daemon still runs 0.2.0 with 4 sessions; it moves to 0.3.0 when its last session ends or you run trip shutdown --yes
 ```
 
-A request that the older daemon cannot understand fails with the same line. `trip log` is the exception: it prints nothing and exits 0, because a daemon also closes without a reply when a log has no events, and the client cannot tell the two apart. A daemon from an install made before releases existed is named as "a trip from before releases".
+A request that the older daemon cannot understand fails with the same line. `trip log` is the exception: it prints the line to stderr, prints no log, and exits 0, because a daemon also closes without a reply when a log has no events, and the client cannot tell the two apart. A daemon from an install made before releases existed is named as "a trip from before releases".
 
 ## Terminal setup
 

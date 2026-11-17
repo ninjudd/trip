@@ -196,8 +196,9 @@ pub async fn warn_if_daemon_older(version: &str) {
 /// client. An older daemon closes the connection on a request it cannot
 /// decode, which every request but `trip log` reports as `unexpected frame`,
 /// and a reply this client cannot decode fails in `serde_json`. `trip log`
-/// exits with no output instead, because a daemon sends nothing for a log
-/// with no events, and that close looks the same. Any other failure, or one
+/// names the older daemon itself and exits 0 with no output, because a
+/// daemon sends nothing for a log with no events, and that close looks the
+/// same. Any other failure, or one
 /// from a daemon that is not older, stays as it was.
 pub async fn explain_daemon_failure(error: anyhow::Error) -> anyhow::Error {
     let undecoded = error.to_string() == "unexpected frame"
@@ -892,6 +893,7 @@ pub async fn get_log(
     )
     .await?;
 
+    let mut first = true;
     loop {
         match read_frame(&mut reader).await? {
             Some(Frame::Control(payload)) => {
@@ -900,6 +902,7 @@ pub async fn get_log(
                     Response::LogData { content } => {
                         print!("{}", content);
                         std::io::Write::flush(&mut std::io::stdout())?;
+                        first = false;
                         if !follow {
                             return Ok(());
                         }
@@ -910,7 +913,15 @@ pub async fn get_log(
                     _ => anyhow::bail!("unexpected response"),
                 }
             }
-            None => return Ok(()),
+            // A daemon sends nothing for a log with no events, and an older
+            // one closes the same way on a request it cannot decode, so the
+            // empty log succeeds but names an older daemon.
+            None => {
+                if first {
+                    warn_if_daemon_older(crate::cli::VERSION).await;
+                }
+                return Ok(());
+            }
             _ => anyhow::bail!("unexpected frame"),
         }
     }

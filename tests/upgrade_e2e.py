@@ -536,6 +536,10 @@ def test_older_daemon_failing_a_request(version):
         check(result.returncode != 0
               and f"the daemon could not answer this request: {older('0.0.9', version, 3)}" in result.stderr,
               "and so does trip screen, though it closes with no reply at all", outputs(result))
+        result = home.run("log", "anything")
+        check(result.returncode == 0 and result.stdout == "" and result.stderr == older("0.0.9", version, 3) + "\n",
+              "trip log, which cannot tell that close from an empty log, succeeds but names the older daemon",
+              outputs(result))
         write(home.record, json.dumps({"version": version, "pid": os.getpid()}))
         result = home.run("kill", "anything")
         check("unexpected frame" in result.stderr and "older" not in result.stderr
