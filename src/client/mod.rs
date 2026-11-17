@@ -449,7 +449,6 @@ pub async fn enter(name: Option<String>, scope: Scope, command: Option<Vec<Strin
                 command,
                 cwd,
                 env: terminal_env(),
-                live: true,
             },
         )
         .await?;

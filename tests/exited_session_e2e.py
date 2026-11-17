@@ -31,6 +31,8 @@ HOME = os.path.realpath(tempfile.mkdtemp(prefix="trip-exited-", dir="/tmp"))
 ENV = dict(os.environ, HOME=HOME, SHELL="/bin/sh", TERM="xterm-256color")
 ENV.pop("TRIP_SESSION", None)
 ENV.pop("TRIP_WORKSPACE", None)
+# The default title template, so a switch titles the terminal with the name.
+ENV.pop("TRIP_TITLE", None)
 
 
 def trip(*args):
@@ -143,8 +145,8 @@ try:
     clients.append(work)
     work.wait_for(b"$")
     work.send(TRIP.encode() + b" enter shell\r")
-    time.sleep(1)
-    work.drain()
+    # The client retitles the terminal once the switch lands.
+    check("the switch lands", work.wait_for(b"\x1b]1;shell\x07"))
     work.send(b"echo inside-$((6*7))\r")
     screen = wait_for_screen("shell", "inside-42")
     check("entering it from inside a session gives a live shell", "inside-42" in screen.stdout,

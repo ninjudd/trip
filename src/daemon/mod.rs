@@ -506,15 +506,13 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             command,
             cwd,
             env,
-            live,
         } => {
             let mut sessions = sessions.lock().await;
 
-            // `enter` from inside a session lands here instead of in Attach,
-            // and wants a live session just the same.
-            if live {
-                remove_unheld_corpse(&mut sessions, &to);
-            }
+            // Only `enter` sends this, from inside a session, and it wants a
+            // live session as its Attach does. Clearing the corpse without a
+            // flag gives a client built before that rule the fix too.
+            remove_unheld_corpse(&mut sessions, &to);
             if !sessions.contains_key(&to) {
                 match Session::spawn(to.clone(), command, cwd, 80, 24, env.clone()) {
                     Ok(session) => {

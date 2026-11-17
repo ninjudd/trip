@@ -53,10 +53,6 @@ pub enum Request {
         cwd: String,
         #[serde(default)]
         env: HashMap<String, String>,
-        /// As `Attach`'s: an exited session that no client holds is replaced
-        /// with a fresh one instead of switched to.
-        #[serde(default)]
-        live: bool,
     },
     /// Move *this* client to another session, sent on the client's own
     /// attached socket rather than a fresh connection. `SwitchSession` can
