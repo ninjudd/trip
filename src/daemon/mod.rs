@@ -256,12 +256,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             // built on create-then-enter. Re-using the name is the one act
             // that cannot coexist with keeping the corpse, so fresh wins.
             // Deliberate corpse-viewing — attach, the chooser — is untouched.
-            let corpse = sessions.get(&name).is_some_and(|s| {
-                s.client_count() == 0 && matches!(s.state, SessionState::Exited(_))
-            });
-            if corpse {
-                sessions.remove(&name);
-            }
+            remove_unheld_corpse(&mut sessions, &name);
             if sessions.contains_key(&name) {
                 write_control(
                     &mut writer,
@@ -480,8 +475,20 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
         Request::SendInput { name, data } => {
             let sessions = sessions.lock().await;
             if let Some(session) = sessions.get(&name) {
-                let _ = session.input_tx.send(SessionCommand::Input(data)).await;
-                write_control(&mut writer, &Response::Ok).await?;
+                // An exited session has nothing reading its input, so a send
+                // that reported success would be lost without a trace.
+                if let SessionState::Exited(code) = session.state {
+                    write_control(
+                        &mut writer,
+                        &Response::Error {
+                            message: format!("session '{}' has exited ({})", name, code),
+                        },
+                    )
+                    .await?;
+                } else {
+                    let _ = session.input_tx.send(SessionCommand::Input(data)).await;
+                    write_control(&mut writer, &Response::Ok).await?;
+                }
             } else {
                 write_control(
                     &mut writer,
@@ -502,6 +509,10 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
         } => {
             let mut sessions = sessions.lock().await;
 
+            // Only `enter` sends this, from inside a session, and it wants a
+            // live session as its Attach does. Clearing the corpse without a
+            // flag gives a client built before that rule the fix too.
+            remove_unheld_corpse(&mut sessions, &to);
             if !sessions.contains_key(&to) {
                 match Session::spawn(to.clone(), command, cwd, 80, 24, env.clone()) {
                     Ok(session) => {
@@ -678,7 +689,17 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             cols,
             rows,
             env: client_env,
+            live,
         } => {
+            // `enter` asks for a session to work in. Attaching it to an
+            // exited one shows the old screen while every keystroke goes
+            // nowhere, and the client never returns — which is what logging
+            // out and reconnecting gave you until the next SIGCHLD swept the
+            // corpse. Clear it, so the attach below reports the name missing
+            // and `enter` creates it fresh. A plain attach still shows it.
+            if live {
+                remove_unheld_corpse(&mut *sessions.lock().await, &name);
+            }
             let mut current_name = name;
             let mut current_cols = cols;
             let mut current_rows = rows;
@@ -920,6 +941,16 @@ fn is_numbered_session(name: &str) -> bool {
     // vacuously all-digits, so `trip.` was GC-eligible as a numbered session
     // while being its own workspace everywhere else.
     crate::client::session_base(name) != name
+}
+
+/// Drop the named session if its command has exited and no client holds it.
+fn remove_unheld_corpse(sessions: &mut HashMap<String, Session>, name: &str) {
+    let corpse = sessions
+        .get(name)
+        .is_some_and(|s| s.client_count() == 0 && matches!(s.state, SessionState::Exited(_)));
+    if corpse {
+        sessions.remove(name);
+    }
 }
 
 fn try_gc_session(sessions: &mut HashMap<String, Session>, name: &str) {

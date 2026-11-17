@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
             client::list_sessions(scope(pwd), attached).await?;
         }
         Command::Attach { name } => {
-            client::attach::attach(name).await?;
+            client::attach::attach(name, false).await?;
         }
         Command::Current => match std::env::var("TRIP_SESSION") {
             Ok(name) => println!("{}", name),

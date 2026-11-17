@@ -162,7 +162,7 @@ whatever it said before rather than keeping the session's last title.
 
 **`trip enter`** — Choose a session from every workspace and enter it, ordered by when you last opened each, newest first. Arrow keys (or j/k) move, 1-9 jump to a visible row, 0 creates the next session in your workspace (row 0 of the list), Enter selects, q/Esc cancels. Your workspace's canonical session starts highlighted, so plain Enter still takes you where it always did. With stdin redirected there is nothing to choose with, so it takes the canonical session.
 
-**`trip enter <name>`** — Enter that session directly, no chooser. Creates it if missing, attaches if it exists.
+**`trip enter <name>`** — Enter that session directly, no chooser. Creates it if missing, attaches if it exists. A session whose command has exited counts as missing, so after you log out of a session, entering it again starts a fresh one, whether you run `trip enter` from a plain terminal or from inside another session.
 
 **`trip enter --pwd`** — Only this workspace, derived from your git repo root. Skips the chooser entirely when there is nothing to choose between — one canonical session and no numbered ones — which is what the flag is for.
 
@@ -174,7 +174,7 @@ whatever it said before rather than keeping the session's last title.
 
 **`trip ls`** — List every session, grouped by workspace. Shows foreground command, git branch, cwd, and marks the current session with `*`. Use `--pwd` to narrow to the current workspace, and `--attached` to show only attached sessions; the two compose.
 
-**`trip attach <name>`** — Attach to a specific session by name.
+**`trip attach <name>`** — Attach to a specific session by name. If the session's command has exited, it shows what the command left on the screen.
 
 **`trip detach [name]`** — Detach from a session. Defaults to current session.
 
@@ -198,7 +198,7 @@ whatever it said before rather than keeping the session's last title.
 
 ### Interaction
 
-**`trip send <name> <input>`** — Send input to a session without attaching. Auto-appends Enter. Use `--raw` for exact bytes.
+**`trip send <name> <input>`** — Send input to a session without attaching. Auto-appends Enter. Use `--raw` for exact bytes. Fails if the session's command has exited.
 
 **`trip current`** — Print the current session name (exit 1 if not in a session).
 

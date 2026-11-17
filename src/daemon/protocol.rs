@@ -24,6 +24,11 @@ pub enum Request {
         rows: u16,
         #[serde(default)]
         env: HashMap<String, String>,
+        /// Only a running session will do. An exited session that no client
+        /// holds is cleared away and reported missing, so `enter` creates a
+        /// fresh one instead of attaching to what the command left behind.
+        #[serde(default)]
+        live: bool,
     },
     GetScreen {
         name: String,

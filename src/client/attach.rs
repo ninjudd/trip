@@ -690,7 +690,9 @@ async fn run_attached_chooser(
     Ok(ChooserExit::Switched)
 }
 
-pub async fn attach(name: String) -> Result<()> {
+/// Attach this terminal to a session. With `live`, an exited session that
+/// nothing holds counts as missing rather than being shown.
+pub async fn attach(name: String, live: bool) -> Result<()> {
     let stream = launch::connect().await?;
     let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -705,6 +707,7 @@ pub async fn attach(name: String) -> Result<()> {
             cols,
             rows,
             env: super::terminal_env(),
+            live,
         },
     )
     .await?;
