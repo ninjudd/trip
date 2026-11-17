@@ -1,0 +1,159 @@
+{
+ "version": 1,
+ "name": "Releases and trip upgrade",
+ "project": "releases",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 30,
+  "title": "Open a version-only release pull request by hand, and tag and publish it when it merges",
+  "head": "1da435e1e3617dc475d734aee70575f3a94e0ee4",
+  "headRef": "releases/workflow",
+  "base": "4b41a6106f0cb2cff25e2394348b3554079daf40",
+  "baseRef": "releases/installer",
+  "basePr": 28
+ },
+ "overview": {
+  "summary": [
+   "<code>trip</code> has no releases yet, and the installer from the layer below installs whatever the <code>v0</code> tag names. This layer adds what makes those tags. It is the third step of the releases plan, ported from Projector's release process.",
+   "You start a release by hand with <code>gh workflow run release.yml -f bump=minor</code>. The workflow opens a pull request that changes only the version. Merging that pull request is the decision to ship: a second job tags the merge commit <code>vX.Y.Z</code>, creates the GitHub release, and then moves <code>v0</code> to it.",
+   "<ol><li><b>Propose.</b> Run from <code>main</code> only, it raises the version in <code>Cargo.toml</code> and <code>Cargo.lock</code>, commits <code>Release X.Y.Z</code> on <code>release/vX.Y.Z</code>, and refuses that commit if it changes anything else. It then pushes the branch, opens or reuses the pull request, and dispatches the Check workflow onto it, because GitHub starts no workflow for a pull request a workflow's own token opened.</li><li><b>Publish.</b> It runs on each push to <code>main</code> that changes <code>Cargo.toml</code>. It does only the steps the remote lacks, in order: the immutable version tag, the GitHub release, and then <code>v0</code>. A push that leaves the version alone releases nothing.</li></ol>",
+   "An earlier review found that a push that <em>lowered</em> the version, such as a revert of the first release pull request, still tagged, published, and moved <code>v0</code> back. That is fixed: the publish job now releases only a version that rises, refuses a new version below the newest release, and never moves <code>v0</code> to an older version."
+  ],
+  "cards": [
+   {
+    "id": "terms",
+    "title": "Terms on this page",
+    "html": "<ul class=\"tight\"><li><b>Release pull request</b>: the pull request the propose job opens on <code>release/vX.Y.Z</code>, changing only the two version files.</li><li><b>Version tag</b>: the annotated tag <code>vX.Y.Z</code>. It never moves once pushed.</li><li><b>Major tag</b>: <code>v0</code>, which the installer serves. It moves to each new release, last.</li><li><b><code>--since</code></b>: the previous head of <code>main</code>, the push's <code>before</code> commit, which the publish job compares versions against.</li></ul>"
+   },
+   {
+    "id": "setup",
+    "title": "Before the first release",
+    "html": "<ul class=\"tight\"><li>Turn on <b>Allow GitHub Actions to create and approve pull requests</b> under Settings &gt; Actions &gt; General. It is off today.</li><li>The live <code>main</code> ruleset needs no approving review and no status check, so the propose job posts no review status of its own, unlike Projector's.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "script",
+   "title": "The release script",
+   "kicker": "Bumping the version, checking the release commit, and publishing a release idempotently",
+   "intro": [
+    "<code>.github/scripts/release.py</code> does every step the workflow needs, so each step can be tested without GitHub. It has four subcommands: <code>bump</code> and <code>set</code> write a new version, <code>check-commit</code> refuses a release commit that changes anything but the version, and <code>tag</code> publishes.",
+    "The version is changed as text but read as TOML. A regular expression rewrites only the <code>version</code> line of <code>Cargo.toml</code>'s <code>[package]</code> table and the line after <code>name = \"trip\"</code> in <code>Cargo.lock</code>. <code>tomllib</code> then checks that both files agree, and that the lock has exactly one <code>trip</code> entry. <code>check-commit</code> reuses the same rewrite: a release commit passes only when each file after it equals the file before it with the new version written in.",
+    "<code>tag</code> reads which tags the remote already has with <code>git ls-remote</code>, and does only the missing steps, so re-running a failed job finishes the release. With <code>--commit</code> it releases that commit, which must be on <code>origin/main</code>. With <code>--since</code> it returns early unless the version rose between the two commits, so a dependency bump or a revert releases nothing.",
+    "Two more guards keep <code>v0</code> from going backwards. A version that has no tag yet is refused when a higher version is already released: after a revert from 0.6.0 to 0.5.0, a release of 0.5.1 is refused. And finishing an older release, after a newer one has shipped, leaves <code>v0</code> on the newer one."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": ".github/scripts/release.py",
+     "note": "The version rewrite, the release-commit check, and the publish steps, with <code>v0</code> moved last and never back.",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 273,
+       "text": "A push that lowers the version releases nothing, which fixed the review's finding. The review reproduced a revert of the first release and of a later one. Both printed <code>lowers the version from 0.6.0 to 0.5.0, so there is nothing to release</code>, and <code>v0</code> stayed on 0.6.0."
+      },
+      {
+       "kind": "verify",
+       "line": 260,
+       "text": "Removing this refusal, the lowered-version gate, or the <code>v0</code> guard each turns a new <code>TagTests</code> case red. The review ran each mutation."
+      },
+      {
+       "kind": "verify",
+       "line": 287,
+       "text": "The version tag is created with a local <code>--force</code>, but pushed without one, so an existing remote version tag is never replaced. The rerun test checks that the <code>v0.5.1</code> tag object is unchanged after a failed release is finished."
+      },
+      {
+       "kind": "verify",
+       "line": 142,
+       "text": "<code>check-commit</code> compares each file after the commit with the file before it plus the new version, so a commit that also adds a dependency to <code>Cargo.toml</code> is refused, not only one that touches a third file. A test covers each case."
+      },
+      {
+       "kind": "context",
+       "line": 161,
+       "text": "Every <code>gh</code> call takes its arguments as a list, with no shell, and the only values passed in are the tag name and the repository slug, so nothing here can inject a shell command."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "workflow",
+   "title": "The Release workflow",
+   "kicker": "The propose and publish jobs, and the Check step that runs the script's tests",
+   "intro": [
+    "<code>release.yml</code> has two jobs, each chosen by the event that started the run. A manual <code>workflow_dispatch</code> runs <code>propose</code>, and a push to <code>main</code> that changes <code>Cargo.toml</code> runs <code>publish</code>. The workflow has no <code>pull_request_target</code> or <code>workflow_run</code> trigger. So no pull request, from a fork or otherwise, runs it, and only a merge to <code>main</code> can publish.",
+    "The workflow's default token is read-only. <code>propose</code> raises it to write contents, pull requests, and actions, the last so that it can dispatch Check. <code>publish</code> gets <code>contents: write</code> only, for the tag pushes and the release. The two inputs the jobs read, the <code>bump</code> choice and the push's <code>before</code> commit, reach the scripts through <code>env</code>, not through <code>${{ }}</code> inside <code>run:</code>. Both jobs share one <code>release</code> concurrency group that never cancels a running job."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": ".github/workflows/release.yml",
+     "note": "New. The propose job opens the release pull request, and the publish job runs <code>release.py tag</code> on the merge commit.",
+     "checks": [
+      {
+       "kind": "context",
+       "line": 42,
+       "text": "A dispatch from another ref is refused, because the release branch would carry that ref's unreviewed commits, and <code>check-commit</code> reads only the release commit."
+      },
+      {
+       "kind": "context",
+       "line": 74,
+       "text": "Check is dispatched onto the release branch, so its results land on the branch's commit, which is the pull request's head."
+      },
+      {
+       "kind": "context",
+       "line": 46,
+       "text": "After a revert, this bump starts from the lowered version on <code>main</code>, so the pull request it opens would be refused by the publish job after the merge. § 9 says to open that release by hand with <code>release.py set</code> instead. The review suggested refusing it here, before the merge."
+      }
+     ]
+    },
+    {
+     "path": ".github/workflows/check.yml",
+     "note": "Runs <code>python3 tests/release_test.py</code> as its own step after <code>cargo fmt --check</code>, since it needs no <code>trip</code> build."
+    }
+   ]
+  },
+  {
+   "id": "tests",
+   "title": "Tests of the release script",
+   "kicker": "Twenty-four hermetic cases against a local bare remote and a fake gh",
+   "intro": [
+    "<code>tests/release_test.py</code> drives <code>release.py</code> in temporary directories. The publish cases use a temporary bare repository as the remote and a fake <code>gh</code> on <code>PATH</code> that records its calls and plays GitHub's releases. They push to a branch named <code>trunk</code>, not <code>main</code>, so a developer's pre-push hook does not refuse them. Nothing reaches the network."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "tests/release_test.py",
+     "note": "New. Covers the bump, the release-commit check, and each publish path, including finishing a release that failed after its tag was pushed, and reverting a release.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "The review ran it at this head: <code>Ran 24 tests</code>, <code>OK</code>, in about 14 seconds."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "docs",
+   "title": "README and plan",
+   "kicker": "How to cut a release, and what implementation settled",
+   "intro": [
+    "The README gains a short Releasing section. In the plan, § 2.1 now records the live ruleset, which needs no approving review, and its step 4 says you merge once the checks pass. § 9 records the decisions this layer made: no review status, releasing only a version that rises, refusing one below the newest release, tagging the commit the push made, and checking what the release commit changes, not only which files."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "README.md",
+     "note": "Adds the Releasing section: the dispatch command, what merging does, and the repository setting the workflow needs."
+    },
+    {
+     "path": "docs/projects/releases/readme.md",
+     "note": "§ 2.1's step 4 and ruleset paragraph, and seven new § 9 entries, including what to do after a revert."
+    }
+   ]
+  }
+ ]
+}
