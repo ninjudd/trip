@@ -89,6 +89,17 @@ Open **Settings → Profiles → Session**:
 
 - **After a session ends:** Close
 
+### Ghostty
+
+Add these lines to your Ghostty config file, such as `~/.config/ghostty/config.ghostty`:
+
+```
+command = ~/.local/bin/trip enter
+confirm-close-surface = false
+```
+
+Ghostty runs a `command` that has arguments through `/bin/sh -c`, so `~` expands. A tab closes when trip exits, and closing a tab only detaches, so `confirm-close-surface = false` stops Ghostty from asking first. Reload the config with **Cmd+Shift+,**, and new tabs start in trip.
+
 This way every tab is a trip session. Close the tab to detach, open a new tab to reattach.
 
 ## Quick start
@@ -153,6 +164,20 @@ TRIP_DETACH_KEY=none    # no detach key; close the terminal to detach
 
 Whatever key you pick stops reaching programs inside the session — the
 default Ctrl-\ sacrifices only SIGQUIT, which almost nothing wants.
+
+## Remote sessions with mosh
+
+[mosh](https://mosh.org) keeps a connection to another machine alive while your laptop sleeps or changes networks, and trip on that machine keeps the session alive when you quit mosh altogether. Install trip on the remote machine, then run it as mosh's command:
+
+```
+mosh myserver -- sh -c 'TRIP_DETACH_KEY="^-" exec ~/.local/bin/trip enter main'
+```
+
+This enters the session `main` on `myserver`, and creates it if it doesn't exist. Run the same command again to reattach. mosh runs its command directly rather than through a shell, so `sh -c` is what expands `~`.
+
+When the terminal you run mosh from is itself a trip session, that local trip catches Ctrl-\ before mosh sees it. So the command gives the remote trip a different key: Ctrl-\ leaves the local session, and Ctrl+- leaves the remote one.
+
+mosh doesn't pass `COLORTERM` to the remote machine, so programs there fall back to 256 colors. To keep 24-bit color, set it when mosh starts its server, with `--server="COLORTERM=$COLORTERM mosh-server"`. If the remote machine is a Mac with Homebrew, name the server by its full path, as in `--server="COLORTERM=$COLORTERM /opt/homebrew/bin/mosh-server"`, because the SSH login mosh starts it from doesn't have Homebrew on its `PATH`.
 
 ## Titles
 
