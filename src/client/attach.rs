@@ -895,6 +895,8 @@ pub async fn attach(name: String, live: bool) -> Result<()> {
     if detached {
         eprintln!("[detached: {}] — trip enter to resume", current);
     }
+    // Here rather than before the attach, whose repaint would erase it.
+    super::warn_if_daemon_older(crate::cli::VERSION).await;
 
     // The stdin reader thread may be blocked on read(); exit the process
     // to avoid hanging.

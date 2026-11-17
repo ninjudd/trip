@@ -16,7 +16,10 @@ use tokio::io::{BufReader, BufWriter};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 
-use crate::common::{lock_path, socket_path, terminal_env_path, trip_dir};
+use crate::common::{
+    daemon_record_path, lock_path, read_daemon_record, socket_path, terminal_env_path, trip_dir,
+    DaemonRecord,
+};
 use protocol::{
     read_frame, write_control, write_frame, Frame, Request, Response, SessionInfo, SessionState,
     FRAME_DATA,
@@ -145,14 +148,30 @@ pub async fn run() -> Result<()> {
         anyhow::bail!("daemon already running");
     }
 
+    // Before the socket exists, so no client that reaches this daemon can
+    // find the record missing and take it for a daemon from before releases.
+    if let Err(e) = write_daemon_record() {
+        dlog(&format!(
+            "could not write {}: {}",
+            daemon_record_path().display(),
+            e
+        ));
+    }
+
     let sock_path = socket_path();
     let _ = std::fs::remove_file(&sock_path);
-    let listener = UnixListener::bind(&sock_path)?;
+    let listener = match UnixListener::bind(&sock_path) {
+        Ok(listener) => listener,
+        Err(e) => {
+            remove_daemon_record();
+            return Err(e.into());
+        }
+    };
 
     dlog(&format!(
         "daemon started (pid {}, version {})",
         std::process::id(),
-        env!("CARGO_PKG_VERSION")
+        crate::cli::VERSION
     ));
 
     let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
@@ -180,6 +199,35 @@ pub async fn run() -> Result<()> {
             }
         });
     }
+}
+
+/// Say which version this daemon runs, for clients and the installer. Written
+/// to a temporary file and renamed, so a reader never sees half a record.
+fn write_daemon_record() -> Result<()> {
+    let record = DaemonRecord {
+        version: crate::cli::VERSION.to_string(),
+        pid: std::process::id(),
+    };
+    let path = daemon_record_path();
+    let staged = path.with_extension(format!("json.{}", record.pid));
+    std::fs::write(&staged, serde_json::to_string(&record)? + "\n")?;
+    std::fs::rename(&staged, &path)?;
+    Ok(())
+}
+
+/// Remove the record only while it is still this daemon's: a daemon started
+/// after this one has written its own.
+fn remove_daemon_record() {
+    if read_daemon_record().is_some_and(|record| record.pid == std::process::id()) {
+        let _ = std::fs::remove_file(daemon_record_path());
+    }
+}
+
+/// Remove what tells clients a daemon is here, as it exits: the socket first,
+/// so no client connects to a daemon whose record is already gone.
+fn remove_daemon_files() {
+    let _ = std::fs::remove_file(socket_path());
+    remove_daemon_record();
 }
 
 async fn reap_children(sessions: Sessions) {
@@ -214,7 +262,7 @@ async fn reap_children(sessions: Sessions) {
 
         if sessions.is_empty() {
             dlog("last session exited; daemon exiting");
-            let _ = std::fs::remove_file(socket_path());
+            remove_daemon_files();
             std::process::exit(0);
         }
     }
@@ -648,7 +696,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                 if sessions.is_empty() {
                     drop(sessions);
                     dlog("last session killed; daemon exiting");
-                    let _ = std::fs::remove_file(socket_path());
+                    remove_daemon_files();
                     write_control(&mut writer, &Response::Ok).await?;
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     std::process::exit(0);
@@ -678,7 +726,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
             }
             sessions.clear();
             drop(sessions);
-            let _ = std::fs::remove_file(socket_path());
+            remove_daemon_files();
             write_control(&mut writer, &Response::Ok).await?;
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             std::process::exit(0);
@@ -836,7 +884,7 @@ async fn handle_client(stream: UnixStream, sessions: Sessions) -> Result<()> {
                         sessions.clear();
                         drop(sessions);
                         dlog("last client detached from exited session(s); daemon exiting");
-                        let _ = std::fs::remove_file(socket_path());
+                        remove_daemon_files();
                         std::process::exit(0);
                     }
                 }

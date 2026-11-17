@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 
 /// The bare version only for a build made with `TRIP_RELEASE=1`, as the
 /// release installer makes one, so any other build says it is not a release.
-const VERSION: &str = match option_env!("TRIP_RELEASE") {
+pub const VERSION: &str = match option_env!("TRIP_RELEASE") {
     Some(flag) if matches!(flag.as_bytes(), [b'1']) => env!("CARGO_PKG_VERSION"),
     _ => concat!(env!("CARGO_PKG_VERSION"), "-dev"),
 };
@@ -147,6 +147,13 @@ pub enum Command {
         /// Skip confirmation
         #[arg(long)]
         yes: bool,
+    },
+
+    /// Install the newest release, leaving the daemon and its sessions running
+    Upgrade {
+        /// Print the installed version and the newest release, and install nothing
+        #[arg(long)]
+        check: bool,
     },
 
     /// Connect trip to the current agent's structured log

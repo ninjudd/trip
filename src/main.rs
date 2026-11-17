@@ -17,9 +17,24 @@ fn scope(pwd: bool) -> client::Scope {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let command = Cli::parse().command;
+    let asks_daemon = !matches!(
+        command,
+        Command::Current
+            | Command::On
+            | Command::Env
+            | Command::Daemon
+            | Command::Upgrade { .. }
+            | Command::External(_)
+    );
+    match run(command).await {
+        Err(e) if asks_daemon => Err(client::explain_daemon_failure(e).await),
+        result => result,
+    }
+}
 
-    match cli.command {
+async fn run(command: Command) -> anyhow::Result<()> {
+    match command {
         Command::Enter { name, pwd, command } => {
             let cmd = if command.is_empty() {
                 None
@@ -111,6 +126,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Shutdown { yes } => {
             client::shutdown(yes).await?;
+        }
+        Command::Upgrade { check } => {
+            client::upgrade::upgrade(check).await?;
         }
         Command::On => {
             client::agent_on()?;
