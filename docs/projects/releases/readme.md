@@ -26,7 +26,7 @@ The repository has no CI either. Its only workflow publishes the project site, s
 1. You start the release with `gh workflow run release.yml -f bump=patch`, `minor`, or `major`.
 2. The workflow's propose job refuses any ref other than `main`. It bumps the version in every file that holds it (§ 2.5), commits `Release X.Y.Z` on a `release/vX.Y.Z` branch, and refuses the commit if it touches any file but those. It pushes the branch and opens the release pull request, or reuses one that is already open.
 3. A pull request that the workflow's own token opens starts no workflow by itself, so the propose job dispatches `check.yml` onto the release branch. The pull request then shows its checks.
-4. You approve and merge the release pull request. Merging it is the decision to ship.
+4. You merge the release pull request once its checks pass. Merging it is the decision to ship.
 5. The push to `main` that raises the version starts the publish job. It checks whether the release is already complete and does only the steps still missing, in this order:
    1. Creates and pushes the annotated tag `vX.Y.Z`. It never moves an existing one.
    2. Creates the GitHub release for that tag, with notes generated from the merged pull requests.
