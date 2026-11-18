@@ -1,0 +1,89 @@
+{
+ "version": 1,
+ "name": "Release check run link",
+ "project": "releases",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 43,
+  "title": "Link the dispatched Check run from the release pull request's body",
+  "head": "67f898f8d6af8087df65c13626d69b91eafbb646",
+  "headRef": "release-body-check-link",
+  "base": "b46a23c5836d5f3eacbe03c8dd7f3546ea525c20",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "trip ships through a Release workflow, <code>.github/workflows/release.yml</code>. You start it by hand, and it pushes a <code>release/vX.Y.Z</code> branch that only raises the version, opens a pull request for it, and dispatches the Check workflow on that branch. Check runs <code>cargo build --locked</code> and the tests. It is the build result a person looks at before merging the release, because the merge is the decision to ship.",
+   "The release pull request's body told that person the dispatched Check run \"appears on this pull request.\" It does not. GitHub attaches a run started by <code>workflow_dispatch</code> to the branch's commit, but it doesn't list that run among the pull request's checks. On Release 0.2.2 (#41), the commit carries the run's <code>check</code> and <code>msrv</code> check runs, but <code>gh pr checks 41</code> lists neither.",
+   "This change makes the body link the run instead. The link opens the Check workflow's run list, filtered to the release branch and to <code>workflow_dispatch</code> events. The filter is known before the run starts, so the workflow doesn't have to look up a run id after <code>gh workflow run</code> returns. The workflow's comment and the README now say the same thing."
+  ],
+  "cards": [
+   {
+    "id": "terms",
+    "title": "Terms on this page",
+    "html": "<ul class=\"tight\"><li><b><code>workflow_dispatch</code></b>: the GitHub Actions event for a run started by hand or by <code>gh workflow run</code>, rather than by a push or a pull request.</li><li><b>Dispatched Check run</b>: the Check workflow run that the Release workflow starts on the release branch with <code>gh workflow run check.yml</code>.</li><li><b>Release pull request</b>: the pull request the Release workflow opens with its own token. GitHub starts no <code>pull_request</code> workflow for it, which is why the run is dispatched.</li></ul>"
+   },
+   {
+    "id": "review",
+    "title": "Review so far",
+    "html": "<ul class=\"tight\"><li>A full Projector review of <code>f55a7d7</code>: clean, no finding threads, and one suggestion to tighten the comment above <code>gh workflow run</code>, which said \"on the commit\" twice.</li><li><code>67f898f</code> applies that suggestion and changes nothing else. An incremental review of it is clean, and the head is signed off.</li><li>The workflow body runs only during a release, so the next release pull request is the first live test of the link.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "workflow",
+   "title": "The release pull request's body",
+   "kicker": "Where the body sends a reader for the build result",
+   "intro": [
+    "The propose job writes the release pull request's body with a shell heredoc, so <code>$branch</code> and the <code>GITHUB_*</code> variables expand, and each backtick is escaped with a backslash. The changed sentence now links to <code>actions/workflows/check.yml?query=branch%3A&lt;branch&gt;+event%3Aworkflow_dispatch</code>.",
+    "The event filter matters. A release branch can also carry a <code>pull_request</code> run. On 0.2.2 that run ended as <code>failure</code> after it waited for approval, and a reader who found it would think the release was broken."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": ".github/workflows/release.yml",
+     "note": "Changes one sentence of the body heredoc and the comment above <code>gh workflow run</code>. Nothing that the job runs changes.",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 75,
+       "text": "Rendered this heredoc with bash, with <code>version=0.2.3</code> and <code>GITHUB_REPOSITORY=ninjudd/trip</code>. The link came out as <code>https://github.com/ninjudd/trip/actions/workflows/check.yml?query=branch%3Arelease/v0.2.3+event%3Aworkflow_dispatch</code>, and the code spans rendered as backticks."
+      },
+      {
+       "kind": "verify",
+       "line": 75,
+       "text": "The same filter for 0.2.2, <code>gh run list --workflow check.yml --branch release/v0.2.2 --event workflow_dispatch</code>, returns only the successful dispatched run 44345059975 and leaves out the failed <code>pull_request</code> run 44345110307. The equivalent URL returns 200."
+      },
+      {
+       "kind": "verify",
+       "line": 87,
+       "text": "The comment now reads \"Its checks land on the branch's commit but not among the pull request's checks, so the body links the branch's Check runs,\" as the first review suggested, instead of saying \"on the commit\" twice. Read it against the step below it and the body's Testing paragraph: it matches both."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "docs",
+   "title": "README",
+   "kicker": "The release section says where the run shows up",
+   "intro": [
+    "The README's release section said the workflow \"runs the Check workflow on it,\" meaning the pull request. It now says the workflow runs Check on the release branch, and that the pull request's body links the run because GitHub doesn't list it among the pull request's checks."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "README.md",
+     "note": "One sentence in the release section, matching the workflow's new body.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "Searched the README, the site, and <code>docs/</code> for other claims that the run appears on the pull request. The only other mention, in the releases plan, says the dispatched check \"would show\" a lockfile mismatch, which still holds."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

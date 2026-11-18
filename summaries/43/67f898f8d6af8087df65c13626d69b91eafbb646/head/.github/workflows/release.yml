@@ -1,0 +1,112 @@
+name: Release
+# Start a release by hand: choose patch, minor, or major, and the propose job
+# opens a pull request that raises the version, unless that version is already
+# released or below the newest release. Merging it is the decision to ship; the
+# publish job then tags the merged version, creates the GitHub release, and
+# moves the major tag last.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the version to raise
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+  push:
+    branches: [main]
+    paths: [Cargo.toml]
+permissions:
+  contents: read
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  propose:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+      pull-requests: write
+      statuses: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Open the release pull request
+        env:
+          BUMP: ${{ inputs.bump }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The checkout is the ref the run was dispatched from, and the release
+          # branch carries every commit it has. check-commit reads only the
+          # release commit, so a run from another ref would carry that ref's
+          # unreviewed commits into the release and sign them off below.
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "run the release from main, not $GITHUB_REF" >&2
+            exit 1
+          fi
+          version=$(python3 .github/scripts/release.py bump "$BUMP")
+          # After a revert, the bump can name a released version or one below the
+          # newest release. The publish job would refuse it only after the merge.
+          python3 .github/scripts/release.py check-version
+          branch="release/v$version"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit --quiet -am "Release $version"
+          python3 .github/scripts/release.py check-commit HEAD
+          # The branch belongs to this workflow; a rerun after a run that pushed it
+          # but could not open the pull request replaces it.
+          git push --quiet --force origin "$branch"
+          # main requires the projector/review status, and no review session picks
+          # up a pull request this job's token opened. check-commit proved that this
+          # commit only raises the version, which needs no review, so the job signs
+          # off the commit it wrote. The status names this commit alone, so a push
+          # to the branch makes a head that waits for a review.
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$(git rev-parse HEAD)" \
+            -f state=success -f context=projector/review \
+            -f description="Version-only release; needs no review" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
+          cat > "$RUNNER_TEMP/body.md" <<EOF
+          Raises trip's version to $version in \`Cargo.toml\` and \`Cargo.lock\`. Merging this pull request publishes the release: the Release workflow then tags \`v$version\` on the merge commit, creates the GitHub release with generated notes, and moves \`v0\` to it, which is where the installer and \`trip upgrade\` find the newest release. The workflow posted the \`projector/review\` status on this commit because it changes only the version; a push to this branch needs a review.
+
+          ## Testing
+
+          The Release workflow ran \`python3 .github/scripts/release.py bump $BUMP\` from the repository root, which printed \`$version\` and wrote it to both version files, \`python3 .github/scripts/release.py check-version\`, which refuses a version that origin's \`vX.Y.Z\` tags already name or exceed, and \`python3 .github/scripts/release.py check-commit HEAD\`, which refuses a commit that changes anything but the version. It then dispatched the Check workflow on this branch. GitHub does not list a dispatched run among this pull request's checks, so find it in [the dispatched Check runs for \`$branch\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/check.yml?query=branch%3A$branch+event%3Aworkflow_dispatch), where \`cargo build --locked\` fails if the two files disagree. After the merge, the publish job runs \`python3 .github/scripts/release.py tag\`. A failure there names the step that failed, and re-running the failed job finishes the release.
+          EOF
+          # A pull request someone opened by hand from the branch after a failed run
+          # already carries the force-pushed commit.
+          if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            echo "a pull request from $branch is already open"
+          else
+            gh pr create --base main --head "$branch" --title "Release $version" --body-file "$RUNNER_TEMP/body.md"
+          fi
+          # GitHub starts no workflow for a pull request this job's token opened,
+          # or for the push before it, so Check would never run on the release.
+          # workflow_dispatch is the exception. Its checks land on the branch's
+          # commit but not among the pull request's checks, so the body links
+          # the branch's Check runs.
+          gh workflow run check.yml --ref "$branch"
+  publish:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      # A Cargo.toml change that leaves the version alone or lowers it releases
+      # nothing, so an unreleased version such as 0.1.0 is never published by a
+      # dependency bump or a revert. `tag` releases the commit this push made,
+      # and does only the steps still missing, so re-running a failed job
+      # finishes the release.
+      - name: Tag and publish the merged version
+        env:
+          BEFORE: ${{ github.event.before }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python3 .github/scripts/release.py tag --commit "$GITHUB_SHA" --since "$BEFORE"
