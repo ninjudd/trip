@@ -1,0 +1,108 @@
+{
+ "version": 1,
+ "name": "Release commit sign-off",
+ "project": "releases",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 42,
+  "title": "Post the `projector/review` status on the version-only release commit",
+  "head": "39fceb4fc4057848097827c9811078ac336b17d3",
+  "headRef": "release-signs-off-version-commit",
+  "base": "9067a7541da1e8a3bc072b515f53e97b9c274e08",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "A <code>trip</code> release is a pull request that the Release workflow opens for you. It raises the version in <code>Cargo.toml</code> and <code>Cargo.lock</code> and changes nothing else. When you merge it, the workflow tags and publishes the release.",
+   "<code>main</code> now has a ruleset that requires a commit status named <code>projector/review</code> before a pull request can merge. A Projector review normally posts that status after it reads the head. No review session picks up a pull request that the workflow's own token opened, so release 0.2.2 sat waiting for a status that nothing would post.",
+   "This pull request makes the workflow's propose job post <code>projector/review</code> as <code>success</code> itself. It posts the status only on the commit that <code>check-commit</code> has just proved changes nothing but the version. The status belongs to that one commit, so if anyone pushes to the release branch, the new head has no status and needs a real review before it can merge."
+  ],
+  "cards": [
+   {
+    "id": "terms",
+    "title": "Terms",
+    "html": "<ul class=\"tight\"><li><b>Commit status:</b> a state (<code>success</code>, <code>failure</code>, <code>pending</code>) that GitHub attaches to one commit SHA under a name called its context.</li><li><b><code>projector/review</code>:</b> the context the \"Projector review\" ruleset requires on <code>main</code>.</li><li><b>Propose job:</b> the Release workflow job you start by hand. It bumps the version, pushes <code>release/vX.Y.Z</code>, and opens the pull request.</li><li><b><code>check-commit</code>:</b> the <code>release.py</code> command that refuses a commit unless it raises the version and changes nothing else.</li></ul>"
+   },
+   {
+    "id": "review",
+    "title": "Review so far",
+    "html": "<ul class=\"tight\"><li>One Projector review, of <code>39fceb4</code>: clean, with no findings and no suggestions.</li><li><code>python3 tests/release_test.py</code> ran 30 tests, all passing, on this head.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "workflow",
+   "title": "The propose job signs off its own commit",
+   "kicker": "One new API call in the Release workflow, and the permission it needs",
+   "intro": [
+    "After the propose job commits the version bump, it runs <code>check-commit HEAD</code> and force-pushes the release branch. Next, it now calls the commit statuses API on <code>$(git rev-parse HEAD)</code>, posting <code>projector/review</code> as <code>success</code> with a link to the run. Only then does it open the pull request. The job gains <code>statuses: write</code> so that its <code>GITHUB_TOKEN</code> can make the call.",
+    "The sign-off is safe only because of what <code>check-commit</code> compares. It diffs the release commit against its parent alone, and the job refuses to run from any ref but <code>main</code>. So the parent is <code>main</code>'s reviewed head, and the one new commit can hold only the version change."
+   ],
+   "checks": [
+    {
+     "kind": "verify",
+     "text": "The live \"Projector review\" ruleset, read with <code>gh api repos/ninjudd/trip/rulesets</code>, requires the <code>projector/review</code> context with no <code>integration_id</code>. So a status that <code>GITHUB_TOKEN</code> posts satisfies it, as the pull request body says."
+    },
+    {
+     "kind": "context",
+     "text": "The change grants nobody a new power. Anyone who can dispatch this workflow already has write access to the repository, and with it the power to post commit statuses."
+    }
+   ],
+   "files": [
+    {
+     "path": ".github/workflows/release.yml",
+     "note": "Adds <code>statuses: write</code> and the status call between <code>git push</code> and <code>gh pr create</code>, and updates the pull request body template.",
+     "checks": [
+      {
+       "kind": "context",
+       "text": "The <code>main</code>-only guard now protects the sign-off too. A run from another ref would carry that ref's unreviewed commits onto the release branch, and this step would mark them reviewed.",
+       "line": 43
+      },
+      {
+       "kind": "verify",
+       "text": "The status targets a fixed SHA, not the branch, so a commit someone pushes after the force-push gets no <code>success</code>. Under <code>set -euo pipefail</code>, a failed call stops the step before the pull request opens.",
+       "line": 66
+      }
+     ]
+    },
+    {
+     "path": ".github/scripts/release.py",
+     "note": "The module docstring now lists the status step in the workflow's sequence."
+    }
+   ]
+  },
+  {
+   "id": "tests-docs",
+   "title": "Test and documentation",
+   "kicker": "A test of the step's order, and the README's release section",
+   "intro": [
+    "The new test reads the propose job's text out of <code>release.yml</code> and checks the order of its steps, as the test above it already does for the version check. The README's release section now explains why the workflow posts the status and what a later push to the release branch needs."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "tests/release_test.py",
+     "note": "The test fails if the status call moves before <code>check-commit</code> or <code>git push</code>, appears twice, targets anything but <code>HEAD</code>, or loses its permission.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "The author confirmed that it fails when the status step moves above <code>check-commit</code> and when the permission is removed. The suite passes on this head.",
+       "line": 499
+      }
+     ]
+    },
+    {
+     "path": "README.md",
+     "note": "The release section says that the workflow signs off the version-only commit, and that a push to the release branch needs a Projector review.",
+     "checks": [
+      {
+       "kind": "context",
+       "text": "<code>docs/projects/releases/readme.md</code> still says that the propose job posts no status. That plan is <code>completed</code> and stands as a record, so the README is the living document that this change updates."
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

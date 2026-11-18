@@ -1,0 +1,465 @@
+# trip
+
+Persistent terminal sessions.
+
+Trip is a tiny daemon that keeps your terminal sessions alive when you close a window. Terminal apps become lightweight clients that attach and detach. Think tmux, but radically simpler — no panes, no splits, no keybindings to memorize. Just close the terminal to detach.
+
+## Why?
+
+Normal terminal tabs are disposable. The processes inside them usually are not.
+
+Trip separates the terminal viewport from the runtime session. This means:
+
+- sessions survive window closes
+- workspaces become durable
+- terminals become interchangeable clients
+
+## Install
+
+trip builds from source, so you need Rust's `cargo`; install it with [rustup](https://rustup.rs) if you don't have it. Install the newest release with:
+
+```
+curl -fsSL https://trip.here/install.sh | bash
+```
+
+It downloads the release's source, builds it, and installs it into `~/.local`, without `sudo`. The build takes about 10 seconds on an Apple M2 Max once its dependencies are downloaded, and longer on a slower machine or the first time.
+
+The installer puts each version in its own directory and switches to it only when the build succeeds:
+
+| Path | What it is |
+| --- | --- |
+| `~/.local/share/trip/<version>/trip` | The binary for one version |
+| `~/.local/share/trip/current` | A link to the version `trip` runs |
+| `~/.local/share/trip/previous` | A link to the version before it, kept so you can switch back |
+| `~/.local/bin/trip` | A link to `~/.local/share/trip/current/trip` |
+
+It keeps the current and previous versions, and the version a running daemon uses, and deletes older ones. When `~/.local/bin` is not on your `PATH`, it prints the `export PATH` line to add to your shell's startup file. When an earlier install left `/usr/local/bin/trip`, it prints the `sudo rm` that removes it.
+
+To install from a clone instead, run the installer there. It builds the checkout into the same layout, as version `<version>-dev`:
+
+```
+./install.sh
+```
+
+For development, `--dev` links `~/.local/bin/trip` to the checkout's debug build, so each `cargo build` updates it, and leaves `~/.local/share/trip` as it is:
+
+```
+./install.sh --dev
+```
+
+### Upgrading
+
+Upgrade a release install to the newest release with:
+
+```
+trip upgrade
+```
+
+It asks GitHub for the newest release, through `gh` when it is signed in and anonymously otherwise, downloads that release's `install.sh`, and runs it for that release's tag. It then runs the new `~/.local/bin/trip --version`, and if that does not report the release's version, it prints both and exits 1. By then the installer has already made that build `current`, so the message says so and gives the command that switches back to the version it replaced, such as `ln -sfn 0.2.0 ~/.local/share/trip/current`. When that build reports the version you already ran, the installer reinstalled it over itself, so the message says it is still current and gives no command. It upgrades from the repository the install came from, which `~/.local/share/trip/release.json` records, so a fork upgrades from the fork. To see whether there is anything to upgrade to, without installing anything, run `trip upgrade --check`.
+
+A checkout install, whose version ends in `-dev`, follows its checkout rather than releases, so `trip upgrade` refuses it and points you to `./install.sh`.
+
+The upgrade never restarts the daemon, because the daemon holds every session's terminal, and restarting it would end them. The daemon keeps running the version it started with until its last session ends or you run `trip shutdown --yes`. Until then, `trip upgrade`, `trip ls`, and the end of `trip enter` and `trip attach` print a line that names both versions and how many sessions the daemon holds:
+
+```
+the daemon still runs 0.2.0 with 4 sessions; it moves to 0.3.0 when its last session ends or you run trip shutdown --yes
+```
+
+A request that the older daemon cannot understand fails with the same line. `trip log` is the exception: it prints the line to stderr, prints no log, and exits 0, because a daemon also closes without a reply when a log has no events, and the client cannot tell the two apart. A daemon from an install made before releases existed is named as "a trip from before releases".
+
+## Terminal setup
+
+For the best experience, configure your terminal to run trip automatically on new tabs. The commands below name `~/.local/bin/trip`, where the installer puts it. If your terminal does not expand `~` there, write your home directory out, as in `/Users/you/.local/bin/trip enter`.
+
+### macOS Terminal
+
+Open **Settings → Profiles → Shell**:
+
+- **Startup → Run command:** `~/.local/bin/trip enter`
+- **When the shell exits:** Close if the shell exited cleanly
+- **Ask before closing:** Only if there are processes other than the login shell and: add `trip` and `-trip` to the list
+
+### iTerm2
+
+Open **Settings → Profiles → General**:
+
+- **Command:** choose **Custom Shell**, set to `~/.local/bin/trip enter`
+
+Open **Settings → Profiles → Session**:
+
+- **After a session ends:** Close
+
+### Ghostty
+
+Add these lines to your Ghostty config file, such as `~/.config/ghostty/config.ghostty`:
+
+```
+command = ~/.local/bin/trip enter
+confirm-close-surface = false
+```
+
+Ghostty runs a `command` that has arguments through `/bin/sh -c`, so `~` expands. A tab closes when trip exits, and closing a tab only detaches, so `confirm-close-surface = false` stops Ghostty from asking first. Reload the config with **Cmd+Shift+,** on macOS or **Ctrl+Shift+,** on Linux, and new tabs start in trip.
+
+This way every tab is a trip session. Close the tab to detach, open a new tab to reattach.
+
+## Quick start
+
+```
+cd ~/my-project
+trip enter
+```
+
+That's it. If a session exists for this workspace, you're attached. If not, one is created. Close the terminal whenever you want — the session survives. Run `trip enter` again to pick up where you left off.
+
+## Switching and detaching
+
+Closing the terminal is the usual way out. To leave without closing the
+window, press **Ctrl-\\** — the same key dtach and abduco use.
+
+The key has two stops. The first shows the session chooser:
+
+```
+sessions:  ↑/↓ + enter · 0-9 · esc back · ^\ detach
+  0) trip.2                     (new session)
+> 1) trip          claude       (current)
+  2) trip.1        cargo test
+  3) acme/webapp   nvim         (attached)
+```
+
+**Enter** moves this terminal to the highlighted session. **Esc** goes back to
+where you were. **Ctrl-\ again** detaches for real — the session keeps
+running, the client exits, and your shell comes back, exactly as one press
+used to do.
+
+Only the terminal you pressed it in moves. Other terminals attached to the
+same session keep streaming.
+
+Row `0` is always a session that does not exist yet, and pressing **0** makes
+it — from anywhere in the list, even scrolled past the row: the canonical
+session for the workspace while it is missing, otherwise the next number, the
+way `trip new` would. It lands in the same directory as the session you
+opened the chooser from.
+
+Below it, sessions are ordered by when you last entered them, newest first —
+recency of *opening*, not of output, so a chatty background build never
+shuffles the list. The sessions you are bouncing between hold the low digits.
+
+Pasted text is never misread as the key: input inside a bracketed paste is
+forwarded untouched. And the key survives programs that switch the terminal
+into an enhanced keyboard protocol — Claude Code enables kitty CSI-u and
+xterm modifyOtherKeys at startup, after which the terminal sends the
+keystroke as an escape sequence rather than a byte; trip recognizes those
+spellings of the configured key too, so it keeps working whatever is in the
+foreground. Nor does such a protocol outlive its session: switching away
+grounds the terminal's keyboard state, and switching back re-applies exactly
+what that session's program asked for.
+
+To change or disable the key, set `TRIP_DETACH_KEY`:
+
+```
+TRIP_DETACH_KEY='^z'    # detach on Ctrl-Z instead
+TRIP_DETACH_KEY='^-'    # Ctrl+dash (sent by terminals as ^_, 0x1f)
+TRIP_DETACH_KEY=none    # no detach key; close the terminal to detach
+```
+
+Ctrl+- doesn't reach trip in every terminal. On Linux, Ghostty, GNOME
+Terminal, Konsole, Alacritty, and WezTerm use it to shrink the font, and
+WezTerm does on macOS too, so pick another key there, such as `'^]'`.
+
+Whatever key you pick stops reaching programs inside the session — the
+default Ctrl-\ sacrifices only SIGQUIT, which almost nothing wants.
+
+## Remote sessions with mosh
+
+[mosh](https://mosh.org) keeps a connection to another machine alive while
+your laptop sleeps or changes networks, and trip on that machine keeps the
+session alive when you quit mosh altogether. Install trip on the remote
+machine, then run it as mosh's command:
+
+```
+mosh myserver -- sh -c 'TRIP_DETACH_KEY="^]" exec ~/.local/bin/trip enter main'
+```
+
+This enters the session `main` on `myserver`, and creates it if it doesn't
+exist. Run the same command again to reattach. mosh runs its command directly
+rather than through a shell, so `sh -c` is what expands `~`.
+
+If the remote machine is a Mac with Homebrew, name its server with
+`--server`, before the host name:
+
+```
+mosh --server=/opt/homebrew/bin/mosh-server myserver -- \
+  sh -c 'TRIP_DETACH_KEY="^]" exec ~/.local/bin/trip enter main'
+```
+
+mosh starts its server through an SSH login that doesn't have Homebrew on its
+`PATH`, so without the full path it fails with `mosh-server: command not
+found`. A mosh option goes before `--`, because everything after it is the
+remote command.
+
+When the terminal you run mosh from is itself a trip session, that local trip
+catches Ctrl-\ before mosh sees it. So the command gives the remote trip a
+different key: Ctrl-\ leaves the local session, and **Ctrl-]** leaves the
+remote one. Ghostty, iTerm2, Terminal.app, and the common Linux terminals all
+pass Ctrl-] through. Ctrl+- would be a poor choice here, because Ghostty on
+Linux, GNOME Terminal, and others take it to shrink the font. Programs in the
+remote session no longer see Ctrl-], such as Vim's jump to tag.
+
+mosh doesn't pass `COLORTERM` to the remote machine, so programs there fall
+back to 256 colors. To keep 24-bit color, set it when mosh starts its server,
+with `--server="COLORTERM=$COLORTERM mosh-server"`, or
+`--server="COLORTERM=$COLORTERM /opt/homebrew/bin/mosh-server"` on a Homebrew
+Mac.
+
+## Titles
+
+Every title a session emits is wrapped with the workspace, so it reads
+`webapp Deliberating` rather than losing the workspace the moment a program sets
+its own title. Programs keep saying what they are doing; you keep knowing where.
+Numbered sessions share their workspace's wrapping, and a title already carrying
+it is left alone, so it never nests.
+
+`TRIP_TITLE` is the whole thing — a shell string, expanded once when you attach
+with `TRIP_WORKSPACE`, `TRIP_SESSION` and `TITLE` in the environment. `$TITLE`
+is where the session's own title goes. There is no template language to learn;
+parameter expansion does the work:
+
+```
+TRIP_TITLE='${TRIP_WORKSPACE##*/} $TITLE'      webapp Deliberating       (the default)
+TRIP_TITLE='$TITLE @${TRIP_WORKSPACE##*/}'     Deliberating @webapp
+TRIP_TITLE='[$TITLE] ~${TRIP_WORKSPACE##*/}'   [Deliberating] ~webapp
+TRIP_TITLE='$TITLE - $TRIP_SESSION'            Deliberating - acme/webapp.2
+TRIP_TITLE='${TRIP_WORKSPACE##*/}'             webapp                    (title dropped)
+TRIP_TITLE=''                                  Deliberating              (left alone)
+```
+
+**Put `$TITLE` first if your terminal truncates from the left.** iTerm keeps the
+*end* of a long title, so whatever precedes `$TITLE` is the first thing to
+disappear — and that is usually the part naming the workspace.
+
+Note `##*/` strips up to the last slash (`webapp`) while `%%/*` strips from the
+first (`acme`).
+
+Everything around `$TITLE` is literal, so spacing and any divider are part of
+the value. Omit `$TITLE` and the session title is replaced outright; set
+`TRIP_TITLE=''` and titles pass through untouched.
+
+Expansion happens once per attach rather than per title — a title changes far
+too often to fork a shell for each one. The consequence is that `$TITLE` is
+substituted positionally: a bare `$TITLE` works, but a construct that
+*transforms* it, like `${TITLE:-idle}`, sees a placeholder rather than the real
+title.
+
+The title the terminal had before you attached is pushed onto the XTerm title
+stack and restored when you detach — on error exits too — so it goes back to
+whatever it said before rather than keeping the session's last title.
+
+## Commands
+
+### Sessions
+
+**`trip enter`** — Choose a session from every workspace and enter it, ordered by when you last opened each, newest first. Arrow keys (or j/k) move, 1-9 jump to a visible row, 0 creates the next session in your workspace (row 0 of the list), Enter selects, q/Esc cancels. Your workspace's canonical session starts highlighted, so plain Enter still takes you where it always did. With stdin redirected there is nothing to choose with, so it takes the canonical session.
+
+**`trip enter <name>`** — Enter that session directly, no chooser. Creates it if missing, attaches if it exists. A session whose command has exited counts as missing, so after you log out of a session, entering it again starts a fresh one, whether you run `trip enter` from a plain terminal or from inside another session.
+
+**`trip enter --pwd`** — Only this workspace, derived from your git repo root. Skips the chooser entirely when there is nothing to choose between — one canonical session and no numbered ones — which is what the flag is for.
+
+**`trip return`** — Return to the previous session. Opposite of `trip enter`. Cancelling out of the chooser does not count as having gone anywhere, so it still takes you to the session you actually switched from.
+
+**`trip new [name]`** — Open a fresh durable terminal for the current workspace. Auto-numbered (`.1`, `.2`, `.3`). Kept alive in the background; cleaned up when the shell exits.
+
+**`trip create <name> [-- command]`** — Create a session without attaching. For scripting and automation.
+
+**`trip ls`** — List every session, grouped by workspace. Shows foreground command, git branch, cwd, and marks the current session with `*`. Use `--pwd` to narrow to the current workspace, and `--attached` to show only attached sessions; the two compose.
+
+**`trip attach <name>`** — Attach to a specific session by name. If the session's command has exited, it shows what the command left on the screen.
+
+**`trip detach [name]`** — Detach from a session. Defaults to current session.
+
+**`trip kill <name>`** — Kill a session.
+
+**`trip shutdown`** — Stop the daemon and kill all sessions. The next trip command starts a daemon of the installed version.
+
+**`trip upgrade`** — Install the newest release, leaving the daemon and its sessions running. `--check` prints the installed version and the newest release, and installs nothing. See [Upgrading](#upgrading).
+
+### Observation
+
+**`trip screen <name>`** — Show the current terminal screen (what you'd see if attached).
+
+**`trip log <name>`** — Show what happened over time. Three modes depending on context: raw output for normal shell, screen diffs for full-screen TUIs, and structured agent events when `trip on` is active.
+
+**`trip log <name> -v`** — Include tool results (hidden by default for agent sessions).
+
+**`trip log <name> --raw`** — Full JSONL event stream (output, screen, agent events).
+
+**`trip log <name> --follow`** — Stream new events as they happen.
+
+**`trip log <name> --since 10m`** — Events from the last 10 minutes.
+
+### Interaction
+
+**`trip send <name> <input>`** — Send input to a session without attaching. Auto-appends Enter. Use `--raw` for exact bytes. Fails if the session's command has exited.
+
+**`trip current`** — Print the current session name (exit 1 if not in a session).
+
+**`trip --version`** — Print the version. Only a build made with `TRIP_RELEASE=1` set prints the bare version, such as `trip 0.1.0`. Every other build, including a plain `cargo build`, prints `trip 0.1.0-dev`, so a binary always says whether it is a release.
+
+### Agent integration
+
+**`trip on`** — Register a running AI agent (Claude Code, Codex) with the current trip session. Reads `CLAUDE_CODE_SESSION_ID` or `CODEX_THREAD_ID` from the environment, locates the agent's JSONL log file, and tells the daemon to tail it for structured events. Raw terminal output is suppressed while agent logging is active.
+
+Run this inside an agent session:
+
+```
+! trip on
+```
+
+Or automate it with a SessionStart hook:
+
+**Claude Code** — add to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "trip on"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Codex** — add to `~/.codex/config.toml`:
+
+```toml
+[[hooks.SessionStart]]
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "trip on"
+```
+
+With `trip on` active, `trip log` shows structured output: assistant text, thinking blocks, tool calls, and turn boundaries — instead of raw terminal escape sequences.
+
+### Programmatic control
+
+**`trip wrap [name] [-- command]`** — Wrap a command with a JSONL protocol. The wrapped process gets a real PTY internally, but stdin/stdout become structured events.
+
+```
+trip wrap -- claude
+```
+
+Wrapped sessions are normal trip sessions. You can `trip attach`, `trip screen`, and `trip log` them from another terminal.
+
+**Input** (JSONL on stdin):
+
+```json
+{"type":"send","text":"summarize this repo\n"}
+{"type":"key","key":"ctrl-c"}
+{"type":"resize","cols":120,"rows":40}
+{"type":"screenshot"}
+{"type":"close"}
+```
+
+- `send` — type text into the PTY. Include `\n` for Enter. Multi-line text is automatically bracketed-pasted.
+- `key` — named special keys: `ctrl-c`, `escape`, `enter`, `up`, `down`, `tab`, `backspace`, etc.
+- `resize` — resize the PTY.
+- `screenshot` — request the current screen state.
+- `close` — end the session.
+
+**Output** (JSONL on stdout):
+
+```json
+{"type":"log","text":"Claude is thinking..."}
+{"type":"screen","text":"full screen contents here"}
+{"type":"exit","code":0}
+{"type":"error","message":"unknown key: ctrl-bogus"}
+```
+
+- `log` — pushed automatically as meaningful screen changes occur (diffed snapshots).
+- `screen` — full screen state, only in response to `screenshot`.
+- `exit` — process exited.
+- `error` — protocol or runtime errors.
+
+### Shell integration
+
+The installer adds a shell hook to `.zshrc` and `.bashrc` that runs `trip env` before each command, when `trip` is on the shell's `PATH`. This keeps terminal environment variables (`TERM_PROGRAM`, `COLORTERM`, etc.) in sync when you switch between different terminal apps while attached to the same session. It also cleans up agent and TUI markers when the user returns to a shell prompt.
+
+## How it works
+
+A single Rust binary acts as both daemon and client. The daemon auto-starts on first use and auto-exits when the last session ends.
+
+```
+terminal
+  ↕
+trip attach
+  ↕
+trip daemon (Unix socket)
+  ↕
+PTY master
+  ↕
+shell / claude / vim / anything
+```
+
+The daemon owns PTY sessions. Clients connect over a Unix domain socket, receive the current screen state (via a virtual terminal), and stream I/O. Closing the client doesn't affect the session.
+
+### Virtual terminal
+
+The daemon maintains a VT100 parser for each session. On attach, it renders the current screen — no raw scrollback replay, no garbled escape sequences. Just a clean screen.
+
+### Recording
+
+Every PTY event is logged to `~/.trip/sessions/<name>/log.jsonl`. Screen snapshots are captured when output settles (500ms idle or 5s max interval), diffed against the previous snapshot using LCS, and stored as derived events. Full screen snapshots are saved to `~/.trip/sessions/<name>/screens/`.
+
+Raw events are the canonical source of truth. Screen diffs are the index. `trip log` is the view.
+
+### Writer model
+
+One writer per session. Additional clients attach read-only (monochrome output, no input). When the writer disconnects, the previous writer regains control (stack-based). Sessions can be taken over — the old writer is silently demoted to read-only.
+
+### Session switching
+
+`trip enter` from inside a trip session seamlessly switches to the target session — no nesting, no new processes. Your terminal is rebound to the new session. `trip return` switches back. Enter and return form a stack, so you can nest switches and unwind them.
+
+The detach key switches the same way, but per terminal: it is intercepted by the client before it reaches the session, so the terminal that saw it is the one that moves. A `trip enter` typed into a shell cannot be that precise — with several terminals attached, they all share the one shell, so nothing in it says which terminal you typed into.
+
+## Design philosophy
+
+Trip is intentionally not:
+
+- A terminal multiplexer (no panes or splits)
+- A terminal emulator (your terminal does the rendering)
+- An IDE or cloud platform
+- A tmux clone
+
+Trip is infrastructure. It should feel tiny, durable, and boring in a good way.
+
+The core primitive is a **persistent PTY-backed session**. Everything else is optional.
+
+## Releasing
+
+A release is a version-only pull request that a workflow opens for you. Start it from `main`, choosing `patch`, `minor`, or `major`:
+
+```
+gh workflow run release.yml -f bump=minor
+```
+
+The Release workflow raises the version in `Cargo.toml` and `Cargo.lock` on a `release/vX.Y.Z` branch, refuses the commit if it changes anything else, opens the pull request, and runs the Check workflow on it. `main` requires the `projector/review` status, and a commit that only raises the version needs no review, so the workflow posts that status as `success` on the release commit itself. The status names that commit alone, so if you push to the release branch, the new head needs a Projector review before it can merge. Merging that pull request is the decision to ship: the workflow then tags `vX.Y.Z` on the merge commit, creates the GitHub release with generated notes, and moves `v0`, the tag the installer serves, to it last. If that publish job fails partway, re-run it, and it does only the steps still missing. A merge that changes `Cargo.toml` without raising the version releases nothing, so reverting a release pull request leaves `v0` where it was. The workflow never moves `v0` back to an older release, and it refuses a version that is already released or below the newest release before it opens the pull request. When a bump would propose such a version, as it can after a revert, write a version above the newest release with `.github/scripts/release.py set X.Y.Z` and open that change as a pull request yourself; merging it publishes that version.
+
+The workflow opens the pull request with its own token, which needs **Allow GitHub Actions to create and approve pull requests** turned on under the repository's **Settings > Actions > General**. `.github/scripts/release.py` does the work, and `python3 tests/release_test.py` tests it.
+
+## Requirements
+
+- macOS or Linux
+- Rust 1.85 or newer
+
+## License
+
+MIT
