@@ -57,15 +57,31 @@ pub async fn upgrade(check: bool) -> Result<()> {
         return Ok(());
     }
 
+    // The installer moves `previous` only when it installs a version other
+    // than the current one, so what `current` named before it ran is the
+    // only version this upgrade can have switched away from.
+    let replaced = current_version();
     run_installer(&repo, &tag).await?;
 
     let installed = installed_version().await?;
     if installed != newest {
+        let outcome = match replaced {
+            Some(replaced) if replaced == installed => {
+                format!("trip {} is still current", installed)
+            }
+            Some(replaced) if share_dir().join(&replaced).is_dir() => format!(
+                "trip {0} is now current; run ln -sfn {1} ~/.local/share/trip/current \
+                 to switch back to {1}",
+                installed, replaced
+            ),
+            _ => format!("trip {} is now current", installed),
+        };
         bail!(
-            "the upgrade installed trip {}, but the newest release, {}, is {}",
+            "the upgrade installed trip {}, but the newest release, {}, is {}; {}",
             installed,
             tag,
-            newest
+            newest,
+            outcome
         );
     }
     println!("upgraded trip {} to {}", VERSION, installed);
@@ -89,6 +105,13 @@ fn share_dir() -> PathBuf {
         .join(".local")
         .join("share")
         .join("trip")
+}
+
+/// The version the installer's `current` link names. A link switched by hand
+/// can hold an absolute path.
+fn current_version() -> Option<String> {
+    let target = std::fs::read_link(share_dir().join("current")).ok()?;
+    Some(target.file_name()?.to_str()?.to_string())
 }
 
 /// The repository the release install came from, as `release.json` records
