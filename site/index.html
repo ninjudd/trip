@@ -161,6 +161,16 @@
   dl.setup dt { font-weight: 650; margin-top: 18px; }
   dl.setup dd { margin: 4px 0 0; color: var(--muted); }
   dl.setup dd code { color: var(--fg); }
+  pre.snippet {
+    margin: 10px 0 0;
+    padding: 12px 16px;
+    overflow-x: auto;
+    background: var(--term-bg);
+    color: var(--term-fg);
+    border-radius: 8px;
+    font-size: 14px;
+    line-height: 1.6;
+  }
 
   footer {
     margin-top: 56px;
@@ -239,11 +249,22 @@ sessions:  <span class="t-muted">↑/↓ + enter · 0-9 · q cancels</span>
     <h2 id="setup">Make every tab a trip session</h2>
     <p>Set your terminal to start <code>trip enter</code> in each new tab. Closing a tab then detaches it, and a new tab reattaches.</p>
     <dl class="setup">
+      <dt>Ghostty</dt>
+      <dd>Add these lines to your Ghostty config file, such as <code>~/.config/ghostty/config.ghostty</code>, then reload it with <strong>Cmd+Shift+,</strong> on macOS or <strong>Ctrl+Shift+,</strong> on Linux. Closing a tab only detaches, so there's no need for Ghostty to ask first.
+<pre class="snippet">command = ~/.local/bin/trip enter
+confirm-close-surface = false</pre></dd>
       <dt>macOS Terminal</dt>
       <dd>In <strong>Settings → Profiles → Shell</strong>, set <strong>Run command</strong> to <code>~/.local/bin/trip enter</code>, and <strong>When the shell exits</strong> to <strong>Close if the shell exited cleanly</strong>.</dd>
       <dt>iTerm2</dt>
       <dd>In <strong>Settings → Profiles → General</strong>, set <strong>Command</strong> to a custom shell, <code>~/.local/bin/trip enter</code>. In <strong>Session</strong>, set <strong>After a session ends</strong> to <strong>Close</strong>.</dd>
     </dl>
+  </section>
+
+  <section aria-labelledby="remote">
+    <h2 id="remote">Remote sessions with mosh</h2>
+    <p><a href="https://mosh.org">mosh</a> keeps a connection to another machine alive while your laptop sleeps or changes networks. trip on that machine keeps the session alive when you quit mosh altogether. Install trip there, then run it as mosh's command:</p>
+<pre class="snippet">mosh myserver -- sh -c 'TRIP_DETACH_KEY="^]" exec ~/.local/bin/trip enter main'</pre>
+    <p style="margin-top:14px">Run the same command again to reattach. If your local terminal is a trip session too, it keeps <kbd>Ctrl-\</kbd>, so the remote trip detaches on <kbd>Ctrl-]</kbd> instead.</p>
     <p style="margin-top:20px">The <a href="https://github.com/ninjudd/trip#readme">README</a> covers every command, the detach key, window titles, and how the daemon works.</p>
   </section>
 </main>

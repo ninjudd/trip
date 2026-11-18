@@ -89,6 +89,17 @@ Open **Settings → Profiles → Session**:
 
 - **After a session ends:** Close
 
+### Ghostty
+
+Add these lines to your Ghostty config file, such as `~/.config/ghostty/config.ghostty`:
+
+```
+command = ~/.local/bin/trip enter
+confirm-close-surface = false
+```
+
+Ghostty runs a `command` that has arguments through `/bin/sh -c`, so `~` expands. A tab closes when trip exits, and closing a tab only detaches, so `confirm-close-surface = false` stops Ghostty from asking first. Reload the config with **Cmd+Shift+,** on macOS or **Ctrl+Shift+,** on Linux, and new tabs start in trip.
+
 This way every tab is a trip session. Close the tab to detach, open a new tab to reattach.
 
 ## Quick start
@@ -153,6 +164,48 @@ TRIP_DETACH_KEY=none    # no detach key; close the terminal to detach
 
 Whatever key you pick stops reaching programs inside the session — the
 default Ctrl-\ sacrifices only SIGQUIT, which almost nothing wants.
+
+## Remote sessions with mosh
+
+[mosh](https://mosh.org) keeps a connection to another machine alive while
+your laptop sleeps or changes networks, and trip on that machine keeps the
+session alive when you quit mosh altogether. Install trip on the remote
+machine, then run it as mosh's command:
+
+```
+mosh myserver -- sh -c 'TRIP_DETACH_KEY="^]" exec ~/.local/bin/trip enter main'
+```
+
+This enters the session `main` on `myserver`, and creates it if it doesn't
+exist. Run the same command again to reattach. mosh runs its command directly
+rather than through a shell, so `sh -c` is what expands `~`.
+
+If the remote machine is a Mac with Homebrew, name its server with
+`--server`, before the host name:
+
+```
+mosh --server=/opt/homebrew/bin/mosh-server myserver -- \
+  sh -c 'TRIP_DETACH_KEY="^]" exec ~/.local/bin/trip enter main'
+```
+
+mosh starts its server through an SSH login that doesn't have Homebrew on its
+`PATH`, so without the full path it fails with `mosh-server: command not
+found`. A mosh option goes before `--`, because everything after it is the
+remote command.
+
+When the terminal you run mosh from is itself a trip session, that local trip
+catches Ctrl-\ before mosh sees it. So the command gives the remote trip a
+different key: Ctrl-\ leaves the local session, and **Ctrl-]** leaves the
+remote one. Ghostty, iTerm2, Terminal.app, and the common Linux terminals all
+pass Ctrl-] through. Ctrl+- would be a poor choice here, because Ghostty on
+Linux, GNOME Terminal, and others take it to shrink the font. Programs in the
+remote session no longer see Ctrl-], such as Vim's jump to tag.
+
+mosh doesn't pass `COLORTERM` to the remote machine, so programs there fall
+back to 256 colors. To keep 24-bit color, set it when mosh starts its server,
+with `--server="COLORTERM=$COLORTERM mosh-server"`, or
+`--server="COLORTERM=$COLORTERM /opt/homebrew/bin/mosh-server"` on a Homebrew
+Mac.
 
 ## Titles
 
