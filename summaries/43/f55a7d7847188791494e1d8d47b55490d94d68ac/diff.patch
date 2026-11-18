@@ -1,0 +1,38 @@
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index 8c30dc2..45693c6 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -72,7 +72,7 @@ jobs:
+ 
+           ## Testing
+ 
+-          The Release workflow ran \`python3 .github/scripts/release.py bump $BUMP\` from the repository root, which printed \`$version\` and wrote it to both version files, \`python3 .github/scripts/release.py check-version\`, which refuses a version that origin's \`vX.Y.Z\` tags already name or exceed, and \`python3 .github/scripts/release.py check-commit HEAD\`, which refuses a commit that changes anything but the version. It then dispatched the Check workflow on this branch, and its checks appear on this pull request; \`cargo build --locked\` there fails if the two files disagree. After the merge, the publish job runs \`python3 .github/scripts/release.py tag\`. A failure there names the step that failed, and re-running the failed job finishes the release.
++          The Release workflow ran \`python3 .github/scripts/release.py bump $BUMP\` from the repository root, which printed \`$version\` and wrote it to both version files, \`python3 .github/scripts/release.py check-version\`, which refuses a version that origin's \`vX.Y.Z\` tags already name or exceed, and \`python3 .github/scripts/release.py check-commit HEAD\`, which refuses a commit that changes anything but the version. It then dispatched the Check workflow on this branch. GitHub does not list a dispatched run among this pull request's checks, so find it in [the dispatched Check runs for \`$branch\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/check.yml?query=branch%3A$branch+event%3Aworkflow_dispatch), where \`cargo build --locked\` fails if the two files disagree. After the merge, the publish job runs \`python3 .github/scripts/release.py tag\`. A failure there names the step that failed, and re-running the failed job finishes the release.
+           EOF
+           # A pull request someone opened by hand from the branch after a failed run
+           # already carries the force-pushed commit.
+@@ -83,8 +83,9 @@ jobs:
+           fi
+           # GitHub starts no workflow for a pull request this job's token opened,
+           # or for the push before it, so Check would never run on the release.
+-          # workflow_dispatch is the exception, and its checks land on the
+-          # branch's commit, which is the pull request's head.
++          # workflow_dispatch is the exception. Its checks land on the branch's
++          # commit, but GitHub lists them on the commit, not among the pull
++          # request's checks, so the body links the branch's Check runs.
+           gh workflow run check.yml --ref "$branch"
+   publish:
+     if: github.event_name == 'push'
+diff --git a/README.md b/README.md
+index 5964d7f..fe1c46d 100644
+--- a/README.md
++++ b/README.md
+@@ -451,7 +451,7 @@ A release is a version-only pull request that a workflow opens for you. Start it
+ gh workflow run release.yml -f bump=minor
+ ```
+ 
+-The Release workflow raises the version in `Cargo.toml` and `Cargo.lock` on a `release/vX.Y.Z` branch, refuses the commit if it changes anything else, opens the pull request, and runs the Check workflow on it. `main` requires the `projector/review` status, and a commit that only raises the version needs no review, so the workflow posts that status as `success` on the release commit itself. The status names that commit alone, so if you push to the release branch, the new head needs a Projector review before it can merge. Merging that pull request is the decision to ship: the workflow then tags `vX.Y.Z` on the merge commit, creates the GitHub release with generated notes, and moves `v0`, the tag the installer serves, to it last. If that publish job fails partway, re-run it, and it does only the steps still missing. A merge that changes `Cargo.toml` without raising the version releases nothing, so reverting a release pull request leaves `v0` where it was. The workflow never moves `v0` back to an older release, and it refuses a version that is already released or below the newest release before it opens the pull request. When a bump would propose such a version, as it can after a revert, write a version above the newest release with `.github/scripts/release.py set X.Y.Z` and open that change as a pull request yourself; merging it publishes that version.
++The Release workflow raises the version in `Cargo.toml` and `Cargo.lock` on a `release/vX.Y.Z` branch, refuses the commit if it changes anything else, opens the pull request, and runs the Check workflow on the release branch. GitHub doesn't list that run among the pull request's checks, so the pull request's body links to it. `main` requires the `projector/review` status, and a commit that only raises the version needs no review, so the workflow posts that status as `success` on the release commit itself. The status names that commit alone, so if you push to the release branch, the new head needs a Projector review before it can merge. Merging that pull request is the decision to ship: the workflow then tags `vX.Y.Z` on the merge commit, creates the GitHub release with generated notes, and moves `v0`, the tag the installer serves, to it last. If that publish job fails partway, re-run it, and it does only the steps still missing. A merge that changes `Cargo.toml` without raising the version releases nothing, so reverting a release pull request leaves `v0` where it was. The workflow never moves `v0` back to an older release, and it refuses a version that is already released or below the newest release before it opens the pull request. When a bump would propose such a version, as it can after a revert, write a version above the newest release with `.github/scripts/release.py set X.Y.Z` and open that change as a pull request yourself; merging it publishes that version.
+ 
+ The workflow opens the pull request with its own token, which needs **Allow GitHub Actions to create and approve pull requests** turned on under the repository's **Settings > Actions > General**. `.github/scripts/release.py` does the work, and `python3 tests/release_test.py` tests it.
+ 
