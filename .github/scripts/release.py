@@ -3,22 +3,26 @@
 
     .github/scripts/release.py bump patch|minor|major  raise one part of the version, write it, and print it
     .github/scripts/release.py set X.Y.Z               write an exact version instead
+    .github/scripts/release.py check-version [--remote NAME]
+                                                       refuse a version a vX.Y.Z tag names, or one below the newest
     .github/scripts/release.py check-commit [REV]      refuse a commit that changes anything but the version
     .github/scripts/release.py tag [--commit REV] [--since REV]
                                                        tag vX.Y.Z, publish its GitHub release, and move v0
 
 The Release workflow runs these. Started by hand with patch, minor, or major,
-it runs `bump` and `check-commit` on a release/vX.Y.Z branch and opens the
-release pull request. When that pull request merges, it runs `tag` on the
-merge commit, with --since naming main's previous head, so a push that
-leaves the version alone or lowers it, as a revert does, releases nothing.
-`tag` also refuses a new version below the newest vX.Y.Z tag, and never moves
-the major tag back to an older version. `tag` pushes the immutable vX.Y.Z
-tag, creates the GitHub release for it with generated notes (--no-release
-skips that step), and then force-moves the major tag that the installer
-follows. The major tag moves last because `trip upgrade` reads the newest
-GitHub release, so once the major tag names a release, `trip upgrade`
-already finds that release.
+it runs `bump` and `check-version`, then `check-commit` on a release/vX.Y.Z
+branch, and opens the release pull request. `check-version` refuses a version
+that is already released or below the newest release, as a bump after a
+revert would propose, before the pull request opens. When that pull request
+merges, it runs `tag` on the merge commit, with --since naming main's
+previous head, so a push that leaves the version alone or lowers it, as a
+revert does, releases nothing. `tag` also refuses a new version below the
+newest vX.Y.Z tag, and never moves the major tag back to an older version.
+`tag` pushes the immutable vX.Y.Z tag, creates the GitHub release for it with
+generated notes (--no-release skips that step), and then force-moves the
+major tag that the installer follows. The major tag moves last because
+`trip upgrade` reads the newest GitHub release, so once the major tag names a
+release, `trip upgrade` already finds that release.
 
 A version is released once its tag and the major tag name the same commit and
 its GitHub release exists. `tag` does only the steps the remote lacks, in that
@@ -214,6 +218,26 @@ def tagged_versions(root: Path, remote: str) -> list[str]:
     return found
 
 
+def check_unreleased(version: str, tagged: list[str]) -> str | None:
+    """Refuse a version at or below the newest of the tagged versions, and return that newest one."""
+    newest = max(tagged, key=parse, default=None)
+    if newest is not None and parse(version) <= parse(newest):
+        # A version below a released one would move the major tag back to older code.
+        so = "" if version == newest else f", so {version} cannot be"
+        raise ReleaseError(f"v{newest} is already released{so}; set a version above {newest} "
+                           "with .github/scripts/release.py set")
+    return newest
+
+
+def check_version(root: Path, remote: str = "origin") -> str:
+    """Refuse the checkout's version unless it is above every vX.Y.Z tag on the remote."""
+    version = current(reader(root))
+    newest = check_unreleased(version, tagged_versions(root, remote))
+    if newest is None:
+        return f"no release is tagged yet, so {version} can be the first"
+    return f"{version} is above the newest release, v{newest}"
+
+
 def is_ancestor(root: Path, commit: str, head: str) -> bool:
     return subprocess.run(["git", "merge-base", "--is-ancestor", commit, head], cwd=root,
                           capture_output=True).returncode == 0
@@ -255,11 +279,7 @@ def merged(root: Path, remote: str, branch: str, commit: str | None) -> Merged:
     if name in tags:
         check_tagged(root, head, version, release_commit)
     else:
-        # A version below a released one would move the major tag back to older code.
-        newest = max(tagged_versions(root, remote), key=parse, default=None)
-        if newest is not None and parse(newest) > parse(version):
-            raise ReleaseError(f"v{newest} is already released, so {version} cannot be; "
-                               f"set a version above {newest}")
+        check_unreleased(version, tagged_versions(root, remote))
     major_version = version_at(root, tags[major]) if major in tags else None
     return Merged(version, name, major, release_commit, tagged=name in tags,
                   major_moved=tags.get(major) == release_commit, major_version=major_version)
@@ -317,6 +337,8 @@ def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
     s.add_argument("version")
     b = sub.add_parser("bump", help="raise the patch, minor, or major number and print the new version")
     b.add_argument("part", choices=("patch", "minor", "major"))
+    v = sub.add_parser("check-version", help="refuse a version a vX.Y.Z tag names, or one below the newest")
+    v.add_argument("--remote", default="origin")
     c = sub.add_parser("check-commit", help="refuse a commit that changes anything but the version")
     c.add_argument("rev", nargs="?", default="HEAD")
     t = sub.add_parser("tag", help="do the release steps the remote lacks: the version tag, the GitHub release, the major tag")
@@ -332,6 +354,8 @@ def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
             print(f"set {args.version} in Cargo.toml and Cargo.lock")
         elif args.command == "bump":
             print(bump(root, args.part))
+        elif args.command == "check-version":
+            print(check_version(root, args.remote))
         elif args.command == "check-commit":
             print(f"the release commit changes only the version, to {check_commit(root, args.rev)}")
         else:
