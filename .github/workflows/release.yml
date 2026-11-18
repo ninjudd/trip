@@ -72,7 +72,7 @@ jobs:
 
           ## Testing
 
-          The Release workflow ran \`python3 .github/scripts/release.py bump $BUMP\` from the repository root, which printed \`$version\` and wrote it to both version files, \`python3 .github/scripts/release.py check-version\`, which refuses a version that origin's \`vX.Y.Z\` tags already name or exceed, and \`python3 .github/scripts/release.py check-commit HEAD\`, which refuses a commit that changes anything but the version. It then dispatched the Check workflow on this branch, and its checks appear on this pull request; \`cargo build --locked\` there fails if the two files disagree. After the merge, the publish job runs \`python3 .github/scripts/release.py tag\`. A failure there names the step that failed, and re-running the failed job finishes the release.
+          The Release workflow ran \`python3 .github/scripts/release.py bump $BUMP\` from the repository root, which printed \`$version\` and wrote it to both version files, \`python3 .github/scripts/release.py check-version\`, which refuses a version that origin's \`vX.Y.Z\` tags already name or exceed, and \`python3 .github/scripts/release.py check-commit HEAD\`, which refuses a commit that changes anything but the version. It then dispatched the Check workflow on this branch. GitHub does not list a dispatched run among this pull request's checks, so find it in [the dispatched Check runs for \`$branch\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/workflows/check.yml?query=branch%3A$branch+event%3Aworkflow_dispatch), where \`cargo build --locked\` fails if the two files disagree. After the merge, the publish job runs \`python3 .github/scripts/release.py tag\`. A failure there names the step that failed, and re-running the failed job finishes the release.
           EOF
           # A pull request someone opened by hand from the branch after a failed run
           # already carries the force-pushed commit.
@@ -83,8 +83,9 @@ jobs:
           fi
           # GitHub starts no workflow for a pull request this job's token opened,
           # or for the push before it, so Check would never run on the release.
-          # workflow_dispatch is the exception, and its checks land on the
-          # branch's commit, which is the pull request's head.
+          # workflow_dispatch is the exception. Its checks land on the branch's
+          # commit, but GitHub lists them on the commit, not among the pull
+          # request's checks, so the body links the branch's Check runs.
           gh workflow run check.yml --ref "$branch"
   publish:
     if: github.event_name == 'push'
