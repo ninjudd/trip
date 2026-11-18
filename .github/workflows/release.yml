@@ -84,8 +84,8 @@ jobs:
           # GitHub starts no workflow for a pull request this job's token opened,
           # or for the push before it, so Check would never run on the release.
           # workflow_dispatch is the exception. Its checks land on the branch's
-          # commit, but GitHub lists them on the commit, not among the pull
-          # request's checks, so the body links the branch's Check runs.
+          # commit but not among the pull request's checks, so the body links
+          # the branch's Check runs.
           gh workflow run check.yml --ref "$branch"
   publish:
     if: github.event_name == 'push'
