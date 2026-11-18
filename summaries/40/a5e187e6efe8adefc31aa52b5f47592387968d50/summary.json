@@ -1,0 +1,138 @@
+{
+ "version": 1,
+ "name": "Projector template refresh",
+ "project": "",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 40,
+  "title": "Update the Projector conventions and workflows from `project init`",
+  "head": "a5e187e6efe8adefc31aa52b5f47592387968d50",
+  "headRef": "projector-init-update",
+  "base": "e655da447c2a8c8c7726716dc266e627d6008921",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "This repository uses Projector to keep its project plans in Git and to review its pull requests. Projector writes a few files into the repository: a section of agent instructions in <code>AGENTS.md</code>, a <code>.projector.toml</code> of settings, and GitHub Actions workflows. When Projector's templates change, running <code>project init</code> brings those files up to date.",
+   "This pull request is that update, committed exactly as <code>project init</code> wrote it. It changes no Rust code and no user-facing documentation. It does three things:",
+   "<ol><li><b>Current agent instructions.</b> The generated section of <code>AGENTS.md</code> moves from template version 1 to version 31. Agents now open pull requests as drafts and mark them ready with <code>project review ready</code>, keep plans separate from living documentation, open dependent work as a <code>gh stack</code>, and use Projector's inbox tools.</li><li><b>Review as a merge gate.</b> <code>.projector.toml</code> records that the repository relies on Projector's review, and a new workflow takes the <code>clean</code> label off a pull request when someone pushes a head that no review has signed off.</li><li><b>Site refresh on close.</b> The site workflow also deploys when a pull request closes, so the Reviews page shows it as merged or closed right away.</li></ol>",
+   "It replaces an earlier pull request that refreshed the same section to an older template, whose text told agents never to mark their own draft ready. That earlier text contradicted how the installed Projector starts a review."
+  ],
+  "cards": [
+   {
+    "id": "terms",
+    "title": "Terms",
+    "html": "<ul class=\"tight\"><li><b><code>clean</code> label</b>: the label a Projector review puts on a pull request when its current head has a clean verdict and no open finding.</li><li><b><code>projector/review</code> status</b>: a commit status Projector's review posts on the head it reviewed, <code>success</code> when the head is signed off.</li><li><b><code>pull_request_target</code></b>: a GitHub Actions event that runs the default branch's copy of a workflow for a pull request event, without checking out the pull request's code.</li></ul>"
+   },
+   {
+    "id": "review",
+    "title": "Review so far",
+    "html": "<p>The Projector review of <code>a5e187e</code> is clean, with no finding threads. <code>project check</code> on this head prints <code>Project plans are valid.</code></p>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "config",
+   "title": "Settings and the review gate",
+   "kicker": "The setting that says this repository relies on Projector's review",
+   "intro": [
+    "<code>.projector.toml</code> holds Projector's settings for the repository. It now sets one key, <code>review.require_check = true</code>, which is how <code>project init</code> records the answer to whether the repository relies on Projector alone to sign off a pull request.",
+    "GitHub enforces that choice, not this file: the repository's <code>Projector review</code> ruleset requires the <code>projector/review</code> status on the default branch before a merge. The ruleset already exists and is active."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": ".projector.toml",
+     "note": "New settings file with the one review key.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "<code>review.require_check</code> is a boolean key in Projector 0.9.9's config schema, and the active <code>Projector review</code> ruleset requires <code>projector/review</code> on the default branch, which matches <code>true</code>. Checked against Projector's config source and the repository's rulesets.",
+       "line": 2
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "workflows",
+   "title": "Workflows",
+   "kicker": "Keeping the clean label honest, and redeploying the site on close",
+   "intro": [
+    "Both workflows run on <code>pull_request_target</code>, so GitHub runs the default branch's copy of the file and the pull request's own code never runs. That matters because these jobs hold a token that can write labels or deploy the site.",
+    "<code>projector-clean.yml</code> is new. The <code>clean</code> label signs off only the head a review read, so when someone pushes a new head, the job removes the label unless that head already carries a <code>success</code> <code>projector/review</code> status. It then reads the status again and gives the label back if a review signed the head off in the meantime.",
+    "<code>projector-site.yml</code> gains a <code>closed</code> trigger, so the site rebuilds when a pull request merges or closes. A pull request from a fork skips the deploy and gets a concurrency group of its own, so it can't hold up a real deploy waiting in the <code>pages</code> group."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": ".github/workflows/projector-clean.yml",
+     "note": "New workflow that removes the <code>clean</code> label from a pull request when a new head is pushed.",
+     "checks": [
+      {
+       "kind": "context",
+       "text": "The job runs only when the pull request carried <code>clean</code> at the push, so most pushes start no runner.",
+       "line": 32
+      },
+      {
+       "kind": "verify",
+       "text": "The token gets only <code>pull-requests: write</code> and <code>statuses: read</code>, and no secret is in scope. A run of the same template in Projector's own repository removed a label with these permissions.",
+       "line": 26
+      },
+      {
+       "kind": "context",
+       "text": "The shell receives only the pull request number, the repository name, and a label name filtered to <code>clean</code>, so nothing an outsider types reaches it.",
+       "line": 36
+      }
+     ]
+    },
+    {
+     "path": ".github/workflows/projector-site.yml",
+     "note": "The site now also deploys when a pull request closes.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "The <code>github-pages</code> environment allows deploys only from <code>main</code>, and a <code>pull_request_target</code> run uses the default branch, so the new trigger can deploy. Checked against the environment's branch policy.",
+       "line": 8
+      },
+      {
+       "kind": "context",
+       "text": "A fork's run takes its own <code>fork-&lt;run id&gt;</code> group, and the job-level <code>if</code> skips it, so it neither deploys nor waits in <code>pages</code>.",
+       "line": 17
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "instructions",
+   "title": "Agent instructions",
+   "kicker": "The generated Projector section of AGENTS.md, now at version 31",
+   "intro": [
+    "<code>AGENTS.md</code> is what coding agents read for this repository's rules, and <code>CLAUDE.md</code> is a symlink to it, so both agents see the same text. Projector owns the section between the <code>projector:begin</code> and <code>projector:end</code> markers and rewrites it on <code>project init</code>.",
+    "Version 31 adds rules on plans versus living documentation, on stacked pull requests, on drafts and <code>project review ready</code>, and on Projector's inbox tools. It leaves out the template's iOS paragraphs, since this repository has no iOS app."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "AGENTS.md",
+     "collapsed": false,
+     "note": "The Projector section, regenerated from the current template.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "The section matches Projector 0.9.9's <code>agents-block.md</code> template with <code>docs/projects</code> filled in and the iOS blocks removed. Checked by diffing the two, and <code>project check</code> reports no outdated-instructions warning.",
+       "line": 1
+      },
+      {
+       "kind": "context",
+       "text": "This paragraph replaces the earlier template's rule that agents never mark their own draft ready. Agents now mark a pull request ready with <code>project review ready</code>, which is what starts a repository review.",
+       "line": 62
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

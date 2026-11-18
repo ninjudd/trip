@@ -1,0 +1,244 @@
+diff --git a/.github/workflows/projector-clean.yml b/.github/workflows/projector-clean.yml
+new file mode 100644
+index 0000000..1472e1a
+--- /dev/null
++++ b/.github/workflows/projector-clean.yml
+@@ -0,0 +1,65 @@
++name: Projector clean label
++
++# Written by `project init`. Removes the `clean` label when a commit is
++# pushed, because the label says that Projector's newest review of the current
++# head is clean, and a new head has no review yet. `pull_request_target` gives
++# the token write access on a pull request from a fork; the job never checks
++# out the pull request's code. The job-level `if` skips the job, so no runner
++# starts, unless the pull request carried the label at the push.
++#
++# The event records the labels as they were at the push, and the job can run
++# much later, after a slow queue or as a re-run, which replays the same event.
++# So the step reads the pull request as it is when it runs, and keeps the label
++# when the current head is already signed off: `project init` writes this
++# workflow only where the default branch requires `projector/review`, so a review
++# that signs a head off posts that status as `success` on it. A review can
++# still sign the head off between that read and the removal, so the step reads
++# the status again after it removes the label, and gives a head signed off by
++# then its label back. A push while it gives the label back starts a job whose
++# event lists no label, so the step reads the head once more and takes the
++# label off again when the head moved. The step names the label as the pull
++# request spells it, whatever its case.
++on:
++  pull_request_target:
++    types: [synchronize]
++
++permissions:
++  pull-requests: write
++  statuses: read
++
++jobs:
++  unclean:
++    if: contains(github.event.pull_request.labels.*.name, 'clean')
++    runs-on: ubuntu-latest
++    steps:
++      - run: |
++          status() { gh api "repos/$REPO/commits/$1/status?per_page=100" --jq '.statuses[] | select(.context == "projector/review") | .state'; }
++          now=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha + " " + ([.labels[].name | select(ascii_downcase == "clean")] | first // "")')
++          sha=${now%% *}
++          name=${now#* }
++          if [ -z "$name" ]; then
++            echo "#$PR no longer carries clean"
++            exit 0
++          fi
++          state=$(status "$sha")
++          if [ "$state" = success ]; then
++            echo "kept $name on #$PR, because a review signed off its head ${sha:0:7}"
++            exit 0
++          fi
++          gh pr edit "$PR" --repo "$REPO" --remove-label "$name"
++          sha=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
++          state=$(status "$sha")
++          if [ "$state" = success ]; then
++            gh pr edit "$PR" --repo "$REPO" --add-label "$name"
++            now=$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha')
++            if [ "$now" != "$sha" ]; then
++              gh pr edit "$PR" --repo "$REPO" --remove-label "$name"
++              echo "took $name off #$PR again, because ${now:0:7} was pushed while the step gave it back to ${sha:0:7}"
++              exit 0
++            fi
++            echo "gave $name back to #$PR, because a review signed off its head ${sha:0:7} while the step removed it"
++          fi
++        env:
++          GH_TOKEN: ${{ github.token }}
++          PR: ${{ github.event.pull_request.number }}
++          REPO: ${{ github.repository }}
+diff --git a/.github/workflows/projector-site.yml b/.github/workflows/projector-site.yml
+index 62cec42..7093eb9 100644
+--- a/.github/workflows/projector-site.yml
++++ b/.github/workflows/projector-site.yml
+@@ -5,6 +5,8 @@ on:
+   push:
+     branches: [main]
+     paths: [README.md, 'docs/**', .projector.toml, .github/workflows/projector-site.yml]
++  pull_request_target:
++    types: [closed]
+   workflow_dispatch:
+ permissions:
+   contents: read
+@@ -12,10 +14,11 @@ permissions:
+   pages: write
+   id-token: write
+ concurrency:
+-  group: pages
++  group: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository && format('fork-{0}', github.run_id) || 'pages' }}
+   cancel-in-progress: false
+ jobs:
+   publish:
++    if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository
+     runs-on: ubuntu-latest
+     environment:
+       name: github-pages
+diff --git a/.projector.toml b/.projector.toml
+new file mode 100644
+index 0000000..4173eca
+--- /dev/null
++++ b/.projector.toml
+@@ -0,0 +1,2 @@
++[review]
++require_check = true
+diff --git a/AGENTS.md b/AGENTS.md
+index 84e5ab1..ee58404 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,6 +1,9 @@
+-<!-- projector:begin 1 -->
++<!-- projector:begin 31 -->
+ ## Projector conventions
+ 
++Projector generates this section. To change it, change the template in
++Projector and run `project init`.
++
+ This repository keeps its project plans in Git with
+ [Projector](https://github.com/ninjudd/projector). Read
+ `docs/projects/README.md` before you change a plan. Use the `project` command
+@@ -10,9 +13,22 @@ to find and change projects instead of parsing plan files yourself, and run
+ Write new and substantially revised documentation in the Google developer
+ documentation style: second person, present tense, active voice, sentence-case
+ headings, exact identifiers in code font, and a command or example when it
+-communicates more directly than prose. Keep `docs/` describing the behavior on
+-the current branch, and update it in the change that alters that behavior. An
+-existing document keeps its register until you revise it substantially.
++communicates more directly than prose. Keep the living documentation in
++`docs/` describing the behavior on the current branch, and update it in the
++change that alters that behavior. An existing document keeps its register until
++you revise it substantially.
++
++A plan under `docs/projects` is not living documentation. Update the plan of
++the project you are building as its decisions settle, in the change that
++settles them. Run `project done` in the pull request that carries the last of
++the project's code, so the project is `completed` when that pull request
++merges. Never open a separate pull request just to mark a shipped project
++completed, and do not wait for a release: Projector does not track releases,
++and a project held open for one tends to stay open. A `completed` plan records
++what was decided and built, so leave it as it is, and when later work changes
++behavior it describes, update the living documentation instead. A completed
++plan still records a result: when its outcome deferred a check until after the
++merge, record the check's result in the outcome once it runs.
+ 
+ Write GitHub issues and review comments in the same style. Write a pull request
+ body as prose that explains why the change exists, because a squash merge makes
+@@ -20,6 +36,95 @@ it the commit message. Match the line wrapping already used around a Markdown
+ edit, and do not hard-wrap prose you post to GitHub, because GitHub renders
+ line breaks.
+ 
+-Projector generates this section. To change it, change the template in
+-Projector and run `project init`.
++Open dependent work that is too large to review as one pull request as a
++GitHub stack with `gh stack`, as Projector's `implement` skill describes
++under "Stack dependent work". Fix stacked code on the branch that introduced
++it, and let `gh stack` carry the fix up right away by rebasing every layer
++above, so each layer stays on the current head of the one below and the
++stack can merge as a unit. Chain pull requests by base branch, and update
++them by merging, only where `gh stack` is unavailable.
++
++### Projector skills
++
++Follow these rules only when the Projector plugin is installed, which you can
++tell because its skills, such as `implement`, are available to you. Without
++the plugin, the rest of this section still applies.
++
++Build each change you will open a pull request for with the `implement`
++skill, `/projector:implement` in Claude Code or `$implement` in Codex,
++whether it follows a plan under `docs/projects` or only a description,
++however small. Its hand-over opens the pull request and subscribes the
++session to fix it, so review findings are fixed as they arrive rather than
++waiting for someone to notice that nothing is fixing them. Write each plan
++with the `spec` skill, whose hand-over opens the plan's pull request the
++same way.
++
++Open every pull request as a draft, each layer of a stack included, and mark
++it ready with `project review ready` once your work on it is done. A draft
++says its author is still working, so marking it ready is what asks for its
++review. When the hand-over asks the person to test the change or to review
++a plan, keep it a draft until they answer that it looks good. Ready is not
++signed off: a clean review of the head labels the pull request `clean`, and
++only that is the sign-off.
++
++Talk with the person in the conversation as usual. When Projector's `ask`,
++`tell`, and `request` tools are available, also post anything they must not
++miss to the inbox, a decision with `ask`, news with `tell`, and work only
++they can do with `request`, and say it in your reply too. Always post it
++when it sits among a lot of other text, such as a decision in the middle of
++a long report, where the person could skim past it. Post news they need to
++act on, such as a failure that needs them, and anything that comes up while
++they are away. Leave out what they already see elsewhere, such as a pull
++request's state, which the panel lists. An item stays above their prompt
++until they answer or dismiss it, so keep the inbox for what matters, not as
++a log of everything you did.
++
++Post a request when the next step needs the person to do something you
++cannot do yourself, such as running a command you are not allowed to run,
++signing in to a service, or checking a change on a device you cannot reach,
++like their phone. Ask a question instead when you need their decision, and
++do the work yourself whenever you can. Write the request as what they should
++do, and put the steps in its detail as a numbered list, each step with what
++they should see, so their notes can name the step that failed. Post one
++request for the whole hand-off rather than a question and a notice for its
++parts, and keep working on anything it does not block. Give the request the
++options they choose from when they finish, each a short answer that fits the
++work, such as `Looks good` and `Some feedback` for a test; each marks it
++done, and they can always decline it instead. Give the request a start
++action only when you must prepare something before they can begin, such as
++installing a build on their phone, and leave it out otherwise. Do the slow
++part before you post the request, such as building the app, so the start
++action only installs and launches it and they are not left waiting once they
++press start. They press start when they are ready, and a message that starts
++`STARTED` arrives quoting the start action. Do the start action only then,
++do exactly what that message quotes and nothing more, and mark the request
++ready with the `ready` tool, or blocked with the `block` tool and what they
++should do first, such as unlocking the phone.
++
++When the person picks one of a question's options, the answer reaches you as
++a message that starts `ANSWER`. When they finish a request, its outcome
++reaches you as their prompt, quoting the request with the option they chose
++and any notes under it, or as a message that starts `DONE` and names the
++option. When they decline it, a message that starts `DECLINED` arrives. Read
++the option and the notes, and act on what they say before you go on, even
++when the request is done. A declined request is the person's no, so do not
++post it again unless they ask. When they reply to a question or a request
++instead, answer what they asked. Then withdraw the item with the `withdraw`
++tool if the reply settles it, revise it with the `revise` tool if the reply
++shows it was unclear or the choice or the work has changed, or leave it open
++while it still needs them. When a message that starts `DISCUSS` arrives, the
++person wrote to you about that item from outside the conversation. Answer
++it in the conversation, where they read your reply, then withdraw, revise,
++or leave the item open, as for a reply. A `DISCUSS` about a pull request or
++about the session needs no inbox action. When a message that starts
++`UNCLEAR` arrives, the person did not understand that item, so revise it
++with the `revise` tool to explain it more simply or to add the context they
++lack, keeping its number, rather than posting it again. Each time the person writes to you, also look
++over the other items you posted that are still open, and withdraw any that
++no longer need them, such as news that has gone stale. When the person says
++they dismissed or declined an item by mistake, restore it with the `restore`
++tool or `project inbox restore` rather than posting it again. Name an item
++to the tools by the number `ask`, `tell`, or `request` returned. The panel
++never shows that number, so in what you write to the person, name an item by
++what it asks, tells, or requests.
+ <!-- projector:end -->
