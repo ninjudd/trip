@@ -1,0 +1,15 @@
+diff --git a/README.md b/README.md
+index ddd8b7a..49302a5 100644
+--- a/README.md
++++ b/README.md
+@@ -162,6 +162,10 @@ TRIP_DETACH_KEY='^-'    # Ctrl+dash (sent by terminals as ^_, 0x1f)
+ TRIP_DETACH_KEY=none    # no detach key; close the terminal to detach
+ ```
+ 
++Ctrl+- doesn't reach trip in every terminal. On Linux, Ghostty, GNOME
++Terminal, Konsole, Alacritty, and WezTerm use it to shrink the font, so
++pick another key there, such as `'^]'`.
++
+ Whatever key you pick stops reaching programs inside the session — the
+ default Ctrl-\ sacrifices only SIGQUIT, which almost nothing wants.
+ 

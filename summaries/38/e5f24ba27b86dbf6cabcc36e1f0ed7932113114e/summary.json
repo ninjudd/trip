@@ -1,0 +1,51 @@
+{
+ "version": 1,
+ "name": "Detach key terminal note",
+ "project": "",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 38,
+  "title": "Note that Linux terminals take Ctrl+- before trip sees it",
+  "head": "e5f24ba27b86dbf6cabcc36e1f0ed7932113114e",
+  "headRef": "detach-key-linux-note",
+  "base": "2c6f622f65a16643b7ed977843fa133058688187",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "trip runs terminal sessions that keep going after you detach from them. You detach by pressing the <b>detach key</b>, Ctrl-\\ by default, and you can pick another key with the <code>TRIP_DETACH_KEY</code> environment variable. The README lists a few example values, one of which is <code>'^-'</code>, Ctrl+dash.",
+   "The problem is that many terminals use Ctrl+- themselves, to shrink the font, and never send the keystroke on to the program running inside them. Someone who sets <code>TRIP_DETACH_KEY='^-'</code> in such a terminal sees the font shrink and the session stay attached, with nothing saying why.",
+   "This pull request adds one short paragraph under the list of examples. It names the Linux terminals that take Ctrl+-, and suggests <code>'^]'</code>, Ctrl-], instead, the same key the README's mosh section already recommends. The <code>'^-'</code> example stays, because Ghostty, iTerm2, and Terminal on macOS use Cmd+- for the font and pass Ctrl+- through."
+  ],
+  "cards": []
+ },
+ "groups": [
+  {
+   "id": "readme",
+   "title": "Warning about Ctrl+- in the README",
+   "kicker": "A note under the detach key examples",
+   "intro": [
+    "The new paragraph sits right after the code block of <code>TRIP_DETACH_KEY</code> examples, so a reader meets the warning where the <code>'^-'</code> value is first offered. Before this change, the only warning was further down, in the mosh section, where it explains why the mosh example uses <code>'^]'</code>."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "README.md",
+     "note": "Adds a paragraph under the <code>TRIP_DETACH_KEY</code> examples saying that common Linux terminals take Ctrl+- and suggesting <code>'^]'</code>.",
+     "collapsed": false,
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "Ghostty's default keybindings on macOS bind <code>super+-</code> (Cmd+-) to <code>decrease_font_size</code> and bind neither <code>ctrl+-</code> nor <code>ctrl+]</code>, checked with <code>ghostty +list-keybinds --default</code>. That supports keeping the <code>'^-'</code> example for macOS."
+      },
+      {
+       "kind": "context",
+       "text": "WezTerm's documented defaults bind <code>CTRL -</code> to <code>DecreaseFontSize</code> on every platform, not only Linux, so WezTerm on macOS also takes Ctrl+-. The review lists this as a suggestion: the note could say so, rather than read as Linux-only.",
+       "line": 166
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
