@@ -1,0 +1,75 @@
+{
+ "version": 1,
+ "name": "Trip 0.2.2 release",
+ "project": "",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 41,
+  "title": "Release 0.2.2",
+  "head": "4c6b1b25758bce0e17af83731681bc5c9a7c5f70",
+  "headRef": "release/v0.2.2",
+  "base": "9067a7541da1e8a3bc072b515f53e97b9c274e08",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "trip ships through a two-step Release workflow. Someone starts the workflow by hand and picks which part of the version to raise. The workflow then opens a release pull request, like this one, that changes only the version. Merging that pull request is the decision to ship.",
+   "This pull request raises trip's version from 0.2.1 to 0.2.2. It changes one line in <code>Cargo.toml</code> and the matching line in <code>Cargo.lock</code>, and nothing else.",
+   "When it merges, the workflow's publish job runs <code>.github/scripts/release.py tag</code> on the merge commit. That command does three things in order:",
+   "<ol><li><b>Tags the release.</b> It pushes the <code>v0.2.2</code> tag, which never moves once pushed.</li><li><b>Publishes the GitHub release.</b> It creates the release for <code>v0.2.2</code> with notes generated from the merged pull requests.</li><li><b>Moves the major tag.</b> It moves <code>v0</code> to the new release last. The installer follows <code>v0</code>, and <code>trip upgrade</code> reads the newest GitHub release.</li></ol>"
+  ],
+  "cards": [
+   {
+    "id": "checked",
+    "title": "What the review checked",
+    "html": "<ul class=\"tight\"><li>0.2.2 is above every <code>vX.Y.Z</code> tag on the repository. The tags are <code>v0.2.0</code> and <code>v0.2.1</code>.</li><li>The <code>trip</code> entry in <code>Cargo.lock</code> names the same version as <code>Cargo.toml</code>.</li><li>The commit sits directly on the current head of <code>main</code> and changes only the two version files.</li><li>The Check workflow passed on this exact head, in the run the Release workflow dispatched.</li></ul>"
+   },
+   {
+    "id": "checks-list",
+    "title": "Why the checks list looks short",
+    "html": "<p>The pull request's checks list shows only the Vercel checks. GitHub doesn't attach a run started with <code>workflow_dispatch</code> to a pull request's checks, so the dispatched Check run's <code>check</code> and <code>msrv</code> jobs appear only on the commit. Both passed. A second Check run, started by the <code>pull_request</code> event, is waiting for approval and hasn't run.</p>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "version",
+   "title": "The version bump",
+   "kicker": "The two files that carry trip's version",
+   "intro": [
+    "The release script treats <code>Cargo.toml</code> and <code>Cargo.lock</code> as trip's two <i>version files</i>. It refuses a release commit that changes any other file, or that changes either file beyond its version line.",
+    "<code>Cargo.toml</code> declares the version. <code>Cargo.lock</code> records the same version in its entry for the <code>trip</code> package, and <code>cargo build --locked</code> fails when the two disagree."
+   ],
+   "checks": [
+    {
+     "kind": "verify",
+     "text": "The diff from <code>main</code> changes exactly these two files, one line each, and each changed line is the version. I read both files at the head and compared them with the base."
+    }
+   ],
+   "files": [
+    {
+     "path": "Cargo.toml",
+     "note": "The package version moves from 0.2.1 to 0.2.2.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "0.2.2 is above the newest release tag, <code>v0.2.1</code>, so the publish job's version check accepts it. I listed the repository's tags with <code>git ls-remote --tags</code>.",
+       "line": 3
+      }
+     ]
+    },
+    {
+     "path": "Cargo.lock",
+     "note": "The lockfile's entry for the <code>trip</code> package follows the new version.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "This is the lockfile's only <code>trip</code> entry, and its version matches <code>Cargo.toml</code>.",
+       "line": 548
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,25 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 336bb55..f2a32c6 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -545,7 +545,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "trip"
+-version = "0.2.1"
++version = "0.2.2"
+ dependencies = [
+  "anyhow",
+  "chrono",
+diff --git a/Cargo.toml b/Cargo.toml
+index f199109..72c8ffd 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,6 +1,6 @@
+ [package]
+ name = "trip"
+-version = "0.2.1"
++version = "0.2.2"
+ edition = "2021"
+ rust-version = "1.85"
+ description = "Persistent terminal sessions"
