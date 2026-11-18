@@ -1,8 +1,14 @@
 name: Check
 on:
+  # Nothing here reads the docs or the site, so a change that touches only
+  # them skips the run. A change that also touches anything else runs it all.
+  # This works only while no ruleset requires these checks: a required check
+  # on a skipped run waits forever.
   pull_request:
+    paths-ignore: ['**/*.md', 'docs/**', 'site/**', LICENSE]
   push:
     branches: [main]
+    paths-ignore: ['**/*.md', 'docs/**', 'site/**', LICENSE]
   # GitHub starts no workflow for a pull request that a workflow's own token
   # opened, and workflow_dispatch is the exception it allows, so a release
   # workflow can dispatch this on the release branch it pushes.
