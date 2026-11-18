@@ -435,6 +435,64 @@ class TagTests(unittest.TestCase):
         self.assertEqual(["v0", "v0.5.0"], self.remote_tags())
 
 
+class CheckVersionTests(unittest.TestCase):
+    """The propose job's check, which refuses a bumped version before the release pull request opens."""
+
+    def setUp(self) -> None:
+        self.remote, self.repo = released_clone(temporary_directory(self))
+
+    def push_tags(self, *names: str) -> None:
+        for name in names:
+            run(self.repo, "git", "tag", "-a", name, "-m", name)
+            run(self.repo, "git", "push", "--quiet", "origin", f"refs/tags/{name}")
+
+    def check(self, version: str) -> tuple[int, str, str]:
+        write_version_files(self.repo, version)
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = release.main(["check-version"], root=self.repo)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_refuses_a_bump_below_the_newest_release(self) -> None:
+        # After a revert from 0.6.0 to 0.5.0, a patch bump proposes 0.5.1.
+        self.push_tags("v0.5.0", "v0.6.0", "v0")
+        code, _, err = self.check("0.5.1")
+        self.assertEqual(1, code)
+        self.assertEqual("release: v0.6.0 is already released, so 0.5.1 cannot be; set a version above 0.6.0 "
+                         "with .github/scripts/release.py set\n", err)
+
+    def test_refuses_a_bump_to_a_version_already_tagged(self) -> None:
+        # After the same revert, a minor bump proposes 0.6.0 again.
+        self.push_tags("v0.5.0", "v0.6.0", "v0")
+        code, _, err = self.check("0.6.0")
+        self.assertEqual(1, code)
+        self.assertEqual("release: v0.6.0 is already released; set a version above 0.6.0 "
+                         "with .github/scripts/release.py set\n", err)
+
+    def test_accepts_a_bump_above_every_release(self) -> None:
+        code, out, _ = self.check("0.5.0")
+        self.assertEqual((0, "no release is tagged yet, so 0.5.0 can be the first\n"), (code, out))
+        # v0 and other tags that are not vX.Y.Z name no release.
+        self.push_tags("v0.5.0", "v0", "v0.6.0-rc1")
+        code, out, _ = self.check("0.5.1")
+        self.assertEqual((0, "0.5.1 is above the newest release, v0.5.0\n"), (code, out))
+
+    def test_reads_the_tags_the_remote_has_not_the_checkouts(self) -> None:
+        run(self.repo, "git", "tag", "-a", "v0.9.0", "-m", "local only")
+        self.assertEqual(0, self.check("0.5.1")[0])
+        self.push_tags("v0.6.0")
+        self.assertEqual(1, self.check("0.5.1")[0])
+
+
+class WorkflowTests(unittest.TestCase):
+    def test_the_propose_job_checks_the_version_before_it_commits_or_opens_the_pull_request(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+        steps = ["release.py bump", "release.py check-version", "git commit", "git push", "gh pr create"]
+        positions = [workflow.find(step) for step in steps]
+        self.assertNotIn(-1, positions, dict(zip(steps, positions)))
+        self.assertEqual(sorted(positions), positions)
+
+
 class RepoSlugTests(unittest.TestCase):
     def test_reads_github_remotes(self) -> None:
         for url in ("git@github.com:o/r.git", "ssh://git@github.com/o/r.git", "https://github.com/o/r.git",
