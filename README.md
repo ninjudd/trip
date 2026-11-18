@@ -163,8 +163,8 @@ TRIP_DETACH_KEY=none    # no detach key; close the terminal to detach
 ```
 
 Ctrl+- doesn't reach trip in every terminal. On Linux, Ghostty, GNOME
-Terminal, Konsole, Alacritty, and WezTerm use it to shrink the font, so
-pick another key there, such as `'^]'`.
+Terminal, Konsole, Alacritty, and WezTerm use it to shrink the font, and
+WezTerm does on macOS too, so pick another key there, such as `'^]'`.
 
 Whatever key you pick stops reaching programs inside the session — the
 default Ctrl-\ sacrifices only SIGQUIT, which almost nothing wants.
