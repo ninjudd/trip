@@ -1,0 +1,133 @@
+{
+ "version": 1,
+ "name": "Early release version check",
+ "project": "releases",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 37,
+  "title": "Refuse a released or older version before opening the release pull request",
+  "head": "ec3e7e455747511cc54444a87d000596b2230898",
+  "headRef": "release-propose-tags",
+  "base": "2c6f622f65a16643b7ed977843fa133058688187",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "trip releases through a GitHub Actions workflow, <code>release.yml</code>, with two jobs. You start the <b>propose</b> job by hand with <code>patch</code>, <code>minor</code>, or <code>major</code>. It raises the version in <code>Cargo.toml</code> and <code>Cargo.lock</code> on a <code>release/vX.Y.Z</code> branch and opens a pull request. When that pull request merges, the <b>publish</b> job tags <code>vX.Y.Z</code>, creates the GitHub release, and moves <code>v0</code>, the tag the installer follows.",
+   "The problem is a revert. Reverting a release pull request sets <code>main</code> back to the older version, say from <code>0.6.0</code> to <code>0.5.0</code>. The next propose run then bumps from <code>0.5.0</code>: a patch bump proposes <code>0.5.1</code>, below the released <code>0.6.0</code>, and a minor bump proposes <code>0.6.0</code>, which is already released. Before this change the propose job opened that pull request anyway, its checks passed, and only the publish job refused it, after someone had merged it. That left <code>main</code> on a version that could not be released.",
+   "This change adds a <code>check-version</code> command to <code>.github/scripts/release.py</code> and runs it in the propose job right after the bump, before anything is committed or pushed. It reads the remote's <code>vX.Y.Z</code> tags and refuses a version at or below the newest one, with a message that says to set a higher version with <code>release.py set</code>. The comparison lives in one helper, <code>check_unreleased</code>, which the publish job's <code>tag</code> command now calls too, so the two checks cannot drift apart."
+  ],
+  "cards": [
+   {
+    "id": "terms",
+    "title": "Terms",
+    "html": "<ul class=\"tight\"><li><b>Released version</b>: one that has a <code>vX.Y.Z</code> tag on origin. <code>v0</code> and tags such as <code>v0.6.0-rc1</code> do not count.</li><li><b>Newest release</b>: the highest of those versions by number, not by date.</li><li><b>Propose job</b>: the hand-started job that opens the release pull request.</li><li><b>Publish job</b>: the job that runs on a push to <code>main</code> that changes <code>Cargo.toml</code>, and tags and publishes the release.</li></ul>"
+   },
+   {
+    "id": "review",
+    "title": "Review so far",
+    "html": "<p>One Projector review of <code>ec3e7e4</code>: clean, no finding threads, and one suggestion to reword a comment in <code>check_unreleased</code> whose reason predates this change.</p>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "script",
+   "title": "The version check in release.py",
+   "kicker": "A new check-version command and the helper it shares with tag",
+   "intro": [
+    "<code>release.py</code> is the script both workflow jobs call. This group adds the check itself. <code>check_unreleased</code> takes a version and the list of released versions, and raises <code>ReleaseError</code> when the version is at or below the newest. <code>check_version</code> reads the version from the checkout's files and the released versions from origin, and calls it. <code>main</code> wires it up as the <code>check-version</code> subcommand, which prints a one-line result or exits 1 with a <code>release:</code> message.",
+    "The publish job's <code>merged</code> function had the same comparison inline. It now calls <code>check_unreleased</code>, so its refusal gains the same <code>release.py set</code> hint."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": ".github/scripts/release.py",
+     "note": "Adds <code>check_unreleased</code> and <code>check_version</code>, the <code>check-version</code> subcommand, and docstring lines that describe it; <code>merged</code> now calls the shared helper.",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 224,
+       "text": "The comparison is now at-or-below, where <code>merged</code> used strictly-below. <code>merged</code> calls it only when the version's own tag is absent from origin, so it cannot be equal to a released version there, and <code>tag</code>'s behavior is unchanged. Checked by reading <code>merged</code> and by running <code>TagTests</code>, which pass."
+      },
+      {
+       "kind": "context",
+       "line": 225,
+       "text": "This comment moved here from <code>merged</code> unchanged. Its reason predates the change and is weaker than it reads, since <code>tag</code> already leaves the major tag on a newer release (line 318). The review lists rewording it as a suggestion."
+      },
+      {
+       "kind": "verify",
+       "line": 235,
+       "text": "<code>tagged_versions</code> reads origin with <code>git ls-remote --tags --refs</code>, so the propose job's shallow checkout needs no tag fetch, and a tag that exists only locally does not count. <code>test_reads_the_tags_the_remote_has_not_the_checkouts</code> covers the second point."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "workflow",
+   "title": "The propose job runs the check",
+   "kicker": "Where the check sits in release.yml, and what the generated pull request says",
+   "intro": [
+    "The propose job's run step already starts with <code>set -euo pipefail</code>, so any command that exits non-zero stops it. The new line runs <code>check-version</code> right after <code>bump</code> writes the new version, and before the job switches to the release branch, commits, pushes, or opens the pull request. A refused version therefore leaves nothing on GitHub; the bumped files on the runner are discarded with it."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": ".github/workflows/release.yml",
+     "note": "Runs <code>check-version</code> after <code>bump</code>, and updates the header comment and the body of the pull request the job opens.",
+     "checks": [
+      {
+       "kind": "verify",
+       "line": 50,
+       "text": "Placed before <code>git switch</code>, <code>git commit</code>, <code>git push</code>, and <code>gh pr create</code>. <code>WorkflowTests</code> fails when this line is removed, which the review checked by replacing it and running the test."
+      },
+      {
+       "kind": "context",
+       "line": 49,
+       "text": "The comment's claim holds: a minor bump back to a released <code>0.6.0</code> reaches <code>check_tagged</code> in the publish job, which refuses it because <code>0.5.0</code> sits between the tag and the head in history."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "tests",
+   "title": "Tests",
+   "kicker": "CheckVersionTests against a temporary origin, and a workflow ordering test",
+   "intro": [
+    "<code>CheckVersionTests</code> builds a temporary bare repository that stands in for origin, pushes tags to it, writes a version into the clone's files, and runs <code>check-version</code> through <code>main</code>, asserting the exit code and the exact output. The cases are the two revert outcomes (<code>0.5.1</code> and <code>0.6.0</code> under <code>v0.6.0</code>), a version above every release and the first release, tags that name no release, and a tag that exists only locally. <code>WorkflowTests</code> reads <code>release.yml</code> and checks that <code>bump</code>, <code>check-version</code>, the commit, the push, and <code>gh pr create</code> appear in that order."
+   ],
+   "checks": [
+    {
+     "kind": "verify",
+     "text": "All 29 tests in <code>tests/release_test.py</code> pass. Weakening the check to strictly-below fails <code>test_refuses_a_bump_to_a_version_already_tagged</code>."
+    }
+   ],
+   "files": [
+    {
+     "path": "tests/release_test.py"
+    }
+   ]
+  },
+  {
+   "id": "docs",
+   "title": "README",
+   "kicker": "The Releasing section describes the earlier refusal and how to recover",
+   "intro": [
+    "The README's Releasing section now says the workflow refuses an already-released or older version before it opens the pull request, and what to do then: write a higher version with <code>release.py set X.Y.Z</code> and open that change as a pull request yourself. Merging it publishes that version, because the publish job releases any push that raises the version."
+   ],
+   "checks": [
+    {
+     "kind": "context",
+     "text": "The completed <code>releases</code> plan still says the propose job would open a pull request the publish job refuses. A completed plan is a record of what was built, so the README is the document this change keeps current."
+    }
+   ],
+   "files": [
+    {
+     "path": "README.md"
+    }
+   ]
+  }
+ ]
+}

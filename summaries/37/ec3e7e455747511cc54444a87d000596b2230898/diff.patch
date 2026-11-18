@@ -1,0 +1,218 @@
+diff --git a/.github/scripts/release.py b/.github/scripts/release.py
+index 7fd8792..ec186be 100755
+--- a/.github/scripts/release.py
++++ b/.github/scripts/release.py
+@@ -3,22 +3,26 @@
+ 
+     .github/scripts/release.py bump patch|minor|major  raise one part of the version, write it, and print it
+     .github/scripts/release.py set X.Y.Z               write an exact version instead
++    .github/scripts/release.py check-version [--remote NAME]
++                                                       refuse a version a vX.Y.Z tag names, or one below the newest
+     .github/scripts/release.py check-commit [REV]      refuse a commit that changes anything but the version
+     .github/scripts/release.py tag [--commit REV] [--since REV]
+                                                        tag vX.Y.Z, publish its GitHub release, and move v0
+ 
+ The Release workflow runs these. Started by hand with patch, minor, or major,
+-it runs `bump` and `check-commit` on a release/vX.Y.Z branch and opens the
+-release pull request. When that pull request merges, it runs `tag` on the
+-merge commit, with --since naming main's previous head, so a push that
+-leaves the version alone or lowers it, as a revert does, releases nothing.
+-`tag` also refuses a new version below the newest vX.Y.Z tag, and never moves
+-the major tag back to an older version. `tag` pushes the immutable vX.Y.Z
+-tag, creates the GitHub release for it with generated notes (--no-release
+-skips that step), and then force-moves the major tag that the installer
+-follows. The major tag moves last because `trip upgrade` reads the newest
+-GitHub release, so once the major tag names a release, `trip upgrade`
+-already finds that release.
++it runs `bump` and `check-version`, then `check-commit` on a release/vX.Y.Z
++branch, and opens the release pull request. `check-version` refuses a version
++that is already released or below the newest release, as a bump after a
++revert would propose, before the pull request opens. When that pull request
++merges, it runs `tag` on the merge commit, with --since naming main's
++previous head, so a push that leaves the version alone or lowers it, as a
++revert does, releases nothing. `tag` also refuses a new version below the
++newest vX.Y.Z tag, and never moves the major tag back to an older version.
++`tag` pushes the immutable vX.Y.Z tag, creates the GitHub release for it with
++generated notes (--no-release skips that step), and then force-moves the
++major tag that the installer follows. The major tag moves last because
++`trip upgrade` reads the newest GitHub release, so once the major tag names a
++release, `trip upgrade` already finds that release.
+ 
+ A version is released once its tag and the major tag name the same commit and
+ its GitHub release exists. `tag` does only the steps the remote lacks, in that
+@@ -214,6 +218,26 @@ def tagged_versions(root: Path, remote: str) -> list[str]:
+     return found
+ 
+ 
++def check_unreleased(version: str, tagged: list[str]) -> str | None:
++    """Refuse a version at or below the newest of the tagged versions, and return that newest one."""
++    newest = max(tagged, key=parse, default=None)
++    if newest is not None and parse(version) <= parse(newest):
++        # A version below a released one would move the major tag back to older code.
++        so = "" if version == newest else f", so {version} cannot be"
++        raise ReleaseError(f"v{newest} is already released{so}; set a version above {newest} "
++                           "with .github/scripts/release.py set")
++    return newest
++
++
++def check_version(root: Path, remote: str = "origin") -> str:
++    """Refuse the checkout's version unless it is above every vX.Y.Z tag on the remote."""
++    version = current(reader(root))
++    newest = check_unreleased(version, tagged_versions(root, remote))
++    if newest is None:
++        return f"no release is tagged yet, so {version} can be the first"
++    return f"{version} is above the newest release, v{newest}"
++
++
+ def is_ancestor(root: Path, commit: str, head: str) -> bool:
+     return subprocess.run(["git", "merge-base", "--is-ancestor", commit, head], cwd=root,
+                           capture_output=True).returncode == 0
+@@ -255,11 +279,7 @@ def merged(root: Path, remote: str, branch: str, commit: str | None) -> Merged:
+     if name in tags:
+         check_tagged(root, head, version, release_commit)
+     else:
+-        # A version below a released one would move the major tag back to older code.
+-        newest = max(tagged_versions(root, remote), key=parse, default=None)
+-        if newest is not None and parse(newest) > parse(version):
+-            raise ReleaseError(f"v{newest} is already released, so {version} cannot be; "
+-                               f"set a version above {newest}")
++        check_unreleased(version, tagged_versions(root, remote))
+     major_version = version_at(root, tags[major]) if major in tags else None
+     return Merged(version, name, major, release_commit, tagged=name in tags,
+                   major_moved=tags.get(major) == release_commit, major_version=major_version)
+@@ -317,6 +337,8 @@ def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
+     s.add_argument("version")
+     b = sub.add_parser("bump", help="raise the patch, minor, or major number and print the new version")
+     b.add_argument("part", choices=("patch", "minor", "major"))
++    v = sub.add_parser("check-version", help="refuse a version a vX.Y.Z tag names, or one below the newest")
++    v.add_argument("--remote", default="origin")
+     c = sub.add_parser("check-commit", help="refuse a commit that changes anything but the version")
+     c.add_argument("rev", nargs="?", default="HEAD")
+     t = sub.add_parser("tag", help="do the release steps the remote lacks: the version tag, the GitHub release, the major tag")
+@@ -332,6 +354,8 @@ def main(argv: list[str] | None = None, root: Path = ROOT) -> int:
+             print(f"set {args.version} in Cargo.toml and Cargo.lock")
+         elif args.command == "bump":
+             print(bump(root, args.part))
++        elif args.command == "check-version":
++            print(check_version(root, args.remote))
+         elif args.command == "check-commit":
+             print(f"the release commit changes only the version, to {check_commit(root, args.rev)}")
+         else:
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index d31d38a..8898737 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -1,8 +1,9 @@
+ name: Release
+ # Start a release by hand: choose patch, minor, or major, and the propose job
+-# opens a pull request that raises the version. Merging it is the decision to
+-# ship; the publish job then tags the merged version, creates the GitHub
+-# release, and moves the major tag last.
++# opens a pull request that raises the version, unless that version is already
++# released or below the newest release. Merging it is the decision to ship; the
++# publish job then tags the merged version, creates the GitHub release, and
++# moves the major tag last.
+ on:
+   workflow_dispatch:
+     inputs:
+@@ -44,6 +45,9 @@ jobs:
+             exit 1
+           fi
+           version=$(python3 .github/scripts/release.py bump "$BUMP")
++          # After a revert, the bump can name a released version or one below the
++          # newest release. The publish job would refuse it only after the merge.
++          python3 .github/scripts/release.py check-version
+           branch="release/v$version"
+           git config user.name "github-actions[bot]"
+           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+@@ -58,7 +62,7 @@ jobs:
+ 
+           ## Testing
+ 
+-          The Release workflow ran \`python3 .github/scripts/release.py bump $BUMP\` from the repository root, which printed \`$version\` and wrote it to both version files, and \`python3 .github/scripts/release.py check-commit HEAD\`, which refuses a commit that changes anything but the version. It then dispatched the Check workflow on this branch, and its checks appear on this pull request; \`cargo build --locked\` there fails if the two files disagree. After the merge, the publish job runs \`python3 .github/scripts/release.py tag\`. A failure there names the step that failed, and re-running the failed job finishes the release.
++          The Release workflow ran \`python3 .github/scripts/release.py bump $BUMP\` from the repository root, which printed \`$version\` and wrote it to both version files, \`python3 .github/scripts/release.py check-version\`, which refuses a version that origin's \`vX.Y.Z\` tags already name or exceed, and \`python3 .github/scripts/release.py check-commit HEAD\`, which refuses a commit that changes anything but the version. It then dispatched the Check workflow on this branch, and its checks appear on this pull request; \`cargo build --locked\` there fails if the two files disagree. After the merge, the publish job runs \`python3 .github/scripts/release.py tag\`. A failure there names the step that failed, and re-running the failed job finishes the release.
+           EOF
+           # A pull request someone opened by hand from the branch after a failed run
+           # already carries the force-pushed commit.
+diff --git a/README.md b/README.md
+index ddd8b7a..6cafab4 100644
+--- a/README.md
++++ b/README.md
+@@ -447,7 +447,7 @@ A release is a version-only pull request that a workflow opens for you. Start it
+ gh workflow run release.yml -f bump=minor
+ ```
+ 
+-The Release workflow raises the version in `Cargo.toml` and `Cargo.lock` on a `release/vX.Y.Z` branch, refuses the commit if it changes anything else, opens the pull request, and runs the Check workflow on it. Merging that pull request is the decision to ship: the workflow then tags `vX.Y.Z` on the merge commit, creates the GitHub release with generated notes, and moves `v0`, the tag the installer serves, to it last. If that publish job fails partway, re-run it, and it does only the steps still missing. A merge that changes `Cargo.toml` without raising the version releases nothing, so reverting a release pull request leaves `v0` where it was. The workflow refuses a new version below the newest release and never moves `v0` back to an older one.
++The Release workflow raises the version in `Cargo.toml` and `Cargo.lock` on a `release/vX.Y.Z` branch, refuses the commit if it changes anything else, opens the pull request, and runs the Check workflow on it. Merging that pull request is the decision to ship: the workflow then tags `vX.Y.Z` on the merge commit, creates the GitHub release with generated notes, and moves `v0`, the tag the installer serves, to it last. If that publish job fails partway, re-run it, and it does only the steps still missing. A merge that changes `Cargo.toml` without raising the version releases nothing, so reverting a release pull request leaves `v0` where it was. The workflow never moves `v0` back to an older release, and it refuses a version that is already released or below the newest release before it opens the pull request. When a bump would propose such a version, as it can after a revert, write a version above the newest release with `.github/scripts/release.py set X.Y.Z` and open that change as a pull request yourself; merging it publishes that version.
+ 
+ The workflow opens the pull request with its own token, which needs **Allow GitHub Actions to create and approve pull requests** turned on under the repository's **Settings > Actions > General**. `.github/scripts/release.py` does the work, and `python3 tests/release_test.py` tests it.
+ 
+diff --git a/tests/release_test.py b/tests/release_test.py
+index 3727c14..2f78788 100755
+--- a/tests/release_test.py
++++ b/tests/release_test.py
+@@ -435,6 +435,64 @@ def test_reads_the_version_from_the_remote_branch_not_the_checkout(self) -> None
+         self.assertEqual(["v0", "v0.5.0"], self.remote_tags())
+ 
+ 
++class CheckVersionTests(unittest.TestCase):
++    """The propose job's check, which refuses a bumped version before the release pull request opens."""
++
++    def setUp(self) -> None:
++        self.remote, self.repo = released_clone(temporary_directory(self))
++
++    def push_tags(self, *names: str) -> None:
++        for name in names:
++            run(self.repo, "git", "tag", "-a", name, "-m", name)
++            run(self.repo, "git", "push", "--quiet", "origin", f"refs/tags/{name}")
++
++    def check(self, version: str) -> tuple[int, str, str]:
++        write_version_files(self.repo, version)
++        out, err = io.StringIO(), io.StringIO()
++        with redirect_stdout(out), redirect_stderr(err):
++            code = release.main(["check-version"], root=self.repo)
++        return code, out.getvalue(), err.getvalue()
++
++    def test_refuses_a_bump_below_the_newest_release(self) -> None:
++        # After a revert from 0.6.0 to 0.5.0, a patch bump proposes 0.5.1.
++        self.push_tags("v0.5.0", "v0.6.0", "v0")
++        code, _, err = self.check("0.5.1")
++        self.assertEqual(1, code)
++        self.assertEqual("release: v0.6.0 is already released, so 0.5.1 cannot be; set a version above 0.6.0 "
++                         "with .github/scripts/release.py set\n", err)
++
++    def test_refuses_a_bump_to_a_version_already_tagged(self) -> None:
++        # After the same revert, a minor bump proposes 0.6.0 again.
++        self.push_tags("v0.5.0", "v0.6.0", "v0")
++        code, _, err = self.check("0.6.0")
++        self.assertEqual(1, code)
++        self.assertEqual("release: v0.6.0 is already released; set a version above 0.6.0 "
++                         "with .github/scripts/release.py set\n", err)
++
++    def test_accepts_a_bump_above_every_release(self) -> None:
++        code, out, _ = self.check("0.5.0")
++        self.assertEqual((0, "no release is tagged yet, so 0.5.0 can be the first\n"), (code, out))
++        # v0 and other tags that are not vX.Y.Z name no release.
++        self.push_tags("v0.5.0", "v0", "v0.6.0-rc1")
++        code, out, _ = self.check("0.5.1")
++        self.assertEqual((0, "0.5.1 is above the newest release, v0.5.0\n"), (code, out))
++
++    def test_reads_the_tags_the_remote_has_not_the_checkouts(self) -> None:
++        run(self.repo, "git", "tag", "-a", "v0.9.0", "-m", "local only")
++        self.assertEqual(0, self.check("0.5.1")[0])
++        self.push_tags("v0.6.0")
++        self.assertEqual(1, self.check("0.5.1")[0])
++
++
++class WorkflowTests(unittest.TestCase):
++    def test_the_propose_job_checks_the_version_before_it_commits_or_opens_the_pull_request(self) -> None:
++        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
++        steps = ["release.py bump", "release.py check-version", "git commit", "git push", "gh pr create"]
++        positions = [workflow.find(step) for step in steps]
++        self.assertNotIn(-1, positions, dict(zip(steps, positions)))
++        self.assertEqual(sorted(positions), positions)
++
++
+ class RepoSlugTests(unittest.TestCase):
+     def test_reads_github_remotes(self) -> None:
+         for url in ("git@github.com:o/r.git", "ssh://git@github.com/o/r.git", "https://github.com/o/r.git",
