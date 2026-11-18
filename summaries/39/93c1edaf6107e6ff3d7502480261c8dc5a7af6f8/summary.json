@@ -1,0 +1,73 @@
+{
+ "version": 1,
+ "name": "Check workflow path filter",
+ "project": "",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 39,
+  "title": "Skip the Check workflow for changes that touch only docs or the site",
+  "head": "93c1edaf6107e6ff3d7502480261c8dc5a7af6f8",
+  "headRef": "check-skip-docs",
+  "base": "99324204f12cf5a6bbd536a0db56b10bdcf9d83e",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "The Check workflow, <code>.github/workflows/check.yml</code>, is <code>trip</code>'s CI. It runs two macOS jobs: <code>check</code>, which runs rustfmt, the release script's tests, clippy, the test suite, a build, and the end-to-end scripts, and <code>msrv</code>, which builds on the minimum supported Rust version. Before this change it ran on every pull request and every push to <code>main</code>, even one that only edited the README.",
+   "This pull request adds a <code>paths-ignore</code> filter to the <code>pull_request</code> and <code>push</code> triggers. When every file a change touches is a Markdown file, or sits under <code>docs/</code> or <code>site/</code>, or is <code>LICENSE</code>, GitHub starts no run. A change that touches even one other file runs both jobs as before. The <code>workflow_dispatch</code> trigger, which the Release workflow uses to run Check on its release branch, gets no filter.",
+   "Skipping a run is safe only because nothing requires these checks. The <code>main</code> ruleset requires pull requests and linear history but no status checks. If <code>check</code> or <code>msrv</code> ever became required, a docs-only pull request would wait forever for a check that never starts, and the comment added above the filter says so."
+  ],
+  "cards": [
+   {
+    "id": "terms",
+    "title": "Terms",
+    "html": "<ul class=\"tight\"><li><b><code>paths-ignore</code></b>: a GitHub Actions trigger filter. GitHub skips the workflow only when every changed file matches one of its patterns.</li><li><b>Required status check</b>: a check a branch rule makes a merge wait for. A check whose workflow never starts stays pending, so it blocks the merge.</li><li><b>Ruleset</b>: GitHub's branch rules for <code>main</code> in this repository, read with <code>gh api repos/ninjudd/trip/rulesets</code>.</li></ul>"
+   },
+   {
+    "id": "review",
+    "title": "Review so far",
+    "html": "<ul class=\"tight\"><li>Projector reviewed <code>93c1eda</code> and found it clean, with no finding threads.</li><li>The review confirmed that no ruleset or branch protection on <code>main</code> requires a status check.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "filter",
+   "title": "The Check workflow's trigger filter",
+   "kicker": "Skip CI for changes to documentation, the site, and the license",
+   "intro": [
+    "The whole change is six lines at the top of <code>check.yml</code>: the same <code>paths-ignore</code> list on both the <code>pull_request</code> and the <code>push</code> trigger, and a comment that explains it.",
+    "GitHub matches a pull request's filter against the pull request's whole diff, not only the newest push. So a pull request that already changes code keeps running Check after a docs-only push to it. On <code>main</code>, each squash-merged commit is matched on its own, so a docs-only merge starts no run."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": ".github/workflows/check.yml",
+     "note": "Adds the same four-pattern <code>paths-ignore</code> to the <code>pull_request</code> and <code>push</code> triggers, and a comment saying the filter works only while no ruleset requires these checks.",
+     "checks": [
+      {
+       "kind": "context",
+       "text": "The comment records the one condition that would make this filter harmful: a required check on a skipped run waits forever. If you make <code>check</code> or <code>msrv</code> required later, replace the filter with a first job that reports success for docs-only changes.",
+       "line": 6
+      },
+      {
+       "kind": "verify",
+       "text": "Nothing the <code>check</code> or <code>msrv</code> job runs reads an ignored file. The review searched <code>src/</code>, <code>tests/</code>, and <code>Cargo.toml</code> and found no <code>include_str!</code>, no <code>readme</code> or <code>license-file</code> key, and no Markdown fixture. The one test that writes a <code>README.md</code>, in <code>tests/install_e2e.py</code>, writes it into its own temporary directory.",
+       "line": 8
+      },
+      {
+       "kind": "verify",
+       "text": "Every file that should still trigger a run falls outside the patterns: <code>Cargo.toml</code>, <code>Cargo.lock</code>, <code>src/</code>, <code>tests/</code>, <code>install.sh</code>, <code>.github/workflows/</code>, and <code>.github/scripts/release.py</code>. <code>**/*.md</code> also matches Markdown at the repository root, such as <code>README.md</code> and <code>AGENTS.md</code>. A YAML parse of the file showed both triggers carry the list, with <code>push</code> still limited to <code>main</code>.",
+       "line": 11
+      },
+      {
+       "kind": "verify",
+       "text": "The release flow does not depend on a filtered run. <code>release.yml</code> runs Check on the release branch through <code>workflow_dispatch</code>, which has no filter, and its publish job never reads Check's result.",
+       "line": 11
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
