@@ -11,7 +11,8 @@
 
 The Release workflow runs these. Started by hand with patch, minor, or major,
 it runs `bump` and `check-version`, then `check-commit` on a release/vX.Y.Z
-branch, and opens the release pull request. `check-version` refuses a version
+branch, posts the `projector/review` status on the commit `check-commit`
+passed, and opens the release pull request. `check-version` refuses a version
 that is already released or below the newest release, as a bump after a
 revert would propose, before the pull request opens. When that pull request
 merges, it runs `tag` on the merge commit, with --since naming main's

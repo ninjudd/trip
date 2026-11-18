@@ -492,6 +492,17 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn(-1, positions, dict(zip(steps, positions)))
         self.assertEqual(sorted(positions), positions)
 
+    def test_the_propose_job_signs_off_only_the_commit_check_commit_proved_version_only(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+        propose = workflow[workflow.index("  propose:"):workflow.index("  publish:")]
+        self.assertIn("statuses: write", propose)
+        steps = ["release.py check-commit HEAD", "git push", "-f context=projector/review", "gh pr create"]
+        positions = [propose.find(step) for step in steps]
+        self.assertNotIn(-1, positions, dict(zip(steps, positions)))
+        self.assertEqual(sorted(positions), positions)
+        self.assertEqual(1, propose.count("context=projector/review"))
+        self.assertIn("statuses/$(git rev-parse HEAD)", propose)
+
 
 class RepoSlugTests(unittest.TestCase):
     def test_reads_github_remotes(self) -> None:
