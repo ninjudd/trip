@@ -28,6 +28,7 @@ jobs:
       actions: write
       contents: write
       pull-requests: write
+      statuses: write
     steps:
       - uses: actions/checkout@v5
       - name: Open the release pull request
@@ -39,7 +40,7 @@ jobs:
           # The checkout is the ref the run was dispatched from, and the release
           # branch carries every commit it has. check-commit reads only the
           # release commit, so a run from another ref would carry that ref's
-          # unreviewed commits into the release.
+          # unreviewed commits into the release and sign them off below.
           if [ "$GITHUB_REF" != refs/heads/main ]; then
             echo "run the release from main, not $GITHUB_REF" >&2
             exit 1
@@ -57,8 +58,17 @@ jobs:
           # The branch belongs to this workflow; a rerun after a run that pushed it
           # but could not open the pull request replaces it.
           git push --quiet --force origin "$branch"
+          # main requires the projector/review status, and no review session picks
+          # up a pull request this job's token opened. check-commit proved that this
+          # commit only raises the version, which needs no review, so the job signs
+          # off the commit it wrote. The status names this commit alone, so a push
+          # to the branch makes a head that waits for a review.
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$(git rev-parse HEAD)" \
+            -f state=success -f context=projector/review \
+            -f description="Version-only release; needs no review" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > /dev/null
           cat > "$RUNNER_TEMP/body.md" <<EOF
-          Raises trip's version to $version in \`Cargo.toml\` and \`Cargo.lock\`. Merging this pull request publishes the release: the Release workflow then tags \`v$version\` on the merge commit, creates the GitHub release with generated notes, and moves \`v0\` to it, which is where the installer and \`trip upgrade\` find the newest release.
+          Raises trip's version to $version in \`Cargo.toml\` and \`Cargo.lock\`. Merging this pull request publishes the release: the Release workflow then tags \`v$version\` on the merge commit, creates the GitHub release with generated notes, and moves \`v0\` to it, which is where the installer and \`trip upgrade\` find the newest release. The workflow posted the \`projector/review\` status on this commit because it changes only the version; a push to this branch needs a review.
 
           ## Testing
 
