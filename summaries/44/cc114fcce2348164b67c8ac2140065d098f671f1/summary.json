@@ -1,0 +1,110 @@
+{
+ "version": 1,
+ "name": "Social card for trip.here",
+ "project": "",
+ "pr": {
+  "repo": "ninjudd/trip",
+  "number": 44,
+  "title": "Give links to trip.here a social card image",
+  "head": "cc114fcce2348164b67c8ac2140065d098f671f1",
+  "headRef": "social-card",
+  "base": "49301cbab8cc178cce00166e96a8d6c04dd2fe3e",
+  "baseRef": "main"
+ },
+ "overview": {
+  "summary": [
+   "<code>site/</code> is trip.here, the project's one-page website. It is hand-written HTML with no build step, and Vercel deploys the <code>site/</code> directory as it stands.",
+   "When someone pastes https://trip.here/ into Slack, X, iMessage, or another app that previews links, the app reads the page's Open Graph tags to draw the preview. The page already had a title and a description, but no image, so the preview had none. This change adds a 1200 by 630 card image and the tags that point to it.",
+   "The card copies the page's dark design: the bold monospace <code>trip</code> wordmark with its orange block cursor, the tagline, a shortened version of the page's <code>trip enter</code> transcript, and the install command along the bottom. Its source, <code>site/og.html</code>, stays in the repository so the card can be edited and rendered again, and <code>site/.vercelignore</code> keeps that source off the live site.",
+   "The branch's first commit tried a card under <code>.github/</code> with a <code>.projector.toml</code> setting, and the second commit removed both. Only the four files under <code>site/</code> differ from <code>main</code>."
+  ],
+  "cards": [
+   {
+    "id": "terms",
+    "title": "Terms",
+    "html": "<ul class=\"tight\"><li><b>Open Graph tags</b>: <code>og:</code> meta tags in the page's head that tell link previews what title, description, and image to show.</li><li><b>Social card</b>: the image a link preview shows, conventionally 1200 by 630 pixels.</li><li><b><code>.vercelignore</code></b>: a list of files Vercel leaves out of a deployment, read from the project's root directory.</li></ul>"
+   },
+   {
+    "id": "checked",
+    "title": "What the review checked",
+    "html": "<ul class=\"tight\"><li>Rendering <code>og.html</code> with its documented command produces a PNG byte-identical to <code>og.png</code>.</li><li>The branch's Vercel preview serves the five new tags, serves <code>/og.png</code> as <code>image/png</code>, and returns <code>404</code> for <code>/og</code>.</li><li>The card's chooser lines match what <code>trip enter</code> prints and fit the card.</li><li>The review found no blocking problems.</li></ul>"
+   }
+  ]
+ },
+ "groups": [
+  {
+   "id": "tags",
+   "title": "The tags that point at the card",
+   "kicker": "Five meta tags in the page's head",
+   "intro": [
+    "The page's head gains the tags a link preview reads to find an image. <code>og:image</code> gives the image's address, <code>og:image:width</code> and <code>og:image:height</code> give its size so a preview can lay itself out before the image loads, and <code>og:image:alt</code> describes it for screen readers. <code>twitter:card</code> set to <code>summary_large_image</code> asks X for the wide preview rather than a small thumbnail.",
+    "The existing title, description, and <code>og:url</code> tags are unchanged."
+   ],
+   "checks": [],
+   "files": [
+    {
+     "path": "site/index.html",
+     "note": "Adds the image tags and the <code>twitter:card</code> tag beside the existing Open Graph tags.",
+     "checks": [
+      {
+       "kind": "context",
+       "text": "<code>og:image</code> names the production address, not a relative path, because link previews need an absolute URL. A preview deployment's tags therefore still point at <code>https://trip.here/og.png</code>, so a link-preview validator shows the card only after this merges.",
+       "line": 12
+      },
+      {
+       "kind": "verify",
+       "text": "The width and height match the image: <code>file site/og.png</code> reports 1200 by 630.",
+       "line": 13
+      },
+      {
+       "kind": "context",
+       "text": "X falls back to the Open Graph title, description, and image when its own <code>twitter:</code> tags are absent, so this one tag is all it needs.",
+       "line": 16
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "card",
+   "title": "The card and its source",
+   "kicker": "The image, the HTML it is rendered from, and the file that keeps that HTML off the site",
+   "intro": [
+    "<code>og.png</code> is the card itself, served at <code>https://trip.here/og.png</code>. It is a screenshot of <code>og.html</code>, a fixed 1200 by 630 page that reuses the site's colors and font stacks. To change the card, edit <code>og.html</code> and run the headless Chrome command in its comment, which overwrites <code>og.png</code>.",
+    "Without <code>.vercelignore</code>, Vercel would deploy <code>og.html</code> too, and the site's <code>cleanUrls</code> setting would serve it at <code>trip.here/og</code>. The ignore file sits in <code>site/</code> because that directory, which holds <code>vercel.json</code>, is the Vercel project's root."
+   ],
+   "checks": [
+    {
+     "kind": "verify",
+     "text": "On the branch's Vercel preview, <code>/og.png</code> returns <code>200</code> with <code>content-type: image/png</code> and the same bytes as the committed file, <code>/og</code> returns <code>404</code>, and <code>/og.html</code> redirects to that <code>404</code>."
+    }
+   ],
+   "files": [
+    {
+     "path": "site/og.png",
+     "note": "The 1200 by 630 card image."
+    },
+    {
+     "path": "site/og.html",
+     "note": "The card's source, with the command that renders it. Render it on a Mac, where the font stacks resolve to the fonts the site uses.",
+     "checks": [
+      {
+       "kind": "verify",
+       "text": "Running the command in this comment against this head produced a PNG byte-identical to the committed <code>og.png</code>, so the image is current.",
+       "line": 7
+      },
+      {
+       "kind": "verify",
+       "text": "The chooser lines match what <code>trip enter</code> prints in <code>src/client/mod.rs</code>, <code>↑/↓ + enter · 0-9 · q cancels</code> and <code>(new session)</code>, and the rendered card shows both in full inside the terminal panel.",
+       "line": 72
+      }
+     ]
+    },
+    {
+     "path": "site/.vercelignore",
+     "note": "Keeps <code>og.html</code> out of the deployment."
+    }
+   ]
+  }
+ ]
+}
