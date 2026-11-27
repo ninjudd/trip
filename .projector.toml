@@ -1,5 +1,2 @@
 [review]
 require_check = true
-
-[site]
-image = ".github/social-card.png"
