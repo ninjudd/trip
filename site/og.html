@@ -1,0 +1,85 @@
+<!doctype html>
+<!--
+  The source of og.png, the image a link to trip.here previews with.
+  .vercelignore keeps this file off the site. After editing it, render it
+  again from the repository root on a Mac, where ui-monospace and
+  -apple-system resolve to the fonts the page itself uses:
+
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
+      --window-size=1200,630 --hide-scrollbars --force-device-scale-factor=1 \
+      --screenshot=site/og.png "file://$PWD/site/og.html"
+-->
+<meta charset="utf-8">
+<title>trip.here link preview</title>
+<style>
+  :root {
+    --bg: #0e0f12; --fg: #e8e6e1; --muted: #9a9da6; --faint: #26282e;
+    --term-bg: #08090b; --term-fg: #e6e4de; --term-muted: #8a8d96;
+    --accent: #fb923c; --ok: #4ade80;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Helvetica Neue", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    background: radial-gradient(820px 520px at 100% 0%, rgba(251, 146, 60, .10), transparent 65%), var(--bg);
+    color: var(--fg);
+    font-family: var(--sans);
+    position: relative;
+  }
+  .copy { position: absolute; left: 80px; top: 78px; width: 520px; }
+  .wordmark { font: 700 150px/1 var(--mono); letter-spacing: -0.04em; }
+  .cursor {
+    display: inline-block; width: .5em; height: .8em; margin-left: .06em;
+    background: var(--accent); vertical-align: -0.04em;
+  }
+  .tagline { margin-top: 30px; font-size: 46px; line-height: 1.15; font-weight: 600; letter-spacing: -0.015em; }
+  .lede { margin-top: 18px; font-size: 25px; line-height: 1.45; color: var(--muted); }
+
+  .terminal {
+    position: absolute; left: 640px; top: 84px; width: 488px;
+    background: var(--term-bg); color: var(--term-fg); border-radius: 14px; overflow: hidden;
+    border: 1px solid var(--faint);
+    box-shadow: 0 30px 70px -20px rgba(0, 0, 0, .7);
+  }
+  .bar { display: flex; gap: 8px; padding: 15px 18px; background: rgba(255, 255, 255, .04); }
+  .bar span { width: 12px; height: 12px; border-radius: 50%; background: #3a3c43; }
+  pre { padding: 18px 22px 22px; font: 17px/1.7 var(--mono); white-space: pre; }
+  .m { color: var(--term-muted); }
+  .a { color: var(--accent); }
+  .ok { color: var(--ok); }
+  .sel { background: #2a2c33; }
+
+  .install {
+    position: absolute; left: 80px; right: 72px; bottom: 64px;
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--term-bg); border: 1px solid var(--faint); border-radius: 12px;
+    padding: 18px 24px; font: 24px var(--mono); color: var(--term-fg);
+  }
+  .install .m { color: var(--term-muted); }
+  .install .site { font: 600 22px var(--sans); color: var(--accent); }
+</style>
+<body>
+  <div class="copy">
+    <div class="wordmark">trip<span class="cursor"></span></div>
+    <div class="tagline">Persistent terminal sessions.</div>
+    <div class="lede">Close the window. Keep the session.</div>
+  </div>
+
+  <div class="terminal">
+    <div class="bar"><span></span><span></span><span></span></div>
+<pre><span class="m">~/acme/webapp $</span> trip enter
+sessions:  <span class="m">↑/↓ + enter · 0-9 · q cancels</span>
+  0) acme/webapp.1     <span class="m">(new session)</span>
+&gt; <span class="sel">1) acme/webapp      cargo</span>
+  2) notes            nvim
+
+<span class="m">test result:</span> <span class="ok">ok</span><span class="m">. 214 passed</span>
+<span class="m">~/acme/webapp $</span> <span class="a">▍</span></pre>
+  </div>
+
+  <div class="install">
+    <span><span class="m">$ </span>curl -fsSL https://trip.here/install.sh | bash</span>
+    <span class="site">trip.here</span>
+  </div>
+</body>
